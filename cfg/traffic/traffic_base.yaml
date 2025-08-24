@@ -1,0 +1,27 @@
+# Traffic Simulation Configuration
+# This configuration defines the behavior of background traffic aircraft
+
+traffic:
+  # Basic settings
+  num_drones: 10
+  drone_model: "crazyflie"  # Available models: crazyflie, firefly, hummingbird, neo11, iris
+  
+  # Flight parameters
+  flight_height: 5.0  # meters, altitude for all traffic aircraft
+  max_speed: 3.0  # m/s, maximum flight speed for traffic aircraft
+  arrival_threshold: 1.0  # meters, distance threshold to consider target reached
+  
+  # Area bounds - defines the flight zone for traffic aircraft
+  area_bounds:
+    xmin: -20.0
+    xmax: 20.0
+    ymin: -20.0
+    ymax: 20.0
+  
+  # Safety settings
+  safety_radius: 2.0  # meters, minimum safe distance for collision detection
+  
+  # Advanced settings (for future extensions)
+  enable_collision_avoidance: false  # placeholder for future ORCA integration
+  enable_formations: false  # placeholder for formation flying
+  use_waypoint_navigation: false  # placeholder for complex path following

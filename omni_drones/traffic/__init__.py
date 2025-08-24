@@ -20,11 +20,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+"""
+OmniDrones Traffic Simulation Module
 
-from .controller import ControllerBase
-from .lee_position_controller import (
-    LeePositionController,
-    AttitudeController,
-    RateController,
-    PlanarSpeedController
-)
+This module provides traffic simulation capabilities for Isaac Lab environments,
+enabling dynamic background aircraft that can interact with RL agents.
+"""
+
+from .traffic_simulator import TrafficSimulator
+from .utils.config import TrafficConfig
+
+
+__all__ = ["TrafficSimulator", "TrafficConfig"]

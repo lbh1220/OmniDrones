@@ -208,6 +208,80 @@ class LeePositionController(ControllerBase):
         target_vel, target_yaw = actions.split([3, 1], dim=-1)
         return target_vel, target_yaw * torch.pi
 
+class PlanarSpeedController(LeePositionController):
+    """
+    一个用于控制无人机在2D平面上运动的专用控制器。
+
+    该控制器继承自 LeePositionController，旨在维持一个固定的目标高度，
+    同时根据用户提供的2D速度指令（在XY平面上）进行移动。
+    它会自动计算维持高度所需的Z轴速度。
+    """
+    def __init__(
+        self,
+        g: float,
+        uav_params,
+        # 新增一个用于高度控制的增益参数
+        height_p_gain: float = 2.0  
+    ) -> None:
+        # 首先，调用父类的构造函数来初始化所有底层参数（如 pos_gain, mass, mixer 等）
+        super().__init__(g, uav_params)
+        
+        # 保存高度控制的 P 增益
+        self.height_p_gain = nn.Parameter(torch.tensor(height_p_gain))
+        self.requires_grad_(False)
+
+    def compute(
+        self,
+        root_state: torch.Tensor,
+        target_vel_xy: torch.Tensor,
+        target_height: torch.Tensor,
+        target_yaw: torch.Tensor = None
+    ):
+        """
+        计算旋翼指令以维持目标高度并遵循2D目标速度。
+
+        Args:
+            root_state (torch.Tensor): 机器人的完整状态 [batch_size, 13]。
+            target_vel_xy (torch.Tensor): 在XY平面上的目标速度 [batch_size, 2]。
+            target_height (torch.Tensor): 目标高度Z值 [batch_size, 1]。
+            target_yaw (torch.Tensor, optional): 目标偏航角 [batch_size, 1]。默认为 None，表示维持当前角度。
+
+        Returns:
+            torch.Tensor: 计算出的旋翼指令 [batch_size, num_rotors]。
+        """
+        # 1. 从完整状态中获取当前位置
+        current_pos = root_state[..., :3]
+        current_height = current_pos[..., 2:3]
+
+        # 2. 计算高度误差，并生成修正性的Z轴速度
+        #    如果当前高度低于目标，产生一个向上的速度；反之亦然。
+        height_error = target_height - current_height
+        vel_z_correction = height_error * self.height_p_gain
+        # clip vel_z_correction to be within [-1, 1]
+        vel_z_correction = vel_z_correction.clamp(-1, 1)
+
+        # 3. 构造一个完整的3D目标速度
+        #    将用户输入的XY速度和我们计算出的Z速度合并
+        target_vel_3d = torch.cat([target_vel_xy, vel_z_correction], dim=-1)
+
+        # 4. (可选但推荐) 构造一个辅助的目标位置
+        #    我们告诉底层控制器，XY方向的目标就是当前位置（因为我们主要控制速度），
+        #    而Z方向的目标是我们的目标高度。这能辅助底层控制器更好地维持高度。
+        target_pos_3d = current_pos.clone()
+        target_pos_3d[..., 2:3] = target_height
+
+        # 5. 调用父类的 compute 方法
+        #    我们已经准备好了所有“翻译”过的、底层控制器能理解的3D指令。
+        #    现在，让 LeePositionController 的原始实现去处理剩下的所有复杂物理计算。
+        return super().compute(
+            root_state=root_state,
+            target_pos=target_pos_3d,
+            target_vel=target_vel_3d,
+            target_acc=None,  # 我们不控制加速度，让父类处理
+            target_yaw=target_yaw,
+            body_rate=False
+        )
+
 
 class AttitudeController(ControllerBase):
     r"""
