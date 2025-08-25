@@ -66,8 +66,9 @@ def main(cfg: DictConfig):
         # Reset environment
         tensordict = env.reset()
         print("Environment reset completed")
-        
+        import time
         # Run simulation steps
+        start_time = time.time()
         for step in range(50000):
             # Random actions for demo (in real use, these would come from your RL agent)
             action_dim = 4  # placeholder
@@ -89,7 +90,10 @@ def main(cfg: DictConfig):
             #         collisions = env.check_traffic_collision(dummy_agent_pos, safety_radius=5.0)
             #         if collisions.any():
             #             print(f"  Warning: {collisions.sum()} agents in collision zone!")
-                
+            if step % 100 == 0:
+                end_time = time.time()
+                print(f"Step {step} time: {(end_time - start_time)/100} seconds")
+                start_time = end_time
             # Check if any environment needs reset
             if tensordict.get("terminated", torch.zeros_like(tensordict.get("truncated"))).any():
                 env_mask = (tensordict.get("terminated") | tensordict.get("truncated")).squeeze(-1)

@@ -4,8 +4,7 @@ hydra:
   searchpath:
     # see https://hydra.cc/docs/advanced/search_path/
     - file://../cfg
-headless: true
-
+headless: False
 total_frames: 150_000_000
 max_iters: -1
 eval_interval: -1
@@ -65,20 +64,39 @@ task:
 
 # Traffic configuration
 traffic:
-  num_drones: 16
-  drone_model: firefly
+  num_drones: 50
+  num_evtols: 3
   flight_height: 20.0
-  max_speed: 1.0
-  arrival_threshold: 1.0
   area_bounds:
-    xmin: -15.0
-    xmax: 15.0
-    ymin: -15.0
-    ymax: 15.0
-  safety_radius: 2.0
-  enable_collision_avoidance: false
-  enable_formations: false
-  use_waypoint_navigation: false
+    xmin: -50
+    xmax: 50
+    ymin: -50
+    ymax: 50
+  drone:
+    model: firefly
+    safety_radius: 1.0
+    max_speed: 1.0
+    arrival_threshold: 1.0
+  evtol:
+    model: iris
+    safety_radius: 5.0
+    max_speed: 2.0
+    arrival_threshold: 2.0
+    turn_radius: 10.0
+    course_num: 4
+  orca:
+    enable: True
+    neighbor_dist: 100.0
+    time_horizon: 11.0
+    time_horizon_obst: 11.0
+    safety_space: 1.5
+    max_neighbors: 10
+  
+  
+  
+  
+
+    
 
 # Viewer settings
 viewer:

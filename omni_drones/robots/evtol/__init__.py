@@ -20,16 +20,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""
-OmniDrones Traffic Simulation Module
+from .evtol_base import EVTOLBase
 
-This module provides traffic simulation capabilities for Isaac Lab environments,
-enabling dynamic background aircraft that can interact with RL agents.
-"""
-
-from .traffic_simulator import TrafficSimulator
-from .traffic_drone_manager import TrafficDroneManager
-from .traffic_evtol_manager import TrafficEVTOLManager
-
-
-__all__ = ["TrafficSimulator", "TrafficDroneManager", "TrafficEVTOLManager"]
+__all__ = ["EVTOLBase"]

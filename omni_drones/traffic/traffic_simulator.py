@@ -33,7 +33,8 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 
 from omni_drones.traffic.traffic_drone_manager import TrafficDroneManager
-from omni_drones.traffic.utils.config import TrafficConfig
+from omni_drones.traffic.traffic_evtol_manager import TrafficEVTOLManager
+# from omni_drones.traffic.utils.config import TrafficConfig
 
 
 
@@ -49,7 +50,7 @@ class TrafficSimulator:
     manager classes for different aircraft types.
     """
     
-    def __init__(self, config: TrafficConfig, device: str = "cuda"):
+    def __init__(self, config, device: str = "cuda"):
         self.config = config
         self.device = device
         
@@ -60,15 +61,21 @@ class TrafficSimulator:
         self.drone_manager = TrafficDroneManager(
             config, device, self.traffic_prim_path
         ) if config.num_drones > 0 else None
-        # Future: self.evtol_manager = TrafficEVTOLManager(config, device) if config.num_evtols > 0 else None
+        
+        self.evtol_manager = TrafficEVTOLManager(
+            config, device, self.traffic_prim_path
+        ) if hasattr(config, 'num_evtols') and config.num_evtols > 0 else None
         
         # Simulation state
         self.is_initialized = False
         self.step_count = 0
         
-        logging.info(f"TrafficSimulator initialized with {config.num_drones} drones")
+        num_evtols = config.num_evtols if hasattr(config, 'num_evtols') else 0
+        logging.info(f"TrafficSimulator initialized with {config.num_drones} drones and {num_evtols} evtols")
         if config.num_drones > 0:
             logging.info("  - Drone manager created")
+        if num_evtols > 0:
+            logging.info("  - EVTOL manager created")
     
 
     def create_traffic_prim(self):
@@ -77,9 +84,9 @@ class TrafficSimulator:
         if self.drone_manager is not None:
             self.drone_manager.create_drones()
         
-        # Future: Create eVTOLs
-        # if self.evtol_manager is not None:
-        #     self.evtol_manager.create_evtols()
+        # Create eVTOLs
+        if self.evtol_manager is not None:
+            self.evtol_manager.create_evtols()
         
         logging.info("Traffic primitives creation complete")
 
@@ -93,10 +100,9 @@ class TrafficSimulator:
             self.drone_manager.initialize()
             self.drone_manager.set_initial_targets()
         
-        # Future: Initialize eVTOL components
-        # if self.evtol_manager is not None:
-        #     self.evtol_manager.initialize()
-        #     self.evtol_manager.set_initial_targets()
+        # Initialize eVTOL components
+        if self.evtol_manager is not None:
+            self.evtol_manager.initialize()
         
         self.is_initialized = True
         logging.info("TrafficSimulator initialization complete")
@@ -107,14 +113,18 @@ class TrafficSimulator:
         """Execute one simulation step."""
         if not self.is_initialized:
             self.initialize()
-        
+
+        # Update eVTOLs
+        if self.evtol_manager is not None:
+            self.evtol_manager.step(dt)
+            if self.drone_manager is not None:
+                self.drone_manager.evtol_states = self.evtol_manager.state
         # Update drones if present
+
         if self.drone_manager is not None:
             self.drone_manager.step(dt)
         
-        # Future: Update eVTOLs
-        # if self.evtol_manager is not None:
-        #     self.evtol_manager.step(dt)
+
         
         self.step_count += 1
     
@@ -129,12 +139,13 @@ class TrafficSimulator:
                 aircraft_name = f"traffic_drone_{i}"
                 states[aircraft_name] = drone_states[0, i]  # Extract individual state
         
-        # Future: Get eVTOL states
-        # if self.evtol_manager is not None:
-        #     evtol_states = self.evtol_manager.get_states()
-        #     for i, state in enumerate(evtol_states):
-        #         aircraft_name = f"traffic_evtol_{i}"
-        #         states[aircraft_name] = state
+        # Get eVTOL states
+        if self.evtol_manager is not None:
+            evtol_states = self.evtol_manager.get_states()  # Shape [1, N, 13]
+            num_evtols = evtol_states.shape[1]
+            for i in range(num_evtols):
+                aircraft_name = f"traffic_evtol_{i}"
+                states[aircraft_name] = evtol_states[0, i]  # Extract individual state
         
         return states
     
@@ -147,10 +158,10 @@ class TrafficSimulator:
             drone_positions = self.drone_manager.get_positions()  # Shape [1, N, 3]
             positions.append(drone_positions.squeeze(0))  # Convert to [N, 3]
         
-        # Future: Get eVTOL positions
-        # if self.evtol_manager is not None:
-        #     evtol_positions = self.evtol_manager.get_positions()
-        #     positions.append(evtol_positions.squeeze(0))
+        # Get eVTOL positions
+        if self.evtol_manager is not None:
+            evtol_positions = self.evtol_manager.get_positions()  # Shape [1, N, 3]
+            positions.append(evtol_positions.squeeze(0))  # Convert to [N, 3]
         
         if positions:
             return torch.cat(positions, dim=0)  # Concatenate all aircraft positions
@@ -166,10 +177,10 @@ class TrafficSimulator:
             drone_velocities = self.drone_manager.get_velocities()  # Shape [1, N, 3]
             velocities.append(drone_velocities.squeeze(0))  # Convert to [N, 3]
         
-        # Future: Get eVTOL velocities
-        # if self.evtol_manager is not None:
-        #     evtol_velocities = self.evtol_manager.get_velocities()
-        #     velocities.append(evtol_velocities.squeeze(0))
+        # Get eVTOL velocities
+        if self.evtol_manager is not None:
+            evtol_velocities = self.evtol_manager.get_velocities()  # Shape [1, N, 3]
+            velocities.append(evtol_velocities.squeeze(0))  # Convert to [N, 3]
         
         if velocities:
             return torch.cat(velocities, dim=0)  # Concatenate all aircraft velocities
@@ -205,13 +216,19 @@ class TrafficSimulator:
     def get_aircraft_info(self) -> Dict[str, Any]:
         """Get comprehensive information about all traffic aircraft."""
         total_aircraft = 0
+        num_evtols = 0
+        
         if self.drone_manager is not None:
             total_aircraft += self.config.num_drones
-        # Future: total_aircraft += self.config.num_evtols
+        
+        if self.evtol_manager is not None:
+            num_evtols = self.config.num_evtols if hasattr(self.config, 'num_evtols') else 0
+            total_aircraft += num_evtols
         
         info = {
-            "num_drones": total_aircraft,
+            "total_aircraft": total_aircraft,
             "num_drones": self.config.num_drones,
+            "num_evtols": num_evtols,
             "positions": self.get_aircraft_positions(),
             "velocities": self.get_aircraft_velocities(),
             "flight_height": self.config.flight_height,
@@ -225,9 +242,9 @@ class TrafficSimulator:
         if self.drone_manager is not None:
             self.drone_manager.reset()
         
-        # Future: Reset eVTOLs
-        # if self.evtol_manager is not None:
-        #     self.evtol_manager.reset()
+        # Reset eVTOLs
+        if self.evtol_manager is not None:
+            self.evtol_manager.reset()
         
         self.step_count = 0
         logging.info("TrafficSimulator reset complete")

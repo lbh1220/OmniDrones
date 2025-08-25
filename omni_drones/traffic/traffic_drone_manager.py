@@ -10,38 +10,14 @@ from omni.isaac.core.utils import stage as stage_utils
 from omni_drones.robots.drone import MultirotorBase
 from omni_drones.controllers.lee_position_controller import LeePositionController, PlanarSpeedController
 from omni_drones.utils.torch import quat_axis, normalize
-from omni_drones.traffic.utils.config import TrafficConfig
-
-
-class DroneTargetGenerator:
-    """Generate flight targets for traffic drones."""
-    
-    def __init__(self, config: TrafficConfig, device: str = "cuda"):
-        self.config = config
-        self.bounds = config.area_bounds
-        self.device = device
-    
-    def generate_target(self) -> torch.Tensor:
-        """Generate a random target position within bounds."""
-        x_range = self.bounds["xmax"] - self.bounds["xmin"]
-        y_range = self.bounds["ymax"] - self.bounds["ymin"]
-        
-        x = torch.rand(1, device=self.device) * x_range + self.bounds["xmin"]
-        y = torch.rand(1, device=self.device) * y_range + self.bounds["ymin"]
-        z = torch.tensor([self.config.flight_height], device=self.device)
-        return torch.cat([x, y, z])
-    
-    def generate_waypoint_targets(self, num_waypoints: int = 3) -> List[torch.Tensor]:
-        """Generate a series of waypoint targets for more complex flight patterns."""
-        targets = []
-        for _ in range(num_waypoints):
-            targets.append(self.generate_target())
-        return targets
+from omni_drones.traffic.utils.state import TrafficState
+from omni_drones.traffic.utils.policy import ORCA
+from omni_drones.traffic.utils.generator import DroneTargetGenerator
 
 class TrafficDroneManager:
     """Manager class for batch processing of traffic drones."""
     
-    def __init__(self, config: TrafficConfig, device: str = "cuda", traffic_prim_path: str = "/World/Traffic"):
+    def __init__(self, config, device: str = "cuda", traffic_prim_path: str = "/World/Traffic"):
         self.config = config
         self.device = device
         self.num_drones = config.num_drones
@@ -59,21 +35,27 @@ class TrafficDroneManager:
         self.is_created = False
         self.is_initialized = False
         
-        # Batch drone states - shape [1, N, 3] to match Isaac Sim format
-        self.current_targets = torch.zeros(1, self.num_drones, 3, device=device)
-        self.velocity_commands = torch.zeros(1, self.num_drones, 3, device=device)
+        # 状态管理器 - 替代之前的分散状态变量
+        self.state = TrafficState(device)
+        
+        # 临时计算变量
         self.is_at_target = torch.zeros(self.num_drones, dtype=torch.bool, device=device)
         self.target_updated_times = torch.zeros(self.num_drones, device=device)
         
         # Navigation parameters
-        self.max_speed = config.max_speed
-        self.arrival_threshold = config.arrival_threshold
+        self.max_speed = config.drone.max_speed
+        self.arrival_threshold = config.drone.arrival_threshold
+        self.safety_radius = config.drone.safety_radius
         
         # Target generator - managed internally
         self.target_generator = DroneTargetGenerator(config, device)
         
         # Logging
         self.logger = logging.getLogger(__name__)
+
+        # policy for collision avoidance
+        self.policy = None
+        self.evtol_states = None
     
     def create_drones(self):
         """Create drone primitives in the USD stage."""
@@ -88,7 +70,7 @@ class TrafficDroneManager:
         
         # Create drone and controller
         self.drone, self.controller = MultirotorBase.make(
-            drone_model=self.config.drone_model,
+            drone_model=self.config.drone.model,
             device=self.device,
             controller="PlanarSpeedController"
         )
@@ -128,10 +110,20 @@ class TrafficDroneManager:
         # Initialize the drone view (this sets up all cloned drones)
         self.drone.initialize(prim_paths_expr=f"{self.traffic_prim_path}/traffic_drone_*")
 
+        # 初始化状态管理器
+        names = [f"traffic_drone_{i}" for i in range(self.num_drones)]
+        aircraft_types = ["drone"] * self.num_drones
+        safety_radius = [self.safety_radius] * self.num_drones
+        max_speed = [self.max_speed] * self.num_drones
+        self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, self.device)
+
         self.reset_kinematics()
 
         self.is_initialized = True
         self.logger.info(f"Initialized {self.num_drones} traffic drones")
+
+        if getattr(self.config, 'orca', None) is not None and self.config.orca.enable:
+            self.policy = ORCA(self.config)
     
     def _generate_random_position(self) -> torch.Tensor:
         """
@@ -154,10 +146,10 @@ class TrafficDroneManager:
         Args:
             targets: Tensor of shape [N, 3] or [1, N, 3] containing target positions
         """
-        if targets.dim() == 2:
-            targets = targets.unsqueeze(0)  # Convert [N, 3] to [1, N, 3]
+        if targets.dim() == 3:
+            targets = targets.squeeze(0)  # Convert [1, N, 3] to [N, 3]
         
-        self.current_targets = targets.clone()
+        self.state.target_positions = targets
         self.is_at_target.fill_(False)
         self.target_updated_times.zero_()
         
@@ -168,7 +160,7 @@ class TrafficDroneManager:
             drone_idx: Index of the drone
             target: Tensor of shape [3] containing target position
         """
-        self.current_targets[0, drone_idx] = target.clone()
+        self.state.target_positions[drone_idx] = target
         self.is_at_target[drone_idx] = False
         self.target_updated_times[drone_idx] = 0.0
         
@@ -186,12 +178,13 @@ class TrafficDroneManager:
         
         if self.num_drones <= 0:
             return torch.empty(0, 4, device=self.device)  # Empty tensor for no drones
-        
+        drone_state = self.drone.get_state(env_frame=False)[..., :13]#[1, N, 13]
         # Get current positions - shape [1, N, 3]
         current_positions = self.drone.pos
         
         # Calculate directions to targets - shape [1, N, 3]
-        directions = self.current_targets - current_positions
+        current_targets = self.state.target_positions.unsqueeze(0)  # [N, 3] -> [1, N, 3]
+        directions = current_targets - current_positions
         distances = torch.norm(directions, dim=-1)  # shape [1, N]
         
         # Check which drones have arrived - shape [N]
@@ -199,7 +192,7 @@ class TrafficDroneManager:
         self.is_at_target = arrived_mask
 
         # Reset velocity commands
-        self.velocity_commands.zero_()
+        self.state.velocity_commands.zero_()
         
         # Calculate velocity commands for all drones (keep [1, N, 3] format)
         # Normalize directions (avoid division by zero)
@@ -226,37 +219,31 @@ class TrafficDroneManager:
             velocity_commands_valid = normalized_valid_dirs * speeds.unsqueeze(-1)
             
             # Update velocity commands for valid movements (maintain [1, N, 3] format)
-            self.velocity_commands[0, valid_movement] = velocity_commands_valid
+            self.state.velocity_commands[valid_movement] = velocity_commands_valid
         
         # Get root states for all drones - shape [1, N, 13]
         # root_states = self.drone.get_state(env_frame=False)
-        drone_state = self.drone.get_state(env_frame=False)[..., :13]#[1, N, 13]
-        # Calculate target velocities and yaws for Lee controller
-        target_velocities = self.velocity_commands.clone()  # shape [1, N, 3]
-        target_pos = current_positions + target_velocities * dt
-        target_pos[:, :, 2] = self.config.flight_height
         
-        # Calculate target yaws based on velocity direction (atan2(vy, vx))
-        # For xy-plane movement, yaw = atan2(velocity_y, velocity_x)
-        vel_x = target_velocities[0, :, 0]  # shape [N]
-        vel_y = target_velocities[0, :, 1]  # shape [N]
-        target_yaws = torch.atan2(vel_y, vel_x)  # shape [N]
+        # Calculate target velocities and yaws for Lee controller
+        target_velocities = self.state.velocity_commands.unsqueeze(0)  # shape [1, N, 3]
         target_vel_xy = target_velocities[:, :, :2]
         target_height = self.config.flight_height * torch.ones(1, self.num_drones, 1, device=self.device)
-        # For stationary drones (zero velocity), set yaw to 0
-        zero_velocity_mask = torch.norm(target_velocities[0, :, :2], dim=-1) < 1e-6
-        target_yaws[zero_velocity_mask] = 0.0
+
+        # Calculate target yaws based on velocity direction (atan2(vy, vx))
+        # For xy-plane movement, yaw = atan2(velocity_y, velocity_x)
+        # vel_x = target_velocities[0, :, 0]  # shape [N]
+        # vel_y = target_velocities[0, :, 1]  # shape [N]
+        # target_yaws = torch.atan2(vel_y, vel_x)  # shape [N]
+
+        # # For stationary drones (zero velocity), set yaw to 0
+        # zero_velocity_mask = torch.norm(target_velocities[0, :, :2], dim=-1) < 1e-6
+        # target_yaws[zero_velocity_mask] = 0.0
+
+        if self.policy is not None:
+            self.policy.predict(self.state, self.evtol_states)
 
         target_yaws = torch.zeros(1, self.num_drones, 1, device=self.device)
         
-        # target_yaws = target_yaws.unsqueeze(0)
-        # Compute rotor commands using batch processing
-        # rotor_commands = self.controller.compute(
-        #     root_state=drone_state,  # shape [1, N, 3]
-        #     target_pos=target_pos,  # shape [1, N, 3]
-        #     target_vel=target_velocities,  # shape [1, N, 3]
-        #     target_yaw=target_yaws  # shape [1, N]
-        # )
         rotor_commands = self.controller.compute(
             root_state=drone_state,  # shape [1, N, 3]
             target_vel_xy=target_vel_xy,  # shape [1, N, 2]
@@ -293,6 +280,9 @@ class TrafficDroneManager:
         
         # Apply commands to the drone batch
         self.apply_actions(rotor_commands)
+        
+        # 更新状态管理器中的运动状态
+        self._update_state_manager()
     
     def get_positions(self) -> torch.Tensor:
         """Get positions of all drones.
@@ -330,7 +320,18 @@ class TrafficDroneManager:
         Returns:
             Tensor of shape [1, N, 3] containing target positions
         """
-        return self.current_targets.clone()
+        return self.state.target_positions.unsqueeze(0)  # [N, 3] -> [1, N, 3]
+    
+    def _update_state_manager(self):
+        """更新状态管理器中的运动状态"""
+        if self.drone is None:
+            return
+        
+        # 直接更新state中的运动状态
+        self.state.positions = self.drone.pos.squeeze(0)  # [1, N, 3] -> [N, 3]
+        self.state.velocities = self.drone.vel[:, :, :3].squeeze(0)  # [1, N, 3] -> [N, 3] 
+        self.state.rotations = self.drone.rot.squeeze(0)  # [1, N, 4] -> [N, 4]
+        self.state.angular_velocities = self.drone.vel[:, :, 3:].squeeze(0)  # [1, N, 3] -> [N, 3]
     
     def reset_positions(self, positions: torch.Tensor, rotations: Optional[torch.Tensor] = None):
         """Reset drone positions.
@@ -409,12 +410,24 @@ class TrafficDroneManager:
         # Set all targets at once using batch processing
         if targets:
             targets_batch = torch.stack(targets)  # Shape [N, 3]
-            self.set_targets(targets_batch)
+            
+            # 直接设置state中的目标和起始位置
+            self.state.target_positions = targets_batch
+            self.state.start_positions = self.drone.pos.squeeze(0)  # [1, N, 3] -> [N, 3]
+            
+            self.is_at_target.fill_(False)
+            self.target_updated_times.zero_()
+            
             self.logger.info(f"Set initial targets for {self.num_drones} drones")
+    
+    def get_state_manager(self) -> TrafficState:
+        """获取状态管理器"""
+        return self.state
     
     def cleanup(self):
         """Cleanup resources."""
         # Reset any internal states if needed
         self.is_at_target.fill_(False)
-        self.velocity_commands.zero_()
+        if hasattr(self.state, 'velocity_commands') and self.state.velocity_commands.numel() > 0:
+            self.state.velocity_commands.zero_()
         self.target_updated_times.zero_()

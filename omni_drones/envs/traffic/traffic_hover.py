@@ -2,7 +2,7 @@ import hydra
 import torch
 import torch.distributions as D
 from omni_drones.envs import IsaacEnv
-from omni_drones.traffic import TrafficSimulator, TrafficConfig
+from omni_drones.traffic import TrafficSimulator
 from omni_drones.robots.drone import MultirotorBase
 from omni_drones.controllers.lee_position_controller import LeePositionController
 from omni_drones.views import ArticulationView
@@ -25,7 +25,7 @@ class TrafficAwareHover(IsaacEnv):
         self.time_encoding = cfg.task.time_encoding
         self.randomization = cfg.task.get("randomization", {})
         # Initialize traffic simulator
-        self.traffic_config = self._create_traffic_config(cfg)
+        self.traffic_config = cfg.get("traffic", {})
         
         self.traffic_simulator = TrafficSimulator(self.traffic_config, device=cfg.sim.device)
         super().__init__(cfg, headless)
@@ -62,7 +62,7 @@ class TrafficAwareHover(IsaacEnv):
         self.alpha = 0.8
         # Set up specs
         self.traffic_simulator.initialize()
-        print(f"TrafficAwareHover initialized with {self.traffic_config.num_drones} traffic aircraft")
+        print(f"TrafficAwareHover initialized with {self.traffic_simulator.config.num_drones} drones and {self.traffic_simulator.config.num_evtols} evtols")
 
     def _design_scene(self):
         """Design the scene including main drones and traffic setup."""
@@ -101,24 +101,49 @@ class TrafficAwareHover(IsaacEnv):
         # Initialize traffic simulator (it will create its own prims under /World/Traffic)
         self.traffic_simulator.create_traffic_prim()
         
-
+        # Set up collision filtering: traffic objects don't collide with each other
+        # self._setup_traffic_collision_filtering()
         
         return ["/World/defaultGroundPlane"]
 
-    def _create_traffic_config(self, cfg) -> TrafficConfig:
-        """Create traffic configuration from main config."""
-        traffic_cfg = cfg.get("traffic", {})
-        
-        return TrafficConfig(
-            num_drones=traffic_cfg.get("num_drones", 10),
-            drone_model=traffic_cfg.get("drone_model", "crazyflie"),
-            flight_height=traffic_cfg.get("flight_height", 5.0),
-            max_speed=traffic_cfg.get("max_speed", 3.0),
-            arrival_threshold=traffic_cfg.get("arrival_threshold", 1.0),
-            area_bounds=traffic_cfg.get("area_bounds", {
-                "xmin": -20.0, "xmax": 20.0, "ymin": -20.0, "ymax": 20.0
-            })
-        )
+    def _setup_traffic_collision_filtering(self):
+        """设置 traffic 对象之间的碰撞过滤"""
+        # 直接使用简单的方法：禁用所有 traffic 对象的碰撞检测
+        # 这样不会干扰环境的 cloner 功能
+        self._disable_traffic_collisions_fallback()
+    
+    def _disable_traffic_collisions_fallback(self):
+        """禁用 traffic 对象的碰撞检测"""
+        try:
+            from omni.isaac.core.utils import prims as prim_utils
+            from omni.isaac.core.utils import stage as stage_utils
+            
+            # 禁用所有 traffic 路径下的碰撞
+            traffic_stage = stage_utils.get_current_stage()
+            traffic_prim = traffic_stage.GetPrimAtPath("/World/Traffic")
+            
+            if traffic_prim:
+                # 递归遍历所有子对象
+                def disable_collisions_recursive(prim):
+                    try:
+                        # 尝试禁用碰撞
+                        if prim.HasAttribute("physics:collisionEnabled"):
+                            prim.GetAttribute("physics:collisionEnabled").Set(False)
+                            self.logger.debug(f"Disabled collision for {prim.GetPath()}")
+                    except Exception as e:
+                        self.logger.debug(f"Could not disable collision for {prim.GetPath()}: {e}")
+                    
+                    # 递归处理子对象
+                    for child in prim.GetAllChildren():
+                        disable_collisions_recursive(child)
+                
+                disable_collisions_recursive(traffic_prim)
+                        
+            self.logger.info("Successfully disabled collisions for all traffic objects")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to disable traffic collisions: {e}")
+
     
     def _set_specs(self):
         drone_state_dim = self.drone.state_spec.shape[-1]
