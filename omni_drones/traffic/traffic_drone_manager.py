@@ -109,6 +109,7 @@ class TrafficDroneManager:
         
         # Initialize the drone view (this sets up all cloned drones)
         self.drone.initialize(prim_paths_expr=f"{self.traffic_prim_path}/traffic_drone_*")
+        self.target_generator.initialize_targets(self.config.drone.target_num)
 
         # 初始化状态管理器
         names = [f"traffic_drone_{i}" for i in range(self.num_drones)]
@@ -270,10 +271,21 @@ class TrafficDroneManager:
         # This uses the is_at_target status updated in update_control
         arrived_drones = self.is_at_target
         if arrived_drones.any():
-            for i, arrived in enumerate(arrived_drones):
-                if arrived:
-                    new_target = self.target_generator.generate_target()
-                    self.set_target_for_drone(i, new_target)
+            # 获取需要新目标的无人机索引
+            drone_indices = torch.where(arrived_drones)[0]  # 返回需要更新的无人机索引
+            num_arrived = len(drone_indices)
+            
+            if num_arrived > 0:
+                # 批量生成新目标
+                new_targets = self.target_generator.generate_targets(num_arrived)
+                
+                # 批量设置目标
+                self.state.target_positions[drone_indices, :] = new_targets
+                
+                # 批量更新状态
+                self.is_at_target[drone_indices] = False
+                self.target_updated_times[drone_indices] = 0.0
+
         
         # Update control for all drones
         rotor_commands = self.update_control(dt)
@@ -402,23 +414,17 @@ class TrafficDroneManager:
             return
         
         # Generate targets for all drones at once
-        targets = []
-        for i in range(self.num_drones):
-            target = self.target_generator.generate_target()
-            targets.append(target)
-        
+        targets_batch = self.target_generator.generate_targets(self.num_drones)
         # Set all targets at once using batch processing
-        if targets:
-            targets_batch = torch.stack(targets)  # Shape [N, 3]
-            
-            # 直接设置state中的目标和起始位置
-            self.state.target_positions = targets_batch
-            self.state.start_positions = self.drone.pos.squeeze(0)  # [1, N, 3] -> [N, 3]
-            
-            self.is_at_target.fill_(False)
-            self.target_updated_times.zero_()
-            
-            self.logger.info(f"Set initial targets for {self.num_drones} drones")
+        
+        # 直接设置state中的目标和起始位置
+        self.state.target_positions = targets_batch
+        self.state.start_positions = self.drone.pos.squeeze(0)  # [1, N, 3] -> [N, 3]
+        
+        self.is_at_target.fill_(False)
+        self.target_updated_times.zero_()
+        
+        self.logger.info(f"Set initial targets for {self.num_drones} drones")
     
     def get_state_manager(self) -> TrafficState:
         """获取状态管理器"""

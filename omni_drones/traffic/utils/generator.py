@@ -1,9 +1,164 @@
 import numpy as np
 import random
 from typing import List, Tuple
+import torch
 
 from omni_drones.traffic.utils.state import Waypoint_ex, Waypoint
+import omni.isaac.lab.utils.math as math_utils
 
+class DroneTargetGenerator_simple:
+    """Generate flight targets for traffic drones."""
+    
+    def __init__(self, config, device: str = "cuda"):
+        self.config = config
+        self.bounds = config.area_bounds
+        self.device = device
+    
+    def generate_target(self) -> torch.Tensor:
+        """Generate a random target position within bounds."""
+        x_range = self.bounds["xmax"] - self.bounds["xmin"]
+        y_range = self.bounds["ymax"] - self.bounds["ymin"]
+        
+        x = torch.rand(1, device=self.device) * x_range + self.bounds["xmin"]
+        y = torch.rand(1, device=self.device) * y_range + self.bounds["ymin"]
+        z = torch.tensor([self.config.flight_height], device=self.device)
+        return torch.cat([x, y, z])
+    
+    def generate_waypoint_targets(self, num_waypoints: int = 3) -> List[torch.Tensor]:
+        """Generate a series of waypoint targets for more complex flight patterns."""
+        targets = []
+        for _ in range(num_waypoints):
+            targets.append(self.generate_target())
+        return targets
+class DroneTargetGenerator:
+    """Enhanced target generator with candidate points and batch generation with random offsets."""
+    
+    def __init__(self, config, device: str = "cuda"):
+        self.config = config
+        self.bounds = config.area_bounds
+        self.device = device
+        self.flight_height = config.flight_height
+        
+        # 候选目标点
+        self.candidate_targets = None
+        self.num_candidates = config.drone.target_num
+        
+        # 偏移参数
+        self.min_offset_radius = 0.0  # 最小偏移半径
+        self.max_offset_radius = getattr(config, 'max_offset_radius', 8.0)  # 最大偏移半径
+        
+    def initialize_targets(self, num_candidates: int = 20):
+        """Initialize candidate target points within bounds, distributed relatively evenly.
+        
+        Args:
+            num_candidates: Number of candidate target points to generate
+        """
+        self.num_candidates = num_candidates
+        
+        # 计算网格大小以实现相对均匀的分布
+        grid_size_x = (self.bounds["xmax"] - self.bounds["xmin"]) / (self.num_candidates ** 0.5)
+        grid_size_y = (self.bounds["ymax"] - self.bounds["ymin"]) / (self.num_candidates ** 0.5)
+        
+        # 生成候选目标点
+        candidate_targets = []
+        
+        for i in range(self.num_candidates):
+            # 使用网格索引计算基础位置
+            grid_x = i % int(self.num_candidates ** 0.5)
+            grid_y = i // int(self.num_candidates ** 0.5)
+            
+            # 在网格中心添加随机偏移
+            base_x = self.bounds["xmin"] + grid_x * grid_size_x + grid_size_x * 0.5
+            base_y = self.bounds["ymin"] + grid_y * grid_size_y + grid_size_y * 0.5
+            
+            # 添加随机偏移以避免完全对齐
+            offset_x = (torch.rand(1, device=self.device) - 0.5) * grid_size_x * 0.3
+            offset_y = (torch.rand(1, device=self.device) - 0.5) * grid_size_y * 0.3
+            
+            x = base_x + offset_x
+            y = base_y + offset_y
+            z = torch.tensor([self.flight_height], device=self.device)
+            
+            target = torch.cat([x, y, z])
+            candidate_targets.append(target)
+        
+        # 转换为张量 [num_candidates, 3]
+        self.candidate_targets = torch.stack(candidate_targets)
+        
+        print(f"Initialized {self.num_candidates} candidate targets")
+    
+    def generate_targets(self, num_drones: int, max_offset = None) -> torch.Tensor:
+        """Batch generate targets for multiple drones with random offsets.
+        
+        Args:
+            num_drones: Number of drones to generate targets for
+            
+        Returns:
+            Tensor of shape [num_drones, 3] containing target positions
+        """
+        if max_offset is not None:
+            self.max_offset_radius = max_offset
+        
+        if self.candidate_targets is None:
+            raise RuntimeError("Must call initialize_targets() first")
+        
+        if num_drones <= 0:
+            return torch.empty(0, 3, device=self.device)
+        
+        # Step 1: Randomly select candidate targets for each drone
+        # 为每个无人机随机选择一个候选目标点
+        drone_indices = torch.randint(0, self.num_candidates, (num_drones,), device=self.device)
+        selected_targets = self.candidate_targets[drone_indices]  # [num_drones, 3]
+        
+        # Step 2: Generate random offsets around selected targets
+        # 生成随机半径和角度
+        radii = torch.rand(num_drones, device=self.device) * (self.max_offset_radius - self.min_offset_radius) + self.min_offset_radius
+        angles = torch.rand(num_drones, device=self.device) * 2 * torch.pi
+        
+        # 计算偏移量 [num_drones, 3]
+        # 只在xy平面上添加偏移，z保持不变
+        offsets = torch.zeros(num_drones, 3, device=self.device)
+        offsets[:, 0] = radii * torch.cos(angles)  # x偏移
+        offsets[:, 1] = radii * torch.sin(angles)  # y偏移
+        offsets[:, 2] = 0.0  # z偏移为0
+        
+        # 应用偏移量
+        final_targets = selected_targets + offsets
+        
+        # 确保目标点在边界内
+        final_targets[:, 0] = torch.clamp(final_targets[:, 0], 
+                                         self.bounds["xmin"], self.bounds["xmax"])
+        final_targets[:, 1] = torch.clamp(final_targets[:, 1], 
+                                         self.bounds["ymin"], self.bounds["ymax"])
+        
+        return final_targets
+    
+    def generate_single_target(self) -> torch.Tensor:
+        """Generate a single target for one drone."""
+        return self.generate_targets(1).squeeze(0)
+    
+    def get_candidate_targets(self) -> torch.Tensor:
+        """Get the current candidate target points.
+        
+        Returns:
+            Tensor of shape [num_candidates, 3] containing candidate targets
+        """
+        if self.candidate_targets is None:
+            raise RuntimeError("Must call initialize_targets() first")
+        return self.candidate_targets.clone()
+    
+    def update_candidate_targets(self, new_candidates: torch.Tensor):
+        """Update candidate target points.
+        
+        Args:
+            new_candidates: Tensor of shape [N, 3] containing new candidate targets
+        """
+        if new_candidates.dim() != 2 or new_candidates.shape[1] != 3:
+            raise ValueError("new_candidates must be of shape [N, 3]")
+        
+        self.candidate_targets = new_candidates.clone()
+        self.num_candidates = new_candidates.shape[0]
+        print(f"Updated to {self.num_candidates} candidate targets")
 
 class EVTOLTargetGenerator:
     """EVTOL目标和航线生成器"""
@@ -27,27 +182,6 @@ class EVTOLTargetGenerator:
         # 当前正在处理的航线数据
         self.waypoints = []
         self.smooth_waypoints = []
-
-    def _generate_courses(self, num_courses: int = 5):
-        """预生成多条航线"""
-        for i in range(num_courses):
-            # 随机选择起点和终点
-            start = self._generate_random_point()
-            end = self._generate_random_point()
-            
-            # 确保起点和终点距离足够远
-            while np.linalg.norm(np.array(end) - np.array(start)) < 20.0:
-                end = self._generate_random_point()
-            
-            # 生成中间航路点（3-4个点）
-            waypoints = self._generate_intermediate_waypoints(start, end, num_points=3)
-            
-            course = {
-                "start":start,
-                "end":end,
-                "waypoints":waypoints
-            }
-            yield course
     
     def _generate_random_point(self) -> Tuple[float, float, float]:
         """生成随机位置点"""
@@ -91,20 +225,31 @@ class EVTOLTargetGenerator:
     def generate_course_with_smooth_trajectory(self):
         """生成航线并返回平滑后的轨迹"""
         # 随机选择起点和终点
-        start = self._generate_random_point()
-        end = self._generate_random_point()
+        area_radius_x = self.bounds["xmax"] - self.bounds["xmin"]
+        area_radius_y = self.bounds["ymax"] - self.bounds["ymin"]
+        area_radius = max(area_radius_x, area_radius_y)/2.0
+        area_center = torch.tensor([(self.bounds["xmin"] + self.bounds["xmax"]) / 2, 
+                                    (self.bounds["ymin"] + self.bounds["ymax"]) / 2, 
+                                    self.flight_height], device=self.device)
+        area_center = area_center.unsqueeze(0)
+        start_tensor = math_utils.sample_cylinder(area_radius, (self.flight_height, self.flight_height), 1, self.device)
+        goal_tensor = start_tensor.clone()
+        goal_tensor[:,:2] = -goal_tensor[:,:2]
+        start_tensor[:,:2] = start_tensor[:,:2] + area_center[:,:2]
+        goal_tensor[:,:2] = goal_tensor[:,:2] + area_center[:,:2]
+        start = start_tensor.cpu().numpy()[0].astype(np.float64)
+        goal = goal_tensor.cpu().numpy()[0].astype(np.float64)
         
-        # 确保起点和终点距离足够远
-        while np.linalg.norm(np.array(end) - np.array(start)) < 20.0:
-            end = self._generate_random_point()
-        
-        # 生成中间航路点
-        waypoints = self._generate_intermediate_waypoints(start, end, num_points=3)
+        # 生成中间航路点（3-4个点）
+        inter_points = math_utils.sample_cylinder(area_radius/2.0, (self.flight_height, self.flight_height), 1, self.device)
+        inter_points[:,:2] = inter_points[:,:2] + area_center[:,:2]
+        inter_points = inter_points.cpu().numpy()[0].astype(np.float64)
+        waypoints = [start, inter_points, goal]
         
         course = {
-            "start": start,
-            "end": end,
-            "waypoints": waypoints
+            "start":start,
+            "end":goal,
+            "waypoints":waypoints
         }
         
         # 生成基础waypoints并进行平滑处理
@@ -115,7 +260,10 @@ class EVTOLTargetGenerator:
             raise ValueError("course is not valid")
             
     def set_course(self, course):
-        """设置航路点并生成平滑轨迹 - 基于evtol.py的实现"""
+        """
+        设置航路点并生成平滑轨迹 - 基于evtol.py的实现
+        这里的waypoints需要包含起点终点
+        """
         waypoints = course['waypoints']
         
         self.waypoints: List[Waypoint] = []

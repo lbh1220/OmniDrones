@@ -1,0 +1,516 @@
+# MIT License
+#
+# Copyright (c) 2023 Isaac Lab Nav Environment Implementation
+
+"""Nav Navigation Environment using Direct RL Workflow
+
+这个环境直接复用了原始OmniDrones项目中的robot系统，包括：
+1. MultirotorBase、Firefly等完整的drone实现
+2. 原始的旋翼动力学模型和RotorGroup
+3. 原始的参数配置系统（yaml文件）
+4. 原始的控制器系统
+5. Isaac Lab的RayCaster激光雷达系统和DirectRLEnv框架
+
+核心设计理念：
+- 100% 复用原始drone系统的精心设计
+- 使用Isaac Lab的DirectRLEnv作为基础框架
+- 保持原始环境的所有功能和行为
+"""
+
+from __future__ import annotations
+
+import math
+import torch
+import numpy as np
+from typing import Dict, Any, Optional
+from dataclasses import dataclass, field
+
+import omni.isaac.lab.sim as sim_utils
+from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg
+from omni.isaac.lab.envs.common import ViewerCfg
+from omni.isaac.lab.envs.ui import BaseEnvWindow
+from omni.isaac.lab.markers import VisualizationMarkers
+from omni.isaac.lab.scene import InteractiveSceneCfg
+from omni.isaac.lab.sim import SimulationCfg
+from omni.isaac.lab.terrains import TerrainImporterCfg, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
+from omni.isaac.lab.utils import configclass
+from omni.isaac.lab.sensors import RayCaster, RayCasterCfg, patterns
+from omni.isaac.core.materials import PhysicsMaterial
+import omni.isaac.lab.utils.math as math_utils
+
+from omni_drones.traffic.cfg.config import AreaBoundsCfg
+
+# 导入原始OmniDrones的robot系统
+from omni_drones.robots.drone import MultirotorBase
+from omni_drones.utils.torch import euler_to_quaternion
+
+
+# 导入原始的TensorDict相关
+from tensordict.tensordict import TensorDict
+from torchrl.data import CompositeSpec, UnboundedContinuousTensorSpec
+
+##
+# Pre-defined configs
+##
+from omni.isaac.lab.markers import CUBOID_MARKER_CFG  # isort: skip
+
+
+class NavEnvWindow(BaseEnvWindow):
+    """Window manager for the Nav environment."""
+
+    def __init__(self, env: NavEnv, window_name: str = "IsaacLab"):
+        """Initialize the window."""
+        super().__init__(env, window_name)
+        # add custom UI elements
+        with self.ui_window_elements["main_vstack"]:
+            with self.ui_window_elements["debug_frame"]:
+                with self.ui_window_elements["debug_vstack"]:
+                    self._create_debug_vis_ui_element("targets", self.env)
+
+
+@configclass
+class NavEnvCfg(DirectRLEnvCfg):
+    """Configuration for the Nav navigation environment."""
+    
+    # environment settings
+    episode_length_s = 200.0
+    decimation = 10  # env step every 1 sim steps
+    num_actions = 2  # 只输出vx,vy
+    num_observations = 7  # robot_node(5) + temporal_edges(2) = 7
+    num_states = 0
+    debug_vis = True
+    is_training = True
+
+    ui_window_class_type = NavEnvWindow
+    viewer: ViewerCfg = field(default_factory=lambda: ViewerCfg(
+        resolution=(960, 720),
+        eye=(8, 0., 6.),  #  <-- 使用非默认值
+        lookat=(0., 0., 1.)
+    ))
+    # simulation
+    sim: SimulationCfg = SimulationCfg(
+        dt=1 / 20,  # 60Hz simulation
+        render_interval=decimation,
+        disable_contact_processing=True,
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            friction_combine_mode="multiply",
+            restitution_combine_mode="multiply",
+            static_friction=1.0,
+            dynamic_friction=1.0,
+            restitution=0.0,
+        ),
+    )
+
+    terrain = TerrainImporterCfg(
+        prim_path="/World/ground",
+        terrain_type="plane",
+        collision_group=-1,
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            friction_combine_mode="multiply",
+            restitution_combine_mode="multiply",
+            static_friction=1.0,
+            dynamic_friction=1.0,
+            restitution=0.0,
+        )
+    )
+
+    # scene
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=128, env_spacing=8.0, replicate_physics=False)
+
+
+    
+    # drone配置 - 使用原始OmniDrones的配置系统
+    drone_model: str = "firefly"  # 可以选择: firefly, crazyflie, hummingbird, iris等
+    controller: Optional[str] = "PlanarSpeedController"  # 可以设置控制器，如 "lee_controller"
+    # task config
+    flight_height: float = 20.0
+    safety_radius: float = 1.0
+    arrival_threshold: float = 2.0
+    max_speed: float = 1.0
+    area_bounds: AreaBoundsCfg = field(default_factory=lambda: AreaBoundsCfg(
+        xmin=-40.0,
+        xmax=40.0,
+        ymin=-40.0,
+        ymax=40.0
+    ))
+
+        # 原始参数配置
+    lidar_range: float = 4.0
+    lidar_vfov: tuple[float, float] = (-10.0, 20.0)  # degrees
+    lidar_resolution: tuple[int, int] = (36, 4)  # horizontal x vertical
+    # 奖励权重（完全按照原始配置）
+    rew_success = 15.0
+    rew_collision = -16.0
+    rew_potential = 0.5
+    
+    # 随机化配置
+    randomization: Dict = field(default_factory=dict)
+    time_encoding: bool = True
+
+
+class NavEnv(DirectRLEnv):
+    """Nav navigation environment for drones using Direct RL workflow."""
+    
+    cfg: NavEnvCfg
+
+    def __init__(self, cfg: NavEnvCfg, render_mode: str | None = None, **kwargs):
+        # 保存配置参数（在父类初始化之前）
+        # self.reward_effort_weight = cfg.reward_effort_weight  # 暂时不需要
+        self.time_encoding = cfg.time_encoding
+        self.randomization = cfg.randomization
+        self.has_payload = "payload" in self.randomization.keys()
+        self.lidar_resolution = cfg.lidar_resolution
+        
+        # 父类初始化 - 这会调用 _setup_scene()
+        super().__init__(cfg, render_mode, **kwargs)
+        
+        # 在父类初始化完成后进行无人机特定的初始化
+        self._post_init_setup()
+        
+        # 初始姿态分布
+        self.init_rpy_dist = torch.distributions.Uniform(
+            torch.tensor([-.2, -.2, 0.], device=self.device) * torch.pi,
+            torch.tensor([0.2, 0.2, 2.], device=self.device) * torch.pi
+        )
+        
+        # 目标位置（完全按照原始配置）
+        self.target_pos = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self.command_vel_xy = None
+        
+        # 用于潜力奖励的距离跟踪
+        self.prev_dist_to_target = torch.zeros(self.num_envs, device=self.device)
+        
+        # 统计信息（原始格式）
+        stats_spec = CompositeSpec({
+            "return": UnboundedContinuousTensorSpec(1),
+            "episode_len": UnboundedContinuousTensorSpec(1),
+            "action_smoothness": UnboundedContinuousTensorSpec(1),
+            "safety": UnboundedContinuousTensorSpec(1),
+            "dist_to_target": UnboundedContinuousTensorSpec(1),
+        }).expand(self.num_envs).to(self.device)
+        self.stats = stats_spec.zero()
+        
+        # debug可视化
+        if self.sim.has_gui():
+            from omni_drones.envs.isaac_env import DebugDraw
+            self.debug_draw = DebugDraw()
+        else:
+            self.debug_draw = None
+        self.alpha = 0.8
+        self.circle_radius = min(self.cfg.area_bounds.xmax - self.cfg.area_bounds.xmin, 
+                                self.cfg.area_bounds.ymax - self.cfg.area_bounds.ymin)/2.0
+        
+        # debug visualization
+        self.set_debug_vis(self.cfg.debug_vis)
+
+    def _setup_scene(self):
+        """Setup the scene with robot, terrain, and sensors."""
+        print(f"设置场景，使用无人机：{self.cfg.drone_model}")
+        
+        # 1. 首先创建无人机系统（但还不生成）
+        self.drone, self.controller = MultirotorBase.make(self.cfg.drone_model, self.cfg.controller, self.device)
+        
+        # 2. 在模板环境中生成一个无人机
+        translations = [(0.0, 0.0, 2.0)]
+        drone_prims = self.drone.spawn(translations)
+        print(f"在模板环境中生成无人机: {drone_prims}")
+
+        # 3. 设置地形
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+
+        # 4. 设置传感器（在克隆之前）
+        self._setup_lidar()
+        
+        # 5. 设置光照
+        self._setup_lights()
+
+        # 6. 克隆环境并处理碰撞
+        print("克隆环境...")
+        self.scene.clone_environments(copy_from_source=False)
+        self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
+        print("环境克隆完成")
+
+    def _post_init_setup(self):
+        """在场景设置完成后进行无人机系统初始化"""
+        print("开始无人机后初始化...")
+        
+        # 设置无人机的shape以匹配环境数量
+        self.drone.shape = (self.num_envs, 1)
+        
+        # 初始化无人机系统
+        print("初始化无人机系统...")
+        self.drone.initialize()
+        
+        # 设置随机化
+        if "drone" in self.randomization:
+            self.drone.setup_randomization(self.randomization["drone"])
+        
+        # 初始化LiDAR
+        print("初始化LiDAR...")
+        self._lidar._initialize_impl()
+        
+        # 获取初始状态
+        self.init_poses = self.drone.get_world_poses(clone=True)
+        self.init_vels = torch.zeros_like(self.drone.get_velocities())
+        
+        # 设置环境位置偏移
+        self.drone._envs_positions = self._terrain.env_origins.unsqueeze(1)
+        
+        print(f"无人机初始化完成，shape: {self.drone.shape}")
+        print(f"环境数量: {self.num_envs}")
+        print(f"无人机位置形状: {self.drone._envs_positions.shape if hasattr(self.drone, '_envs_positions') else 'None'}")
+
+
+    def _setup_lidar(self):
+        """Setup the lidar sensor exactly like original implementation."""
+        # 转换垂直FOV角度
+        lidar_vfov_rad = (
+            max(-89.0, self.cfg.lidar_vfov[0]) * math.pi / 180.0,
+            min(89.0, self.cfg.lidar_vfov[1]) * math.pi / 180.0
+        )
+        
+        # 创建垂直射线角度（完全按照原始配置）
+        vertical_ray_angles = torch.linspace(lidar_vfov_rad[0], lidar_vfov_rad[1], 4)
+
+        # 注意：这里需要匹配原始的prim路径格式
+        # 原始使用 "/World/envs/env_.*/Hummingbird_0/base_link"
+        # 我们需要根据实际的无人机类型调整
+        ray_caster_cfg = RayCasterCfg(
+            prim_path=f"/World/envs/env_.*/{self.cfg.drone_model.capitalize()}_0/base_link",
+            offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
+            attach_yaw_only=False,
+            pattern_cfg=patterns.BpearlPatternCfg(
+                vertical_ray_angles=vertical_ray_angles
+            ),
+            debug_vis=False,
+            mesh_prim_paths=["/World/ground"],
+            max_distance=self.cfg.lidar_range,
+        )
+        self._lidar = RayCaster(ray_caster_cfg)
+    
+    def _setup_lights(self):
+        """Setup lights exactly like original implementation."""
+        # Distant light
+        light_cfg = sim_utils.DistantLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0)
+        light_cfg.func("/World/light", light_cfg)
+        
+        # Sky light  
+        sky_light_cfg = sim_utils.DomeLightCfg(color=(0.2, 0.2, 0.3), intensity=2000.0)
+        sky_light_cfg.func("/World/skyLight", sky_light_cfg)
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        """Apply actions to the drone using original apply_action method."""
+        # 使用原始无人机系统的apply_action方法
+        # 应该在这里处理action，无论是做放缩，还是通过controller处理
+        # rotor_commands = self.controller.compute(
+        #     root_state=drone_state,  # shape [1, N, 3]
+        #     target_vel_xy=target_vel_xy,  # shape [1, N, 2]
+        #     target_height=target_height,  # shape [1, N, 1]
+        #     target_yaw=target_yaws  # shape [1, N]
+        #     )
+        # 有两种思路，apply action的频率更高，按理说应该这里把控制量算出来，然后apply action实时更新drone state然后重新计算力和 力矩
+        # 如果是discrete action, 这里就需要算mapping了
+        self.command_vel_xy = actions * self.cfg.max_speed
+        self.command_vel_xy = torch.clamp(self.command_vel_xy, -self.cfg.max_speed, self.cfg.max_speed)
+        self.command_vel_xy = self.command_vel_xy.unsqueeze(1)
+
+    def _apply_action(self):
+        """Actions are applied in _pre_physics_step."""
+        drone_state = self.drone.get_state(env_frame=False)[..., :13]#[1, N, 13]
+        if self.command_vel_xy is None:
+            self.command_vel_xy = torch.zeros(self.num_envs, 1, 2, device=self.device)
+        target_height = self.cfg.flight_height * torch.ones(self.num_envs, 1, 1, device=self.device)
+        rotor_commands = self.controller.compute(
+            root_state=drone_state,  # shape [1, N, 3]
+            target_vel_xy=self.command_vel_xy,  # shape [1, N, 2]
+            target_height=target_height,  # shape [1, N, 1]
+        ) 
+        self.drone.apply_action(rotor_commands)
+    
+    def _post_physics_step(self):
+        """Update sensors after physics step."""
+        self._lidar.update(self.step_dt)
+
+    def _get_observations(self) -> dict:
+        """计算基于字典格式的导航观测。"""
+        # 获取无人机状态
+        
+        self.drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 13]
+        # 提取位置和速度 (去掉robot维度)
+        robot_pos = self.drone_state.squeeze(1)[:, :3]  # [num_envs, 3] (x, y, z)
+        robot_vel = self.drone_state.squeeze(1)[:, 7:10]  # [num_envs, 3] (vx, vy, vz)
+        
+        # 目标位置 (去掉robot维度)
+        goal_pos = self.target_pos.squeeze(1)  # [num_envs, 3]
+        
+        # 计算相对目标位置 (只考虑2D)
+        relative_goal_pos = goal_pos[:, :2] - robot_pos[:, :2]  # [num_envs, 2]
+        
+        # 计算速度方向yaw (arctan2)
+        robot_yaw = torch.atan2(robot_vel[:, 1], robot_vel[:, 0])  # [num_envs]
+        
+        # 生成robot_node观测: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw]
+        robot_radius = torch.full((self.num_envs,), self.cfg.safety_radius, device=self.device)
+        robot_v_pref = torch.full((self.num_envs,), self.cfg.max_speed, device=self.device)
+        
+        robot_node = torch.stack([
+            relative_goal_pos[:, 0],  # 相对目标位置x
+            relative_goal_pos[:, 1],  # 相对目标位置y
+            robot_radius,             # 机器人半径
+            robot_v_pref,             # 机器人偏好速度
+            robot_yaw                 # 速度方向yaw
+        ], dim=1)  # [num_envs, 5]
+        
+        # 生成temporal_edges观测: [vx, vy]
+        temporal_edges = robot_vel[:, :2]  # [num_envs, 2]
+        
+        # 组合所有观测为单一向量
+        policy_obs = torch.cat([robot_node, temporal_edges], dim=1)  # [num_envs, 7]
+        
+        # 存储用于奖励计算的距离
+        self.current_dist_to_target = torch.norm(relative_goal_pos, dim=1)  # [num_envs]
+        
+        observations = {"policy": policy_obs}
+        return observations
+
+    def _get_rewards(self) -> torch.Tensor:
+        """计算基于2D导航的奖励。"""
+        reward = torch.zeros(self.num_envs, device=self.device)
+        
+        # 1. 到达奖励
+        reached_target = self.current_dist_to_target <= self.cfg.arrival_threshold
+        reward[reached_target] += self.cfg.rew_success
+        
+        # 2. 潜力奖励 (距离变化)
+        # 如果距离比上一步近了，给正奖励；如果远了，给负奖励
+        dist_change = self.prev_dist_to_target - self.current_dist_to_target
+        potential_reward = dist_change * self.cfg.rew_potential
+        reward += potential_reward
+        
+        # 更新上一步距离
+        self.prev_dist_to_target = self.current_dist_to_target.clone()
+        
+        # 更新统计信息
+        self.stats["dist_to_target"] = self.current_dist_to_target.unsqueeze(-1)
+        self.stats["return"] += reward.unsqueeze(-1)
+        self.stats["episode_len"][:] = self.episode_length_buf.unsqueeze(1)
+        
+        return reward
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """计算基于2D导航的终止条件。"""
+        # 1. 到达目标条件
+        self.drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 13]
+        reached_target = self.current_dist_to_target <= self.cfg.arrival_threshold
+        
+        
+        # 3. 高度异常条件（保持在合理高度范围内）
+        robot_height = self.drone_state.squeeze(1)[:, 2]  # [num_envs]
+        height_abnormal = (
+            (robot_height < (self.cfg.flight_height - 3*self.cfg.safety_radius)) |
+            (robot_height > (self.cfg.flight_height + 3*self.cfg.safety_radius))
+        )
+        
+        # 4. NaN检测
+        hasnan = torch.isnan(self.drone_state).any(dim=(1, 2))
+        
+        # 终止条件：到达目标、高度异常或NaN
+        terminated = reached_target | height_abnormal | hasnan
+        
+        # 超时条件：由DirectRLEnv框架自动处理
+        truncated = self.episode_length_buf >= self.max_episode_length 
+        
+        return terminated, truncated
+
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        """Reset environments exactly like original implementation."""
+        if env_ids is None or len(env_ids) == self.num_envs:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+
+        # 使用原始无人机系统的重置方法
+        self.drone._reset_idx(env_ids, self.cfg.is_training)
+        
+        # 重置统计
+        self.stats[env_ids] = 0.0
+        
+        # 重置机器人到初始位置（完全按照原始实现）
+        start, goal = self._generate_crossing_task(len(env_ids), flight_height=self.cfg.flight_height)
+        
+        # 随机初始姿态（使用原始分布）
+        rpy = self.init_rpy_dist.sample((*env_ids.shape, 1))
+        rot = euler_to_quaternion(rpy)
+        self.target_pos[env_ids] = goal
+        
+        # 设置位置和姿态（使用原始方法）
+        self.drone.set_world_poses(start, rot, env_ids)
+        self.drone.set_velocities(self.init_vels[env_ids], env_ids)
+        
+        # 重置距离跟踪
+        initial_dist = torch.norm(goal[:, :2].squeeze(1) - start[:, :2].squeeze(1), dim=1)
+        self.prev_dist_to_target[env_ids] = initial_dist
+        
+        super()._reset_idx(env_ids)
+
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        """Setup debug visualization."""
+        if debug_vis:
+            if not hasattr(self, "target_pos_visualizer"):
+                marker_cfg = CUBOID_MARKER_CFG.copy()
+                marker_cfg.markers["cuboid"].size = (0.2, 0.2, 0.2)
+                marker_cfg.prim_path = "/Visuals/Command/target_position"
+                self.target_pos_visualizer = VisualizationMarkers(marker_cfg)
+            self.target_pos_visualizer.set_visibility(True)
+        else:
+            if hasattr(self, "target_pos_visualizer"):
+                self.target_pos_visualizer.set_visibility(False)
+
+    def _debug_vis_callback(self, event):
+        """Update debug visualization."""
+        if hasattr(self, "target_pos_visualizer"):
+            self.target_pos_visualizer.visualize(self.target_pos.squeeze(1))
+
+    def _generate_crossing_task(self, num_env: int = 1, flight_height: float = 20.0):
+        if num_env <= 0:
+            raise ValueError("num_aircraft must be greater than 0")
+        area_center = torch.tensor([(self.cfg.area_bounds.xmin + self.cfg.area_bounds.xmax) / 2, 
+                                    (self.cfg.area_bounds.ymin + self.cfg.area_bounds.ymax) / 2, 
+                                    flight_height], device=self.device)
+        area_center = area_center.unsqueeze(0)
+        start_tensor = math_utils.sample_cylinder(self.circle_radius, (0, 0), num_env, self.device)
+        goal_tensor = start_tensor.clone()
+        goal_tensor = -goal_tensor
+        start_tensor = start_tensor + area_center
+        goal_tensor = goal_tensor + area_center
+
+        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1)
+    
+    @property 
+    def _should_render(self):
+        """Check if should render for debug visualization."""
+        return lambda substep: self.sim.has_gui() and substep == 0 
+
+    def _configure_gym_env_spaces(self):
+        """Configure the action and observation spaces for the Gym environment."""
+        # observation space (unbounded since we don't impose any limits)
+        import gymnasium as gym
+        self.num_actions = self.cfg.num_actions
+        self.num_observations = self.cfg.num_observations
+        self.num_states = self.cfg.num_states
+
+        # set up spaces
+        self.single_observation_space = gym.spaces.Dict()
+        self.single_observation_space["policy"] = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(self.num_observations,)
+        )
+        self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.num_actions,))
+
+        # batch the spaces for vectorized environments
+        self.observation_space = gym.vector.utils.batch_space(self.single_observation_space["policy"], self.num_envs)
+        self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
+
+        # optional state space for asymmetric actor-critic architectures
+        if self.num_states > 0:
+            self.single_observation_space["critic"] = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
+            self.state_space = gym.vector.utils.batch_space(self.single_observation_space["critic"], self.num_envs)
