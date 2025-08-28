@@ -16,11 +16,11 @@ class DroneTargetGenerator_simple:
     
     def generate_target(self) -> torch.Tensor:
         """Generate a random target position within bounds."""
-        x_range = self.bounds["xmax"] - self.bounds["xmin"]
-        y_range = self.bounds["ymax"] - self.bounds["ymin"]
+        x_range = self.bounds.xmax -  self.bounds.xmin
+        y_range = self.bounds.ymax - self.bounds.ymin
         
-        x = torch.rand(1, device=self.device) * x_range + self.bounds["xmin"]
-        y = torch.rand(1, device=self.device) * y_range + self.bounds["ymin"]
+        x = torch.rand(1, device=self.device) * x_range + self.bounds.xmin
+        y = torch.rand(1, device=self.device) * y_range + self.bounds.ymin
         z = torch.tensor([self.config.flight_height], device=self.device)
         return torch.cat([x, y, z])
     
@@ -56,8 +56,8 @@ class DroneTargetGenerator:
         self.num_candidates = num_candidates
         
         # 计算网格大小以实现相对均匀的分布
-        grid_size_x = (self.bounds["xmax"] - self.bounds["xmin"]) / (self.num_candidates ** 0.5)
-        grid_size_y = (self.bounds["ymax"] - self.bounds["ymin"]) / (self.num_candidates ** 0.5)
+        grid_size_x = (self.bounds.xmax - self.bounds.xmin) / (self.num_candidates ** 0.5)
+        grid_size_y = (self.bounds.ymax - self.bounds.ymin) / (self.num_candidates ** 0.5)
         
         # 生成候选目标点
         candidate_targets = []
@@ -68,8 +68,8 @@ class DroneTargetGenerator:
             grid_y = i // int(self.num_candidates ** 0.5)
             
             # 在网格中心添加随机偏移
-            base_x = self.bounds["xmin"] + grid_x * grid_size_x + grid_size_x * 0.5
-            base_y = self.bounds["ymin"] + grid_y * grid_size_y + grid_size_y * 0.5
+            base_x = self.bounds.xmin + grid_x * grid_size_x + grid_size_x * 0.5
+            base_y = self.bounds.ymin + grid_y * grid_size_y + grid_size_y * 0.5
             
             # 添加随机偏移以避免完全对齐
             offset_x = (torch.rand(1, device=self.device) - 0.5) * grid_size_x * 0.3
@@ -127,9 +127,9 @@ class DroneTargetGenerator:
         
         # 确保目标点在边界内
         final_targets[:, 0] = torch.clamp(final_targets[:, 0], 
-                                         self.bounds["xmin"], self.bounds["xmax"])
+                                         self.bounds.xmin, self.bounds.xmax)
         final_targets[:, 1] = torch.clamp(final_targets[:, 1], 
-                                         self.bounds["ymin"], self.bounds["ymax"])
+                                         self.bounds.ymin, self.bounds.ymax)
         
         return final_targets
     
@@ -177,7 +177,7 @@ class EVTOLTargetGenerator:
         self.max_speed = config.evtol.max_speed
         self.turn_radius = config.evtol.turn_radius
         self.arrival_threshold = config.evtol.arrival_threshold
-        self.grid_size = config.area_bounds.get('grid_size', 1.0)
+        self.grid_size = config.area_bounds.grid_size
         
         # 当前正在处理的航线数据
         self.waypoints = []
@@ -185,11 +185,11 @@ class EVTOLTargetGenerator:
     
     def _generate_random_point(self) -> Tuple[float, float, float]:
         """生成随机位置点"""
-        x_range = self.bounds["xmax"] - self.bounds["xmin"]
-        y_range = self.bounds["ymax"] - self.bounds["ymin"]
+        x_range = self.bounds.xmax - self.bounds.xmin
+        y_range = self.bounds.ymax - self.bounds.ymin
         
-        x = random.uniform(self.bounds["xmin"], self.bounds["xmax"])
-        y = random.uniform(self.bounds["ymin"], self.bounds["ymax"])
+        x = random.uniform(self.bounds.xmin, self.bounds.xmax)
+        y = random.uniform(self.bounds.ymin, self.bounds.ymax)
         z = self.flight_height
         
         return (x, y, z)
@@ -225,11 +225,11 @@ class EVTOLTargetGenerator:
     def generate_course_with_smooth_trajectory(self):
         """生成航线并返回平滑后的轨迹"""
         # 随机选择起点和终点
-        area_radius_x = self.bounds["xmax"] - self.bounds["xmin"]
-        area_radius_y = self.bounds["ymax"] - self.bounds["ymin"]
+        area_radius_x = self.bounds.xmax - self.bounds.xmin
+        area_radius_y = self.bounds.ymax - self.bounds.ymin
         area_radius = max(area_radius_x, area_radius_y)/2.0
-        area_center = torch.tensor([(self.bounds["xmin"] + self.bounds["xmax"]) / 2, 
-                                    (self.bounds["ymin"] + self.bounds["ymax"]) / 2, 
+        area_center = torch.tensor([(self.bounds.xmin + self.bounds.xmax) / 2, 
+                                    (self.bounds.ymin + self.bounds.ymax) / 2, 
                                     self.flight_height], device=self.device)
         area_center = area_center.unsqueeze(0)
         start_tensor = math_utils.sample_cylinder(area_radius, (self.flight_height, self.flight_height), 1, self.device)

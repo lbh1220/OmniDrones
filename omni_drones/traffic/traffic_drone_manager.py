@@ -133,11 +133,11 @@ class TrafficDroneManager:
         Targets are set by the target generator in the traffic simulator.
         """
         bounds = self.config.area_bounds
-        x_range = bounds["xmax"] - bounds["xmin"]
-        y_range = bounds["ymax"] - bounds["ymin"]
+        x_range = bounds.xmax - bounds.xmin
+        y_range = bounds.ymax - bounds.ymin
         
-        x = torch.rand(1, device=self.device) * x_range + bounds["xmin"]
-        y = torch.rand(1, device=self.device) * y_range + bounds["ymin"]
+        x = torch.rand(1, device=self.device) * x_range + bounds.xmin
+        y = torch.rand(1, device=self.device) * y_range + bounds.ymin
         z = torch.tensor([self.config.flight_height], device=self.device)
         return torch.cat([x, y, z])
         
@@ -165,6 +165,113 @@ class TrafficDroneManager:
         self.is_at_target[drone_idx] = False
         self.target_updated_times[drone_idx] = 0.0
         
+
+    def _pre_physics_step(self, dt: float=None):
+        '''
+        为了配合isaac_lab的配置
+        在这个pre_physics_step中，更新目标位置，更新目标速度，但是不计算底层控制量
+        '''
+
+        if not self.is_initialized:
+            self.logger.warning("Drones not initialized yet")
+            return
+        
+        if self.num_drones <= 0:
+            return
+        
+        # Check which drones need new targets and generate them
+        # This uses the is_at_target status updated in update_control
+        arrived_drones = self.is_at_target
+        if arrived_drones.any():
+            # 获取需要新目标的无人机索引
+            drone_indices = torch.where(arrived_drones)[0]  # 返回需要更新的无人机索引
+            num_arrived = len(drone_indices)
+            
+            if num_arrived > 0:
+                # 批量生成新目标
+                new_targets = self.target_generator.generate_targets(num_arrived)
+                
+                # 批量设置目标
+                self.state.target_positions[drone_indices, :] = new_targets
+                
+                # 批量更新状态
+                self.is_at_target[drone_indices] = False
+                self.target_updated_times[drone_indices] = 0.0
+
+        drone_state = self.drone.get_state(env_frame=False)[..., :13]#[1, N, 13]
+        # Get current positions - shape [1, N, 3]
+        current_positions = self.drone.pos
+        
+        # Calculate directions to targets - shape [1, N, 3]
+        current_targets = self.state.target_positions.unsqueeze(0)  # [N, 3] -> [1, N, 3]
+        directions = current_targets - current_positions
+        distances = torch.norm(directions, dim=-1)  # shape [1, N]
+        
+        # Check which drones have arrived - shape [N]
+        arrived_mask = distances.squeeze(0) < self.arrival_threshold
+        self.is_at_target = arrived_mask
+
+        # Reset velocity commands
+        self.state.velocity_commands.zero_()
+        
+        # Calculate velocity commands for all drones (keep [1, N, 3] format)
+        # Normalize directions (avoid division by zero)
+        valid_movement = distances[0] > 1e-6  # shape [N]
+        
+        if valid_movement.any():
+            # Calculate normalized directions for valid movements
+            valid_directions = directions[0, valid_movement]  # shape [num_valid, 3]
+            valid_distances = distances[0, valid_movement]    # shape [num_valid]
+            
+            # Normalize directions
+            normalized_valid_dirs = valid_directions / valid_distances.unsqueeze(-1)
+            
+            # Calculate speeds with gradual slowdown
+            speeds = torch.clamp(
+                torch.minimum(
+                    torch.tensor(self.max_speed, device=self.device),
+                    valid_distances * 0.5
+                ),
+                min=0.1
+            )
+            
+            # Apply speed to directions
+            velocity_commands_valid = normalized_valid_dirs * speeds.unsqueeze(-1)
+            
+            # Update velocity commands for valid movements (maintain [1, N, 3] format)
+            self.state.velocity_commands[valid_movement] = velocity_commands_valid
+        
+        # Get root states for all drones - shape [1, N, 13]
+        # root_states = self.drone.get_state(env_frame=False)
+        
+        # Calculate target velocities and yaws for Lee controller
+        target_velocities = self.state.velocity_commands.unsqueeze(0)  # shape [1, N, 3]
+        target_vel_xy = target_velocities[:, :, :2]
+        
+
+
+        if self.policy is not None:
+            self.policy.predict(self.state, self.evtol_states, dt)
+        # this change the state.velocity__commands
+    def _apply_actions(self):
+        drone_state = self.drone.get_state(env_frame=False)[..., :13]
+        target_vel_xy = self.state.velocity_commands.unsqueeze(0)
+        target_vel_xy = target_vel_xy[:, :, :2]
+        target_yaws = torch.zeros(1, self.num_drones, 1, device=self.device)
+        target_height = self.config.flight_height * torch.ones(1, self.num_drones, 1, device=self.device)
+        rotor_commands = self.controller.compute(
+            root_state=drone_state,  # shape [1, N, 3]
+            target_vel_xy=target_vel_xy,  # shape [1, N, 2]
+            target_height=target_height,  # shape [1, N, 1]
+            target_yaw=target_yaws  # shape [1, N]
+        )
+        self.drone.apply_action(rotor_commands)
+        
+        
+    def _post_physics_step(self):
+        # 更新state的内容，用于提供observations
+        self._update_state_manager()
+
     def update_control(self, dt: float) -> torch.Tensor:
         """Update control for all drones in batch.
         
@@ -338,7 +445,7 @@ class TrafficDroneManager:
         """更新状态管理器中的运动状态"""
         if self.drone is None:
             return
-        
+        self.drone.get_state(env_frame=False)
         # 直接更新state中的运动状态
         self.state.positions = self.drone.pos.squeeze(0)  # [1, N, 3] -> [N, 3]
         self.state.velocities = self.drone.vel[:, :, :3].squeeze(0)  # [1, N, 3] -> [N, 3] 

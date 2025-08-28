@@ -12,17 +12,15 @@ import torch
 # 导入Isaac Lab
 from omni.isaac.lab.app import AppLauncher
 from dataclasses import replace
-headless = True
+headless = False
 def main():
     """Main function."""
     # Create argument parser
     parser = argparse.ArgumentParser(description="Test Forest Environment")
     parser.add_argument("--workflow", type=str, default="direct", choices=["direct", "manager"], 
                        help="The workflow to use: 'direct' or 'manager'")
-    parser.add_argument("--num_envs", type=int, default=1024, help="Number of environments")
-    parser.add_argument("--drone_model", type=str, default="firefly", 
-                       choices=["firefly", "crazyflie", "hummingbird", "iris"], 
-                       help="Drone model to use")
+    parser.add_argument("--num_envs", type=int, default=8, help="Number of environments")
+    parser.add_argument("--traffic", type=bool, default=True, help="Whether to use traffic")
     
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
@@ -35,21 +33,30 @@ def main():
 
     # 导入环境（在AppLauncher之后）
     if args_cli.workflow == "direct":
-        from isaac_lab_envs.direct.nav_env import NavEnv, NavEnvCfg
-        
-        # 创建配置
-        cfg = NavEnvCfg()
-        # cfg.scene.num_envs = args_cli.num_envs
-        cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
-        cfg.drone_model = args_cli.drone_model
-        cfg.num_actions = 2
-        cfg.num_observations = 7
+        if args_cli.traffic:
+            from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvCfg
+            cfg = TrafficEnvCfg()
+            cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
+            cfg.num_actions = 2
+            cfg.num_observations = 7
+            cfg.traffic_sim.num_drones = 10
+            cfg.traffic_sim.num_evtols = 0
+            print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
+            env = TrafficEnv(cfg=cfg)
+        else:
+            from isaac_lab_envs.direct.nav_env import NavEnv, NavEnvCfg
+            
+            # 创建配置
+            cfg = NavEnvCfg()
+            # cfg.scene.num_envs = args_cli.num_envs
+            cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
+            cfg.num_actions = 2
+            cfg.num_observations = 7
 
-        print(f"创建Direct RL Forest环境，使用{args_cli.drone_model}无人机")
-        print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
-        
-        # 创建环境
-        env = NavEnv(cfg=cfg)
+            print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
+            
+            # 创建环境
+            env = NavEnv(cfg=cfg)
     
     print(f"环境创建成功！")
 

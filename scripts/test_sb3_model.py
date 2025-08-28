@@ -65,7 +65,7 @@ def main():
     args = parser.parse_args()
     
     # 设置为非headless模式以便可视化
-    args.headless = True
+    args.headless = False
     # args.off
     
     # 启动Isaac Sim
@@ -88,10 +88,8 @@ def main():
         if os.path.exists(vecnormalize_file):
             print(f"加载归一化参数: {vecnormalize_file}")
         
-        # 设置视频保存目录
-        if args.video_dir is None:
-            args.video_dir = os.path.join(args.model_path, "test_videos")
-        os.makedirs(args.video_dir, exist_ok=True)
+
+    
         
         # 创建环境配置
         cfg = NavEnvCfg()

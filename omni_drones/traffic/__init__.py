@@ -30,6 +30,7 @@ enabling dynamic background aircraft that can interact with RL agents.
 from .traffic_simulator import TrafficSimulator
 from .traffic_drone_manager import TrafficDroneManager
 from .traffic_evtol_manager import TrafficEVTOLManager
+from .cfg.config import TrafficCfg, OrcaCfg, TrafficEvtolCfg, TrafficDroneCfg, AreaBoundsCfg
 
-
-__all__ = ["TrafficSimulator", "TrafficDroneManager", "TrafficEVTOLManager"]
+__all__ = ["TrafficSimulator", "TrafficDroneManager", "TrafficEVTOLManager", 
+        "TrafficCfg", "OrcaCfg", "TrafficEvtolCfg", "TrafficDroneCfg", "AreaBoundsCfg"]

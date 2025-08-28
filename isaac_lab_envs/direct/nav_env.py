@@ -35,7 +35,6 @@ from omni.isaac.lab.sim import SimulationCfg
 from omni.isaac.lab.terrains import TerrainImporterCfg, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
 from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.sensors import RayCaster, RayCasterCfg, patterns
-from omni.isaac.core.materials import PhysicsMaterial
 import omni.isaac.lab.utils.math as math_utils
 
 from omni_drones.traffic.cfg.config import AreaBoundsCfg
@@ -120,7 +119,7 @@ class NavEnvCfg(DirectRLEnvCfg):
 
     
     # drone配置 - 使用原始OmniDrones的配置系统
-    drone_model: str = "firefly"  # 可以选择: firefly, crazyflie, hummingbird, iris等
+    drone_model: str = "hummingbird"  # 可以选择: firefly, crazyflie, hummingbird, iris等
     controller: Optional[str] = "PlanarSpeedController"  # 可以设置控制器，如 "lee_controller"
     # task config
     flight_height: float = 20.0
@@ -141,7 +140,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     # 奖励权重（完全按照原始配置）
     rew_success = 15.0
     rew_collision = -16.0
-    rew_potential = 0.5
+    rew_potential = 1.0
     
     # 随机化配置
     randomization: Dict = field(default_factory=dict)
@@ -160,7 +159,6 @@ class NavEnv(DirectRLEnv):
         self.randomization = cfg.randomization
         self.has_payload = "payload" in self.randomization.keys()
         self.lidar_resolution = cfg.lidar_resolution
-        
         # 父类初始化 - 这会调用 _setup_scene()
         super().__init__(cfg, render_mode, **kwargs)
         
@@ -330,47 +328,49 @@ class NavEnv(DirectRLEnv):
         self.drone.apply_action(rotor_commands)
     
     def _post_physics_step(self):
-        """Update sensors after physics step."""
+        """
+        Update sensors after physics step.
+        direct rl env中没有这个函数
+        """
+        # 如果放在apply action之后，那更新太频繁了
+        # 暂时放在get dones之前和reset_idx之后
         self._lidar.update(self.step_dt)
+        self.drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 25]
 
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
         # 获取无人机状态
         
-        self.drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 13]
-        # 提取位置和速度 (去掉robot维度)
-        robot_pos = self.drone_state.squeeze(1)[:, :3]  # [num_envs, 3] (x, y, z)
-        robot_vel = self.drone_state.squeeze(1)[:, 7:10]  # [num_envs, 3] (vx, vy, vz)
         
-        # 目标位置 (去掉robot维度)
-        goal_pos = self.target_pos.squeeze(1)  # [num_envs, 3]
+        # 提取位置和速度
+        robot_pos = self.drone_state[:, :, :2]  # [num_envs, 1, 2] (x, y)
+        robot_vel = self.drone_state[:, :, 7:9]  # [num_envs, 1, 2] (vx, vy)
         
-        # 计算相对目标位置 (只考虑2D)
-        relative_goal_pos = goal_pos[:, :2] - robot_pos[:, :2]  # [num_envs, 2]
+        # 计算相对目标位置
+        goal_pos = self.target_pos[:, :, :2]  # [num_envs, 1, 2] 只取x,y
+        relative_goal_pos = goal_pos - robot_pos  # [num_envs, 1, 2]
         
-        # 计算速度方向yaw (arctan2)
-        robot_yaw = torch.atan2(robot_vel[:, 1], robot_vel[:, 0])  # [num_envs]
+
         
-        # 生成robot_node观测: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw]
-        robot_radius = torch.full((self.num_envs,), self.cfg.safety_radius, device=self.device)
-        robot_v_pref = torch.full((self.num_envs,), self.cfg.max_speed, device=self.device)
+        # 计算速度方向yaw
+        robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
         
-        robot_node = torch.stack([
-            relative_goal_pos[:, 0],  # 相对目标位置x
-            relative_goal_pos[:, 1],  # 相对目标位置y
-            robot_radius,             # 机器人半径
-            robot_v_pref,             # 机器人偏好速度
-            robot_yaw                 # 速度方向yaw
-        ], dim=1)  # [num_envs, 5]
+        # 机器人参数
+        robot_radius = torch.full((self.num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
+        robot_v_pref = torch.full((self.num_envs, 1, 1), self.cfg.max_speed, device=self.device)
         
-        # 生成temporal_edges观测: [vx, vy]
-        temporal_edges = robot_vel[:, :2]  # [num_envs, 2]
-        
-        # 组合所有观测为单一向量
-        policy_obs = torch.cat([robot_node, temporal_edges], dim=1)  # [num_envs, 7]
-        
-        # 存储用于奖励计算的距离
-        self.current_dist_to_target = torch.norm(relative_goal_pos, dim=1)  # [num_envs]
+        # 构建robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw]
+        robot_node = torch.cat([
+            relative_goal_pos,  # [num_envs, 1, 2]
+            robot_radius,       # [num_envs, 1, 1]  
+            robot_v_pref,       # [num_envs, 1, 1]
+            robot_yaw.unsqueeze(1)  # [num_envs, 1, 1]
+        ], dim=-1)  # [num_envs, 1, 5]
+
+        policy_obs = {
+            'robot_node': robot_node,
+            'temporal_edges': robot_vel
+        }
         
         observations = {"policy": policy_obs}
         return observations
@@ -401,8 +401,12 @@ class NavEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """计算基于2D导航的终止条件。"""
-        # 1. 到达目标条件
-        self.drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 13]
+        self._post_physics_step()
+        # 计算距离（用于奖励和终止条件）
+        robot_pos = self.drone_state[:, :, :2]
+        goal_pos = self.target_pos[:, :, :2]
+        relative_goal_pos = goal_pos - robot_pos # [num_envs, 1, 2]
+        self.current_dist_to_target = torch.norm(relative_goal_pos.squeeze(1), dim=1)  # [num_envs]
         reached_target = self.current_dist_to_target <= self.cfg.arrival_threshold
         
         
@@ -450,7 +454,7 @@ class NavEnv(DirectRLEnv):
         # 重置距离跟踪
         initial_dist = torch.norm(goal[:, :2].squeeze(1) - start[:, :2].squeeze(1), dim=1)
         self.prev_dist_to_target[env_ids] = initial_dist
-        
+        self._post_physics_step()
         super()._reset_idx(env_ids)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
@@ -495,15 +499,32 @@ class NavEnv(DirectRLEnv):
         """Configure the action and observation spaces for the Gym environment."""
         # observation space (unbounded since we don't impose any limits)
         import gymnasium as gym
+        import numpy as np
         self.num_actions = self.cfg.num_actions
         self.num_observations = self.cfg.num_observations
         self.num_states = self.cfg.num_states
 
         # set up spaces
-        self.single_observation_space = gym.spaces.Dict()
-        self.single_observation_space["policy"] = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.num_observations,)
-        )
+        # self.single_observation_space = gym.spaces.Dict()
+        # self.single_observation_space["policy"] = gym.spaces.Box(
+        #     low=-np.inf, high=np.inf, shape=(self.num_observations,)
+        # )
+        # 1. 创建内层字典 "policy" 的内容
+        policy_space_dict = {
+            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 5), dtype=np.float32),
+            'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 2), dtype=np.float32)
+        }
+        
+        # 2. 将内层字典包装成一个 gym.spaces.Dict
+        policy_space = gym.spaces.Dict(policy_space_dict)
+
+        # 3. 创建最外层的观测空间字典
+        self.single_observation_space = gym.spaces.Dict({
+            "policy": policy_space
+        })
+
+
+        # bound action space
         self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.num_actions,))
 
         # batch the spaces for vectorized environments

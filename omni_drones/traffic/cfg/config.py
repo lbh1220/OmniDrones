@@ -9,6 +9,7 @@ class AreaBoundsCfg:
     xmax: float = 50.0
     ymin: float = -50.0
     ymax: float = 50.0
+    grid_size: float = 1.0
 
 @configclass
 class TrafficDroneCfg:
@@ -16,7 +17,7 @@ class TrafficDroneCfg:
     safety_radius: float = 1.0
     max_speed: float = 1.0
     arrival_threshold: float = 1.0
-    target_num: int = 4
+    target_num: int = 8
 
 @configclass
 class TrafficEvtolCfg:
@@ -25,7 +26,7 @@ class TrafficEvtolCfg:
     max_speed: float = 2.0
     arrival_threshold: float = 2.0
     turn_radius: float = 10.0
-    course_num: int = 4
+    course_num: int = 5
 
 @configclass
 class OrcaCfg:
@@ -39,7 +40,7 @@ class OrcaCfg:
 # 2. 创建顶层的 TrafficCfg，将上面的子配置组合起来
 @configclass
 class TrafficCfg:
-    num_drones: int = 50
+    num_drones: int = 20
     num_evtols: int = 3
     flight_height: float = 20.0
     # 将子配置类作为属性的类型

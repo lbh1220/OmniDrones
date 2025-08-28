@@ -15,110 +15,47 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, CombinedExtractor
 
 # 导入Isaac Lab
 from omni.isaac.lab.app import AppLauncher
 
 
 
-class VideoRecordingCallback(BaseCallback):
-    """Custom callback for video recording during training."""
-    
-    def __init__(
-        self,
-        eval_env,
-        save_dir: str,
-        record_freq: int = 50000,
-        n_eval_episodes: int = 3,
-        deterministic: bool = True,
-        verbose: int = 0
-    ):
-        super().__init__(verbose)
-        self.eval_env = eval_env
-        self.save_dir = save_dir
-        self.record_freq = record_freq
-        self.n_eval_episodes = n_eval_episodes
-        self.deterministic = deterministic
-        self.last_record_step = 0
-        
-        # 创建视频保存目录
-        self.video_dir = os.path.join(save_dir, "training_videos")
-        os.makedirs(self.video_dir, exist_ok=True)
-        
-        self.recorder = DirectRLVideoRecorder(
-            save_dir=self.video_dir,
-            fps=30.0,
-            resolution=(960, 720),
-            interval=2  # 每2步录制一帧
-        )
-    
-    def _on_step(self) -> bool:
-        # 检查是否需要录制视频
-        if self.n_calls - self.last_record_step >= self.record_freq:
-            self._record_videos()
-            self.last_record_step = self.n_calls
-        return True
-    
-    def _record_videos(self):
-        """Record videos using current model."""
-        print(f"\n正在录制训练视频 (步骤 {self.n_calls})...")
-        
-        for episode in range(self.n_eval_episodes):
-            self.recorder.reset_episode()
-            
-            obs = self.eval_env.reset()
-            done = False
-            step_count = 0
-            episode_reward = 0
-            
-            while not done and step_count < 500:  # 最大500步
-                # 录制帧
-                self.recorder.record_frame(self.eval_env)
-                
-                # 获取动作
-                action, _ = self.model.predict(obs, deterministic=self.deterministic)
-                
-                # 执行动作
-                obs, reward, done, info = self.eval_env.step(action)
-                episode_reward += reward.mean() if hasattr(reward, 'mean') else reward
-                step_count += 1
-                
-                # 检查是否完成
-                if hasattr(done, 'any') and done.any():
-                    break
-            
-            # 保存视频
-            video_filename = f"training_step_{self.n_calls}_episode_{episode}.mp4"
-            saved_path = self.recorder.save_video(video_filename)
-            
-            if self.verbose > 0:
-                print(f"  回合 {episode}: {step_count} 步, 奖励: {episode_reward:.4f}")
-        
-        print(f"训练视频录制完成 (步骤 {self.n_calls})")
-
-
-class SimpleMLPExtractor(BaseFeaturesExtractor):
+class SimpleFeatureExtractor(BaseFeaturesExtractor):
     """
-    简单的MLP特征提取器，适用于7维观测向量
+    简单的特征提取器，将robot_node和temporal_edges连接成向量
+    只使用最基本的特征，忽略spatial_edges等复杂信息
     """
-    def __init__(self, observation_space, features_dim=256):
+    def __init__(self, observation_space, features_dim=64):
         super().__init__(observation_space, features_dim)
         
-        # 对于7维输入的简单MLP网络
-        input_dim = observation_space.shape[0]
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(), 
-            nn.Linear(128, features_dim),
-            nn.ReLU()
+        # 计算输入维度
+        robot_node_dim = observation_space.spaces['robot_node'].shape[1]  # 7 或 5
+        temporal_edges_dim = observation_space.spaces['temporal_edges'].shape[1]  # 2
+        
+        self.input_dim = robot_node_dim + temporal_edges_dim
+        
+        # 简单的MLP网络
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(self.input_dim, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, features_dim),
+            torch.nn.ReLU()
         )
         
     def forward(self, observations):
-        return self.mlp(observations)
-
+        # 提取robot_node和temporal_edges
+        robot_node = observations['robot_node'].squeeze(1)  # 从(1, 7)变为(7,)
+        temporal_edges = observations['temporal_edges'].squeeze(1)  # 从(1, 2)变为(2,)
+        
+        # 连接特征
+        combined_features = torch.cat([robot_node, temporal_edges], dim=-1)
+        
+        # 通过MLP
+        return self.mlp(combined_features)
 
 def create_env(cfg, headless=True):
     """创建并包装环境"""
@@ -162,11 +99,15 @@ def main():
                        help="Total timesteps for training")
     parser.add_argument("--save_freq", type=int, default=50000, 
                        help="Save model every N timesteps")
+    parser.add_argument("--feature_dim", type=int, default=256,
+                       help="Feature dimension")
 
     parser.add_argument("--learning_rate", type=float, default=3e-4, 
                        help="Learning rate")
     parser.add_argument("--experiment_name", type=str, default=None,
                        help="Experiment name for saving")
+    parser.add_argument("--seed", type=int, default=42,
+                       help="Random seed")
     
     
     # 添加AppLauncher参数
@@ -200,6 +141,10 @@ def main():
         # 创建训练环境
         env = create_normalized_env(cfg, headless=True)
         
+        # 验证观测空间格式
+        print("=== 观测空间信息 ===")
+        print(f"观测空间: {env.observation_space}")
+        
         
         # 设置实验名称
         if args.experiment_name is None:
@@ -215,15 +160,15 @@ def main():
         
         # 配置PPO策略
         policy_kwargs = dict(
-            features_extractor_class=SimpleMLPExtractor,
-            features_extractor_kwargs=dict(features_dim=256),
+            features_extractor_class=SimpleFeatureExtractor,
+            features_extractor_kwargs=dict(features_dim=args.feature_dim),
             net_arch=[128, 128],  # Actor和Critic的网络架构
             activation_fn=nn.ReLU,
         )
         
         # 创建PPO模型
         model = PPO(
-            policy="MlpPolicy",
+            policy="MultiInputPolicy",  # 支持字典观测空间
             env=env,
             learning_rate=args.learning_rate,
             n_steps=100,  # 每次更新收集的步数
@@ -237,6 +182,7 @@ def main():
             max_grad_norm=0.5,  # 梯度裁剪
             policy_kwargs=policy_kwargs,
             verbose=1,
+            seed=args.seed,
             device="cuda" if torch.cuda.is_available() else "cpu",
             tensorboard_log=f"{save_dir}/tensorboard/",
         )
@@ -284,16 +230,6 @@ def main():
         print(f"最终模型已保存到: {final_model_path}")
         
         
-        # 运行一些测试步骤
-        print("\n运行测试...")
-        obs = env.reset()
-        for i in range(100):
-            action, _states = model.predict(obs, deterministic=True)
-            obs, rewards, dones, info = env.step(action)
-            if i % 20 == 0:
-                mean_reward = rewards.mean()
-                print(f"测试步骤 {i}: 平均奖励 = {mean_reward:.4f}")
-        
         print("训练和测试完成！")
         
     except Exception as e:
@@ -305,8 +241,6 @@ def main():
         # 关闭环境和仿真
         try:
             env.close()
-            if eval_env is not None:
-                eval_env.close()
         except:
             pass
         simulation_app.close()

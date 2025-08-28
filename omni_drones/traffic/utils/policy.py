@@ -1,3 +1,4 @@
+from this import d
 import numpy as np
 import rvo2
 import time
@@ -16,22 +17,24 @@ class ORCA:
         self.time_step = 0.16
         
         # ORCA 参数
-        self.neighbor_dist = config['orca']['neighbor_dist']
-        self.max_neighbors = config['orca']['max_neighbors']
-        self.time_horizon = config['orca']['time_horizon']
-        self.time_horizon_obst = config['orca']['time_horizon_obst']
-        self.safety_space = config['orca']['safety_space']
+        self.neighbor_dist = config.orca.neighbor_dist
+        self.max_neighbors = config.orca.max_neighbors
+        self.time_horizon = config.orca.time_horizon
+        self.time_horizon_obst = config.orca.time_horizon_obst
+        self.safety_space = config.orca.safety_space
         
         # RVO2 模拟器
         self.sim = None
 
 
 
-    def predict(self, self_state: TrafficState, other_aircraft_state: TrafficState=None):
+    def predict(self, self_state: TrafficState, other_aircraft_state: TrafficState=None, dt: float=None):
         """
         集中式的计算所有self_state的目标速度
         """
         # 设置参数
+        if dt is not None:
+            self.time_step = dt
         self.sim = rvo2.PyRVOSimulator(
             self.time_step,
             self.neighbor_dist,

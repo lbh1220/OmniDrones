@@ -4,7 +4,7 @@ hydra:
   searchpath:
     # see https://hydra.cc/docs/advanced/search_path/
     - file://../cfg
-headless: True
+headless: False
 total_frames: 150_000_000
 max_iters: -1
 eval_interval: -1

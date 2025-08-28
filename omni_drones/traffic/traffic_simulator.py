@@ -33,7 +33,7 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any
 from omni_drones.traffic.traffic_drone_manager import TrafficDroneManager
 from omni_drones.traffic.traffic_evtol_manager import TrafficEVTOLManager
-# from omni_drones.traffic.utils.config import TrafficConfig
+from omni_drones.traffic.cfg.config import TrafficCfg
 
 from dataclasses import field
 
@@ -50,7 +50,7 @@ class TrafficSimulator:
     manager classes for different aircraft types.
     """
     
-    def __init__(self, config, device: str = "cuda"):
+    def __init__(self, config: TrafficCfg, device: str = "cuda"):
         self.config = config
         self.device = device
         
@@ -108,25 +108,53 @@ class TrafficSimulator:
         logging.info("TrafficSimulator initialization complete")
     
 
-    
-    def step(self, dt: float = 0.02):
-        """Execute one simulation step."""
-        if not self.is_initialized:
-            self.initialize()
-
-        # Update eVTOLs
+    def _pre_physics_step(self, dt: float=0.16):
+        '''
+        evtol manager需要按照时间来更新一大步，移动到新的位置，因为不含动力学，没必要精细控制
+        drone manager需要根据evtol的新state来更新速度command，但是不计算底层的rotor command
+        '''
         if self.evtol_manager is not None:
             self.evtol_manager.step(dt)
             if self.drone_manager is not None:
                 self.drone_manager.evtol_states = self.evtol_manager.state
-        # Update drones if present
-
         if self.drone_manager is not None:
-            self.drone_manager.step(dt)
-        
+            self.drone_manager._pre_physics_step(dt)
 
-        
+    def _post_physics_step(self):
+        # 更新state的内容，用于提供observations
+        if self.drone_manager is not None:
+            self.drone_manager._post_physics_step()
+
         self.step_count += 1
+
+    def _apply_actions(self):
+        # 根据新的velocity,高频计算rotor command
+        if self.drone_manager is not None:
+            self.drone_manager._apply_actions()
+
+    def step(self, dt: float = 0.02):
+        """
+        Execute one simulation step.
+        this one is deprecated
+        """
+        # if not self.is_initialized:
+        #     self.initialize()
+
+        # # Update eVTOLs
+        # if self.evtol_manager is not None:
+        #     self.evtol_manager.step(dt)
+        #     if self.drone_manager is not None:
+        #         self.drone_manager.evtol_states = self.evtol_manager.state
+        # # Update drones if present
+
+        # if self.drone_manager is not None:
+        #     self.drone_manager.step(dt)
+        
+        # self.step_count += 1
+
+        self._pre_physics_step(dt)
+        self._apply_actions()
+        self._post_physics_step()
     
     def get_aircraft_states(self) -> Dict[str, torch.Tensor]:
         """Get states of all traffic aircraft."""
@@ -239,6 +267,7 @@ class TrafficSimulator:
     
     def reset(self):
         """Reset the traffic simulation."""
+
         if self.drone_manager is not None:
             self.drone_manager.reset()
         

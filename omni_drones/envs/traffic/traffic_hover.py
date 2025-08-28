@@ -10,7 +10,7 @@ from omni_drones.utils.torch import euler_to_quaternion, quat_axis
 from tensordict.tensordict import TensorDict
 from torchrl.data import UnboundedContinuousTensorSpec, CompositeSpec
 from omni_drones.utils.torchrl import AgentSpec
-
+from omni_drones.traffic import TrafficCfg, OrcaCfg, TrafficEvtolCfg, TrafficDroneCfg, AreaBoundsCfg
 
 class TrafficAwareHover(IsaacEnv):
     """
@@ -25,8 +25,8 @@ class TrafficAwareHover(IsaacEnv):
         self.time_encoding = cfg.task.time_encoding
         self.randomization = cfg.task.get("randomization", {})
         # Initialize traffic simulator
-        self.traffic_config = cfg.get("traffic", {})
-        
+        # self.traffic_config = cfg.get("traffic", {})
+        self.traffic_config = TrafficCfg()
         self.traffic_simulator = TrafficSimulator(self.traffic_config, device=cfg.sim.device)
         super().__init__(cfg, headless)
         
