@@ -27,6 +27,7 @@ This module implements a simplified traffic simulation system adapted from AirSi
 providing background traffic drones that can interact with RL agents.
 """
 
+from sympy import Q
 import torch
 import numpy as np
 import logging
@@ -195,7 +196,28 @@ class TrafficSimulator:
             return torch.cat(positions, dim=0)  # Concatenate all aircraft positions
         else:
             return torch.empty(0, 3, device=self.device)
+    def get_aircraft_safety_radius(self) -> torch.Tensor:
+        """Get safety radius of all traffic aircraft."""
+        safety_radius = []
+        if self.drone_manager is not None:
+            safety_radius.append(self.drone_manager.get_safety_radius())
+        if self.evtol_manager is not None:
+            safety_radius.append(self.evtol_manager.get_safety_radius())
+        return torch.cat(safety_radius, dim=0)
     
+    def get_aircraft_types(self) -> torch.Tensor:
+        """
+        Get types of all traffic aircraft.
+        drone: 1
+        evtol: 0
+        """
+        types = []
+        if self.drone_manager is not None:
+            types.append(torch.ones(self.config.num_drones, device=self.device))
+        if self.evtol_manager is not None:
+            types.append(torch.zeros(self.config.num_evtols, device=self.device))
+        return torch.cat(types, dim=0)
+
     def get_aircraft_velocities(self) -> torch.Tensor:
         """Get velocities of all traffic aircraft as a tensor."""
         velocities = []
@@ -215,31 +237,60 @@ class TrafficSimulator:
         else:
             return torch.empty(0, 3, device=self.device)
     
-    def check_collision(self, external_positions: torch.Tensor, safety_radius: float = 2.0) -> torch.Tensor:
+    def check_collision(
+        self, 
+        external_positions: torch.Tensor, # 形状: (env_num, m, 3) 或 (m, 3)
+        external_safety_radii: torch.Tensor, # 形状: (env_num, m) 或 (m)
+    ) -> torch.Tensor:
         """
-        Check for potential collisions between external aircraft and traffic aircraft.
-        
-        Args:
-            external_positions: Tensor of shape (N, 3) containing positions of external aircraft
-            safety_radius: Safety distance threshold
-            
-        Returns:
-            Tensor of shape (N,) containing boolean values indicating collision risk
+        检查外部无人机与交通无人机之间是否存在潜在碰撞。
+        此函数可以处理2D (m, ...) 或 3D (env_num, m, ...) 的输入。
         """
         traffic_positions = self.get_aircraft_positions()
         
         if traffic_positions.shape[0] == 0:
-            return torch.zeros(external_positions.shape[0], dtype=torch.bool, device=self.device)
+            return torch.zeros_like(external_safety_radii, dtype=torch.bool)
         
-        # Calculate distances between all external and traffic aircraft
-        # external_positions: (N, 3), traffic_positions: (M, 3)
-        # distances: (N, M)
-        distances = torch.cdist(external_positions, traffic_positions)
+        # --- 新增的保障层：检查输入维度 ---
+        # 记录原始形状，以便最后恢复
+        original_shape = external_safety_radii.shape
         
-        # Check if any distance is below safety threshold
-        collision_risk = (distances < safety_radius).any(dim=1)
+        # 如果输入是2D的 (m, 3)，我们给它增加一个批处理维度，变成 (1, m, 3)
+        if external_positions.ndim == 2:
+            external_positions = external_positions.unsqueeze(0)
+            external_safety_radii = external_safety_radii.unsqueeze(0)
+        # ------------------------------------
+
+        # 1. 维度重塑，便于批处理计算
+        # 将输入的 env_num * m 架无人机展平为一个维度
+        env_num, m, _ = external_positions.shape
+        flat_external_positions = external_positions.view(-1, 3)     # 形状变为: (env_num * m, 3)
+        flat_external_radii = external_safety_radii.view(-1)         # 形状变为: (env_num * m)
+
+        # 2. 计算距离矩阵
+        # 计算每一架外部无人机到每一架交通无人机的距离
+        # distances 形状: (env_num * m, N)
+        distances = torch.cdist(flat_external_positions, traffic_positions)
+
+        # 3. 计算阈值矩阵 (核心改动)
+        # 我们需要一个和 distances 形状相同的阈值矩阵，
+        # 其中每个元素 (i, j) 的值是第 i 架外部无人机和第 j 架交通无人机的安全半径之和。
+        traffic_radii = self.get_aircraft_safety_radius() # 形状: (N)
+
+        # 利用广播机制：(env_num * m, 1) + (N,) -> (env_num * m, N)
+        # unsqueeze(-1) 将 flat_external_radii 变为列向量
+        thresholds = flat_external_radii.unsqueeze(-1) + traffic_radii
+
+        # 4. 执行碰撞判断
+        # 逐元素比较距离是否小于对应的阈值
+        collision_matrix = distances < thresholds # 形状: (env_num * m, N)
         
-        return collision_risk
+        # 检查每架外部无人机是否与 *任何* 一架交通无人机发生了碰撞
+        collision_risk = collision_matrix.any(dim=1) # 形状: (env_num * m)
+
+        # 5. 恢复原始形状并返回
+        # collision_risk 的形状是 (env_num * m)，我们将其恢复为输入的原始批处理形状
+        return collision_risk.view(original_shape)
     
     def get_aircraft_info(self) -> Dict[str, Any]:
         """Get comprehensive information about all traffic aircraft."""
@@ -277,3 +328,52 @@ class TrafficSimulator:
         
         self.step_count = 0
         logging.info("TrafficSimulator reset complete")
+
+    def predict_future_positions(self, predict_steps: int, pred_timestep: float) -> torch.Tensor:
+        """
+        根据当前位置和速度，以匀速模型预测未来多个时间戳的位置。
+
+        Args:
+            current_positions: 当前飞机的位置张量，形状为 [N, 3]。
+            current_velocities: 当前飞机的速度张量，形状为 [N, 3]。
+            predict_steps: 需要预测的未来时间戳的数量。
+            pred_timestep: 每个预测时间戳之间的时间间隔（秒）。
+
+        Returns:
+            一个形状为 [predict_steps + 1, N, 3] 的张量，
+            包含了从当前时刻 (t=0) 到未来 predict_steps 个时刻的所有位置。
+        """
+        current_positions = self.get_aircraft_positions()
+        current_velocities = self.get_aircraft_velocities()
+        # 1. 创建时间向量
+        #    生成一个从 0 到 predict_steps 的序列，代表时间戳的倍数。
+        #    形状: [predict_steps + 1]
+        time_multipliers = torch.arange(
+            0, predict_steps + 1, 
+            device=self.device, 
+            dtype=torch.float32
+        )
+
+        # 2. 计算每个时间戳的实际时间
+        #    形状: [predict_steps + 1]
+        future_times = time_multipliers * pred_timestep
+
+        # 3. 计算位移 (Displacement)
+        #    利用广播机制，用速度乘以时间向量。
+        #    - future_times.view(-1, 1, 1) 的形状变为 [predict_steps + 1, 1, 1]
+        #    - current_velocities 的形状是 [N, 3]
+        #    广播后，相当于用每个时间点乘以每架飞机的速度
+        #    displacement 的形状变为 [predict_steps + 1, N, 3]
+        displacement = future_times.view(-1, 1, 1) * current_velocities
+
+        # 4. 计算最终位置
+        #    同样利用广播机制，将初始位置加到每一个时间点的位移上。
+        #    - current_positions 的形状是 [N, 3]
+        #    - displacement 的形状是 [predict_steps + 1, N, 3]
+        #    广播后，相当于将初始位置加到每一个时间戳的预测位置上
+        #    predicted_positions 的形状变为 [predict_steps + 1, N, 3]
+        predicted_positions = current_positions + displacement
+        
+
+        # predicted_positions.premute(1, 0, 2) # [N, predict_steps+1, 3]
+        return predicted_positions

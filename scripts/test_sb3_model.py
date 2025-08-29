@@ -42,7 +42,7 @@ def main():
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
     parser.add_argument("--model_path", type=str, 
-                        default="runs/nav_ppo_firefly_20250827_175138",
+                        default="runs/pot0p5/num_envs=512_total_timesteps=1000000_feature_dim=128",
                        help="Path to the trained model directory")
     parser.add_argument("--num_envs", type=int, default=16,
                        help="Number of test environments")

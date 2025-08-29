@@ -431,3 +431,6 @@ class TrafficEVTOLManager:
         
         self.logger.info("EVTOL manager cleanup complete")
     
+    def get_safety_radius(self) -> torch.Tensor:
+        """Get safety radius of all EVTOLs."""
+        return self.state.safety_radius

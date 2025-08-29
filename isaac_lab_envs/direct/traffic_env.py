@@ -70,7 +70,6 @@ class NavEnvWindow(BaseEnvWindow):
                 with self.ui_window_elements["debug_vstack"]:
                     self._create_debug_vis_ui_element("targets", self.env)
 
-
 @configclass
 class TrafficEnvCfg(NavEnvCfg):
     """Configuration for the Nav navigation environment."""
@@ -86,7 +85,19 @@ class TrafficEnvCfg(NavEnvCfg):
             ymax=50.0
         )
     ))
+    
+    predict_steps: int = 5
+    pred_timestep: float = 2.0
+    observation_radius: float = 100.0
+    observation_norm_scale: float = 10.0
 
+    # reward config
+    rew_success = 15.0
+    rew_collision = -16.0
+    rew_potential = 0.5
+    rew_evtol_future_penalty = -0.8
+    rew_drone_future_penalty = -1.0
+    rew_time_penalty = -0.01
 
 class TrafficEnv(NavEnv):
     """Nav navigation environment for drones using Direct RL workflow."""
@@ -95,14 +106,24 @@ class TrafficEnv(NavEnv):
 
     def __init__(self, cfg: TrafficEnvCfg, render_mode: str | None = None, **kwargs):
         # 保存配置参数（在父类初始化之前）
-        # 
-        
         self.traffic_sim = None
+        
+        # 初始化观测和奖励处理器
+        self.obs_processor = None
+        self.reward_calculator = None
+        from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
+        from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
+        # 初始化处理器（在父类初始化后，这样可以访问device）
+        self.obs_processor = TrafficObservationProcessor(cfg)
+        self.reward_calculator = TrafficRewardCalculator(cfg)
         # 父类初始化 - 这会调用 _setup_scene()
         super().__init__(cfg, render_mode, **kwargs)
         
+        self.obs_processor.device = self.device
+        self.reward_calculator.device = self.device
         self.traffic_sim.reset()
         # traffic env 不是reset idx，不是每次step都reset
+
 
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""
@@ -134,3 +155,142 @@ class TrafficEnv(NavEnv):
         """Update sensors after physics step."""
         self.traffic_sim._post_physics_step()
         super()._post_physics_step()
+        
+        # 预计算traffic轨迹预测，供观测和奖励计算使用
+        traffic_positions = self.traffic_sim.get_aircraft_positions()  # [total_traffic, 3]
+        traffic_velocities = self.traffic_sim.get_aircraft_velocities()  # [total_traffic, 3]
+        traffic_types = self.traffic_sim.get_aircraft_types()  # [total_traffic] tensor
+        traffic_safety_radius = self.traffic_sim.get_aircraft_safety_radius()  # [total_traffic] tensor
+        self.obs_processor.predict_traffic_trajectory(
+            traffic_positions, traffic_velocities, traffic_types, traffic_safety_radius
+        )
+
+
+
+    def _configure_gym_env_spaces(self):
+        """Configure the action and observation spaces for the Gym environment."""
+        # observation space (unbounded since we don't impose any limits)
+        super()._configure_gym_env_spaces()
+        import gymnasium as gym
+        import numpy as np
+
+        policy_space_dict = self.obs_processor.generate_policy_obs_dict()
+        # 2. 将内层字典包装成一个 gym.spaces.Dict
+        policy_space = gym.spaces.Dict(policy_space_dict)
+
+        # 3. 创建最外层的观测空间字典
+        self.single_observation_space["policy"] = policy_space
+
+
+        # bound action space
+        self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.num_actions,))
+
+        # batch the spaces for vectorized environments
+        self.observation_space = gym.vector.utils.batch_space(self.single_observation_space["policy"], self.num_envs)
+        self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
+
+    def _get_observations(self) -> dict:
+        """计算基于字典格式的导航观测。"""
+        # 使用观测处理器计算观测（已包含预计算的轨迹）
+
+        observations = self.obs_processor.process_observation(
+            self.drone_state,     # [num_envs, 1, 13]
+            self.target_pos,      # [num_envs, 1, 3]
+        )
+        
+        return observations
+
+
+    def _get_rewards(self) -> torch.Tensor:
+        """计算基于Traffic环境的复杂奖励。"""
+        # 获取traffic aircraft状态（使用预计算的数据）
+        traffic_positions = self.obs_processor.traffic_positions  # [total_traffic, 3]
+        traffic_velocities = self.obs_processor.traffic_velocities  # [total_traffic, 3]
+        traffic_types = self.obs_processor.traffic_types  # [total_traffic] tensor
+
+        # 计算碰撞和到达目标的mask
+        collision_mask, reached_target_mask = self._compute_collision_and_target_masks()
+        
+        # 使用奖励计算器计算奖励
+        reward = self.reward_calculator.compute_reward(
+            self.drone_state,      # [num_envs, 1, 13]
+            self.target_pos,       # [num_envs, 1, 3]
+            traffic_positions,     # [total_traffic, 3]
+            traffic_velocities,    # [total_traffic, 3]
+            collision_mask,
+            reached_target_mask,
+            self.obs_processor.traffic_future_traj,
+            self.obs_processor.traffic_safety_radius,
+            traffic_types
+
+        )
+        
+        # 更新统计信息
+        self.stats["dist_to_target"] = self.current_dist_to_target.unsqueeze(-1)
+        self.stats["return"] += reward.unsqueeze(-1)
+        self.stats["episode_len"][:] = self.episode_length_buf.unsqueeze(1)
+        
+        return reward
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """计算基于Traffic环境的终止条件，包括碰撞检测。"""
+        self._post_physics_step()
+        
+        # 计算碰撞和到达目标的mask
+        collision_mask, reached_target_mask = self._compute_collision_and_target_masks()
+        
+        # 3. 高度异常条件（保持在合理高度范围内）
+        robot_height = self.drone_state.squeeze(1)[:, 2]  # [num_envs]
+        height_abnormal = (
+            (robot_height < (self.cfg.flight_height - 3*self.cfg.safety_radius)) |
+            (robot_height > (self.cfg.flight_height + 3*self.cfg.safety_radius))
+        )
+        
+        # 4. NaN检测
+        hasnan = torch.isnan(self.drone_state).any(dim=(1, 2))
+        
+        # 终止条件：到达目标、碰撞、高度异常或NaN
+        terminated = reached_target_mask | collision_mask | height_abnormal | hasnan
+        
+        # 超时条件：由DirectRLEnv框架自动处理
+        truncated = self.episode_length_buf >= self.max_episode_length 
+        
+        return terminated, truncated
+    
+    def _compute_collision_and_target_masks(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """计算碰撞和到达目标的mask"""
+        # 计算距离目标的距离（用于到达判断和奖励）
+        robot_pos = self.drone_state[:, :, :2]  # [num_envs, 1, 2]
+        goal_pos = self.target_pos[:, :, :2]    # [num_envs, 1, 2]
+        relative_goal_pos = goal_pos - robot_pos # [num_envs, 1, 2]
+        self.current_dist_to_target = torch.norm(relative_goal_pos.squeeze(1), dim=1)  # [num_envs]
+        
+        # 1. 到达目标检测
+        reached_target_mask = self.current_dist_to_target <= self.cfg.arrival_threshold
+        
+        # 2. 碰撞检测
+        collision_mask = self._detect_collisions()
+        
+        return collision_mask, reached_target_mask
+    
+    def _detect_collisions(self) -> torch.Tensor:
+        """检测与traffic aircraft的碰撞"""
+        
+        ego_pos = self.drone_state[:, :, :3]
+        ego_safety_radius = torch.ones(self.num_envs, device=self.device) * self.cfg.safety_radius
+
+        collision_mask = self.traffic_sim.check_collision(
+            ego_pos.squeeze(1),
+            ego_safety_radius
+        )
+        
+        return collision_mask
+    
+    def _reset_idx(self, env_ids: torch.Tensor | None = None):
+        """重置指定环境的状态"""
+        # 重置奖励计算器的势能缓存
+
+        super()._reset_idx(env_ids)
+        
+        if self.reward_calculator is not None:
+            self.reward_calculator.reset_potential(self.drone_state, self.target_pos, env_ids)

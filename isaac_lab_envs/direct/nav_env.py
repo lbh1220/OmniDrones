@@ -140,7 +140,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     # 奖励权重（完全按照原始配置）
     rew_success = 15.0
     rew_collision = -16.0
-    rew_potential = 1.0
+    rew_potential = 0.5
     
     # 随机化配置
     randomization: Dict = field(default_factory=dict)
@@ -498,17 +498,9 @@ class NavEnv(DirectRLEnv):
     def _configure_gym_env_spaces(self):
         """Configure the action and observation spaces for the Gym environment."""
         # observation space (unbounded since we don't impose any limits)
+        super()._configure_gym_env_spaces()
         import gymnasium as gym
         import numpy as np
-        self.num_actions = self.cfg.num_actions
-        self.num_observations = self.cfg.num_observations
-        self.num_states = self.cfg.num_states
-
-        # set up spaces
-        # self.single_observation_space = gym.spaces.Dict()
-        # self.single_observation_space["policy"] = gym.spaces.Box(
-        #     low=-np.inf, high=np.inf, shape=(self.num_observations,)
-        # )
         # 1. 创建内层字典 "policy" 的内容
         policy_space_dict = {
             'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 5), dtype=np.float32),
@@ -519,9 +511,7 @@ class NavEnv(DirectRLEnv):
         policy_space = gym.spaces.Dict(policy_space_dict)
 
         # 3. 创建最外层的观测空间字典
-        self.single_observation_space = gym.spaces.Dict({
-            "policy": policy_space
-        })
+        self.single_observation_space["policy"] = policy_space
 
 
         # bound action space
@@ -530,8 +520,3 @@ class NavEnv(DirectRLEnv):
         # batch the spaces for vectorized environments
         self.observation_space = gym.vector.utils.batch_space(self.single_observation_space["policy"], self.num_envs)
         self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
-
-        # optional state space for asymmetric actor-critic architectures
-        if self.num_states > 0:
-            self.single_observation_space["critic"] = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
-            self.state_space = gym.vector.utils.batch_space(self.single_observation_space["critic"], self.num_envs)

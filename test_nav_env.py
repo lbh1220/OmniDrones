@@ -40,7 +40,7 @@ def main():
             cfg.num_actions = 2
             cfg.num_observations = 7
             cfg.traffic_sim.num_drones = 10
-            cfg.traffic_sim.num_evtols = 0
+            cfg.traffic_sim.num_evtols = 2
             print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
             env = TrafficEnv(cfg=cfg)
         else:
@@ -65,7 +65,6 @@ def main():
     
     # 重置环境
     obs, _ = env.reset()
-    print(f"重置完成！观测形状: {[obs[key].shape for key in obs.keys()]}")
     
     # 运行几个步骤
     import time

@@ -544,3 +544,7 @@ class TrafficDroneManager:
         if hasattr(self.state, 'velocity_commands') and self.state.velocity_commands.numel() > 0:
             self.state.velocity_commands.zero_()
         self.target_updated_times.zero_()
+
+    def get_safety_radius(self) -> torch.Tensor:
+        """Get safety radius of all drones."""
+        return self.state.safety_radius
