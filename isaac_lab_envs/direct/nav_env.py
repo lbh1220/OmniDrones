@@ -46,7 +46,7 @@ from omni_drones.utils.torch import euler_to_quaternion
 
 # 导入原始的TensorDict相关
 from tensordict.tensordict import TensorDict
-from torchrl.data import CompositeSpec, UnboundedContinuousTensorSpec
+
 
 ##
 # Pre-defined configs
@@ -132,6 +132,10 @@ class NavEnvCfg(DirectRLEnvCfg):
         ymin=-40.0,
         ymax=40.0
     ))
+    
+    # action space config
+    use_discrete_action: bool = True
+    action_space_num_per_dim: int = 7  # 每个维度的离散动作数量
 
         # 原始参数配置
     lidar_range: float = 4.0
@@ -165,6 +169,10 @@ class NavEnv(DirectRLEnv):
         # 在父类初始化完成后进行无人机特定的初始化
         self._post_init_setup()
         
+        # 设置离散动作空间映射
+        if cfg.use_discrete_action:
+            self._setup_discrete_action()
+        
         # 初始姿态分布
         self.init_rpy_dist = torch.distributions.Uniform(
             torch.tensor([-.2, -.2, 0.], device=self.device) * torch.pi,
@@ -178,16 +186,10 @@ class NavEnv(DirectRLEnv):
         # 用于潜力奖励的距离跟踪
         self.prev_dist_to_target = torch.zeros(self.num_envs, device=self.device)
         
-        # 统计信息（原始格式）
-        stats_spec = CompositeSpec({
-            "return": UnboundedContinuousTensorSpec(1),
-            "episode_len": UnboundedContinuousTensorSpec(1),
-            "action_smoothness": UnboundedContinuousTensorSpec(1),
-            "safety": UnboundedContinuousTensorSpec(1),
-            "dist_to_target": UnboundedContinuousTensorSpec(1),
-        }).expand(self.num_envs).to(self.device)
-        self.stats = stats_spec.zero()
-        
+        self.extras = {
+            "goal_reached": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+            "collision": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+        }
         # debug可视化
         if self.sim.has_gui():
             from omni_drones.envs.isaac_env import DebugDraw
@@ -300,6 +302,13 @@ class NavEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor):
         """Apply actions to the drone using original apply_action method."""
+        # 处理离散动作空间
+        if self.cfg.use_discrete_action:
+            # 将离散动作转换为连续动作
+            continuous_actions = self.discrete_to_continuous_action(actions)
+        else:
+            continuous_actions = actions
+        
         # 使用原始无人机系统的apply_action方法
         # 应该在这里处理action，无论是做放缩，还是通过controller处理
         # rotor_commands = self.controller.compute(
@@ -310,7 +319,7 @@ class NavEnv(DirectRLEnv):
         #     )
         # 有两种思路，apply action的频率更高，按理说应该这里把控制量算出来，然后apply action实时更新drone state然后重新计算力和 力矩
         # 如果是discrete action, 这里就需要算mapping了
-        self.command_vel_xy = actions * self.cfg.max_speed
+        self.command_vel_xy = continuous_actions * self.cfg.max_speed
         self.command_vel_xy = torch.clamp(self.command_vel_xy, -self.cfg.max_speed, self.cfg.max_speed)
         self.command_vel_xy = self.command_vel_xy.unsqueeze(1)
 
@@ -393,9 +402,7 @@ class NavEnv(DirectRLEnv):
         self.prev_dist_to_target = self.current_dist_to_target.clone()
         
         # 更新统计信息
-        self.stats["dist_to_target"] = self.current_dist_to_target.unsqueeze(-1)
-        self.stats["return"] += reward.unsqueeze(-1)
-        self.stats["episode_len"][:] = self.episode_length_buf.unsqueeze(1)
+
         
         return reward
 
@@ -408,7 +415,7 @@ class NavEnv(DirectRLEnv):
         relative_goal_pos = goal_pos - robot_pos # [num_envs, 1, 2]
         self.current_dist_to_target = torch.norm(relative_goal_pos.squeeze(1), dim=1)  # [num_envs]
         reached_target = self.current_dist_to_target <= self.cfg.arrival_threshold
-        
+        self.extras["goal_reached"] = reached_target
         
         # 3. 高度异常条件（保持在合理高度范围内）
         robot_height = self.drone_state.squeeze(1)[:, 2]  # [num_envs]
@@ -435,9 +442,10 @@ class NavEnv(DirectRLEnv):
 
         # 使用原始无人机系统的重置方法
         self.drone._reset_idx(env_ids, self.cfg.is_training)
+
         
         # 重置统计
-        self.stats[env_ids] = 0.0
+
         
         # 重置机器人到初始位置（完全按照原始实现）
         start, goal = self._generate_crossing_task(len(env_ids), flight_height=self.cfg.flight_height)
@@ -490,6 +498,45 @@ class NavEnv(DirectRLEnv):
 
         return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1)
     
+    def _setup_discrete_action(self):
+        """设置离散动作空间"""
+        total_actions = self.cfg.action_space_num_per_dim * self.cfg.action_space_num_per_dim
+        self._create_discrete_action_mapping()
+        print(f"Created discrete action mapping: {self.cfg.action_space_num_per_dim}x{self.cfg.action_space_num_per_dim} = {total_actions} actions")
+    
+    def _create_discrete_action_mapping(self):
+        """创建离散动作映射"""
+        speed_values = torch.linspace(-1.0, 1.0, self.cfg.action_space_num_per_dim, device=self.device)
+        
+        action_mapping = []
+        for i in range(self.cfg.action_space_num_per_dim):
+            for j in range(self.cfg.action_space_num_per_dim):
+                vx = speed_values[i]
+                vy = speed_values[j]
+                action_mapping.append([vx, vy])
+        
+        self.action_mapping = torch.tensor(action_mapping, device=self.device, dtype=torch.float32)
+    
+    def discrete_to_continuous_action(self, discrete_actions: torch.Tensor) -> torch.Tensor:
+        """将离散动作转换为连续动作
+        
+        Args:
+            discrete_actions: [num_envs] 离散动作索引
+            
+        Returns:
+            continuous_actions: [num_envs, 2] 连续动作 (vx, vy)
+        """
+        # 将float32转换为整数索引（处理vec env的numpy/tensor转换）
+        discrete_actions = discrete_actions.long()
+        
+        # 处理超出范围的动作索引
+        discrete_actions = torch.clamp(discrete_actions, 0, len(self.action_mapping) - 1)
+        
+        # 批量索引映射
+        continuous_actions = self.action_mapping[discrete_actions]
+        
+        return continuous_actions
+    
     @property 
     def _should_render(self):
         """Check if should render for debug visualization."""
@@ -515,7 +562,11 @@ class NavEnv(DirectRLEnv):
 
 
         # bound action space
-        self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.num_actions,))
+        if self.cfg.use_discrete_action:
+            total_actions = self.cfg.action_space_num_per_dim * self.cfg.action_space_num_per_dim
+            self.single_action_space = gym.spaces.Discrete(total_actions)
+        else:
+            self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.num_actions,))
 
         # batch the spaces for vectorized environments
         self.observation_space = gym.vector.utils.batch_space(self.single_observation_space["policy"], self.num_envs)

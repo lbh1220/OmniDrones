@@ -97,7 +97,7 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_potential = 0.5
     rew_evtol_future_penalty = -0.8
     rew_drone_future_penalty = -1.0
-    rew_time_penalty = -0.01
+    rew_time_penalty = 0.0
 
 class TrafficEnv(NavEnv):
     """Nav navigation environment for drones using Direct RL workflow."""
@@ -181,13 +181,9 @@ class TrafficEnv(NavEnv):
         # 3. 创建最外层的观测空间字典
         self.single_observation_space["policy"] = policy_space
 
-
-        # bound action space
-        self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.num_actions,))
-
         # batch the spaces for vectorized environments
         self.observation_space = gym.vector.utils.batch_space(self.single_observation_space["policy"], self.num_envs)
-        self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
+
 
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
@@ -225,10 +221,7 @@ class TrafficEnv(NavEnv):
 
         )
         
-        # 更新统计信息
-        self.stats["dist_to_target"] = self.current_dist_to_target.unsqueeze(-1)
-        self.stats["return"] += reward.unsqueeze(-1)
-        self.stats["episode_len"][:] = self.episode_length_buf.unsqueeze(1)
+
         
         return reward
 
@@ -238,7 +231,9 @@ class TrafficEnv(NavEnv):
         
         # 计算碰撞和到达目标的mask
         collision_mask, reached_target_mask = self._compute_collision_and_target_masks()
-        
+        # 更新统计信息
+        self.extras["goal_reached"] = reached_target_mask
+        self.extras["collision"] = collision_mask
         # 3. 高度异常条件（保持在合理高度范围内）
         robot_height = self.drone_state.squeeze(1)[:, 2]  # [num_envs]
         height_abnormal = (
@@ -270,6 +265,8 @@ class TrafficEnv(NavEnv):
         
         # 2. 碰撞检测
         collision_mask = self._detect_collisions()
+        # if collision_mask.any():
+        #     print(f"Collision detected at step")
         
         return collision_mask, reached_target_mask
     
@@ -291,6 +288,5 @@ class TrafficEnv(NavEnv):
         # 重置奖励计算器的势能缓存
 
         super()._reset_idx(env_ids)
-        
         if self.reward_calculator is not None:
             self.reward_calculator.reset_potential(self.drone_state, self.target_pos, env_ids)

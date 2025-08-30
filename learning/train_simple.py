@@ -16,11 +16,11 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, CombinedExtractor
-
+from stable_baselines3.common.logger import configure
 # 导入Isaac Lab
 from omni.isaac.lab.app import AppLauncher
-
-
+from rl.sb3.custom_callback import SucessRateCallback
+from rl.sb3.network_utils import linear_schedule_with_min
 
 class SimpleFeatureExtractor(BaseFeaturesExtractor):
     """
@@ -33,8 +33,10 @@ class SimpleFeatureExtractor(BaseFeaturesExtractor):
         # 计算输入维度
         robot_node_dim = observation_space.spaces['robot_node'].shape[1]  # 7 或 5
         temporal_edges_dim = observation_space.spaces['temporal_edges'].shape[1]  # 2
+
+        one_spatial_edge_dim = observation_space.spaces['spatial_edges'].shape[1]
         
-        self.input_dim = robot_node_dim + temporal_edges_dim
+        self.input_dim = robot_node_dim + temporal_edges_dim + one_spatial_edge_dim
         
         # 简单的MLP网络
         self.mlp = torch.nn.Sequential(
@@ -50,9 +52,12 @@ class SimpleFeatureExtractor(BaseFeaturesExtractor):
         # 提取robot_node和temporal_edges
         robot_node = observations['robot_node'].squeeze(1)  # 从(1, 7)变为(7,)
         temporal_edges = observations['temporal_edges'].squeeze(1)  # 从(1, 2)变为(2,)
-        
+        if len(observations['spatial_edges'].shape) == 3:
+            one_spatial_edge = observations['spatial_edges'][:, 0, :]
+        else:
+            one_spatial_edge = observations['spatial_edges'][0, :]
         # 连接特征
-        combined_features = torch.cat([robot_node, temporal_edges], dim=-1)
+        combined_features = torch.cat([robot_node, temporal_edges, one_spatial_edge], dim=-1)
         
         # 通过MLP
         return self.mlp(combined_features)
@@ -62,14 +67,13 @@ def create_env(cfg, headless=True):
     # 设置headless模式
     
     from isaac_lab_envs.direct.nav_env import NavEnv
+    from isaac_lab_envs.direct.traffic_env import TrafficEnv
     # SB3包装器
     from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
     # 创建环境
-    env = NavEnv(cfg=cfg)
+    env = TrafficEnv(cfg=cfg)
     
-    # 设置环境的render_mode为rgb_array以支持视频录制
-    if hasattr(env, 'render_mode'):
-        env.render_mode = "rgb_array"
+
     
     # 使用SB3包装器包装
     env = Sb3VecEnvWrapper(env)
@@ -92,10 +96,10 @@ def main():
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Train Nav Environment with SB3 PPO")
     parser.add_argument("--num_envs", type=int, default=512, help="Number of environments")
-    parser.add_argument("--drone_model", type=str, default="firefly", 
+    parser.add_argument("--drone_model", type=str, default="hummingbird", 
                        choices=["firefly", "crazyflie", "hummingbird", "iris"], 
                        help="Drone model to use")
-    parser.add_argument("--total_timesteps", type=int, default=1000000, 
+    parser.add_argument("--total_timesteps", type=int, default=5000000, 
                        help="Total timesteps for training")
     parser.add_argument("--save_freq", type=int, default=50000, 
                        help="Save model every N timesteps")
@@ -108,6 +112,10 @@ def main():
                        help="Experiment name for saving")
     parser.add_argument("--seed", type=int, default=42,
                        help="Random seed")
+    parser.add_argument("--num_drones", type=int, default=1,
+                       help="Number of drones")
+    parser.add_argument("--drone_future_penalty", type=float, default=0.0,
+                       help="Drone future penalty")
     
     
     # 添加AppLauncher参数
@@ -124,14 +132,20 @@ def main():
     try:
         # 导入环境配置（必须在AppLauncher之后）
         from isaac_lab_envs.direct.nav_env import NavEnvCfg
-        
+        from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
         # 创建环境配置
-        cfg = NavEnvCfg()
+        cfg = TrafficEnvCfg()
         cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
         cfg.drone_model = args.drone_model
         cfg.num_actions = 2  # vx, vy
         cfg.num_observations = 7  # robot_node(5) + temporal_edges(2)
-        
+        cfg.traffic_sim.num_drones = args.num_drones    
+        cfg.traffic_sim.num_evtols = 0
+        cfg.rew_evtol_future_penalty = 0.0  
+        cfg.rew_drone_future_penalty = args.drone_future_penalty
+        # cfg.pred_timestep = 0
+        cfg.use_discrete_action = True
+
         print(f"创建训练环境...")
         print(f"- 无人机模型: {args.drone_model}")
         print(f"- 环境数量: {args.num_envs}")
@@ -152,7 +166,7 @@ def main():
             args.experiment_name = f"nav_ppo_{args.drone_model}_{timestamp}"
         
         # 创建保存目录
-        save_dir = f"runs/{args.experiment_name}"
+        save_dir = f"runs/simple/{args.experiment_name}"
         os.makedirs(save_dir, exist_ok=True)
         
         print(f"实验名称: {args.experiment_name}")
@@ -165,18 +179,20 @@ def main():
             net_arch=[128, 128],  # Actor和Critic的网络架构
             activation_fn=nn.ReLU,
         )
-        
+        n_steps = 100
+        batch_size = n_steps * args.num_envs // 16
+        learning_rate = linear_schedule_with_min(args.learning_rate, 1e-6)
         # 创建PPO模型
         model = PPO(
             policy="MultiInputPolicy",  # 支持字典观测空间
             env=env,
-            learning_rate=args.learning_rate,
-            n_steps=100,  # 每次更新收集的步数
-            batch_size=64,  # 批次大小
+            learning_rate=learning_rate,
+            n_steps=n_steps,  # 每次更新收集的步数
+            batch_size=batch_size,  # 批次大小
             n_epochs=10,    # 每次更新的epoch数
             gamma=0.99,     # 折扣因子
             gae_lambda=0.95,  # GAE lambda
-            clip_range=0.2,   # PPO裁剪范围
+            clip_range=0.15,   # PPO裁剪范围
             ent_coef=0.01,    # 熵系数
             vf_coef=0.5,      # 价值函数系数
             max_grad_norm=0.5,  # 梯度裁剪
@@ -193,6 +209,10 @@ def main():
         
         # 创建回调函数
         callbacks = []
+        SR_check_callback = SucessRateCallback(check_freq=2,
+                                                save_path=os.path.join(save_dir, 'checkpoints'),
+                                                name_prefix='SR')
+        callbacks.append(SR_check_callback)
         
         # 检查点保存回调
         checkpoint_callback = CheckpointCallback(
@@ -209,7 +229,9 @@ def main():
         print(f"- 总时间步: {args.total_timesteps}")
         print(f"- 保存频率: {args.save_freq}")
 
-        
+        new_logger = configure(os.path.join(save_dir, 'logs'), ["stdout","tensorboard", "log"])
+        model.set_logger(new_logger)
+
         # 开始训练
         start_time = time.time()
         model.learn(

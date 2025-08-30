@@ -161,10 +161,12 @@ class TrafficObservationProcessor:
         # self.spatial_dim = spatial_dim + 1
         
         if self.traffic_future_traj is None or self.traffic_future_traj.numel() == 0:
-            return torch.full(
+            spatial_edges = torch.full(
             (num_envs, self.total_traffic_num, self.spatial_dim),
             self.observation_norm_scale, device=self.device
             )
+            detected_counts = torch.zeros((num_envs, 1), device=self.device)
+            return spatial_edges, detected_counts
         
         # 计算相对位置 [num_envs, total_traffic, predict_steps+1, 2]
         traffic_pos_2d = self.traffic_future_traj[:, :, :2]  # [total_traffic, predict_steps+1, 2]
@@ -208,7 +210,7 @@ class TrafficObservationProcessor:
         # spatial_edges的维度是 [num_envs, current_traffic_num, spatial_dim+1]
         # 但是可能小于total_traffic_num，所以需要cat
         if spatial_edges.shape[1] < self.total_traffic_num:
-            fill_spatial_edges = torch.full((num_envs, self.total_traffic_num - spatial_edges.shape[1], self.spatial_dim+1), self.observation_norm_scale, device=self.device)
+            fill_spatial_edges = torch.full((num_envs, self.total_traffic_num - spatial_edges.shape[1], self.spatial_dim), self.observation_norm_scale, device=self.device)
             spatial_edges = torch.cat([spatial_edges, fill_spatial_edges], dim=1)
 
         detected_counts = torch.sum(in_range_mask, dim=1, dtype=torch.int32)  # [num_envs]

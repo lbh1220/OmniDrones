@@ -17,7 +17,7 @@ from rl.sb3.custom_callback import RewardCallback, CustomCheckpointCallback, Suc
 from rl.sb3.custom_ppo import CustomPPO
 from rl.sb3.custom_policy import CustomSelfAttnPolicy
 from rl.sb3.network_utils import linear_schedule_with_min
-
+from rl.sb3.custom_callback import SucessRateCallback
 def create_env(cfg, headless=True):
     """创建并包装环境"""
     # 设置headless模式
@@ -37,7 +37,7 @@ def create_env(cfg, headless=True):
 def main():
     parser = argparse.ArgumentParser(description="Train Traffic Environment with SB3 PPO")
     parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
-    parser.add_argument("--num_mini_batch", type=int, default=4, help="Number of mini batches")
+    parser.add_argument("--num_mini_batch", type=int, default=16, help="Number of mini batches")
     parser.add_argument("--experiment_name", type=str, default=None,
                        help="Experiment name for saving")
     # 添加AppLauncher参数
@@ -63,9 +63,10 @@ def main():
     # 创建环境配置
     cfg = TrafficEnvCfg()
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
-    cfg.traffic_sim.num_drones = 5
-    cfg.traffic_sim.num_evtols = 0
-
+    cfg.traffic_sim.num_drones = 0
+    cfg.traffic_sim.num_evtols = 1
+    cfg.rew_evtol_future_penalty = 0.0
+    cfg.rew_drone_future_penalty = 0.0
 
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
     algo_args.human_human_edge_input_size = algo_args.human_human_edge_input_size + 1
@@ -75,7 +76,7 @@ def main():
         args.experiment_name = f"traffic_ppo_{timestamp}"
 
     # 创建保存目录
-    save_dir = f"runs/{args.experiment_name}"
+    save_dir = f"runs/traffic/{args.experiment_name}"
     os.makedirs(save_dir, exist_ok=True)
 
 
@@ -87,7 +88,8 @@ def main():
                         norm_reward=True, 
                         training=True,
                         clip_obs=10.0, 
-                        clip_reward=20.0)
+                        clip_reward=10.0,
+                        gamma=algo_args.gamma)
 
     policy_kwargs = dict(
         net_arch=dict(pi=[64, 64], vf=[64, 64]),
@@ -102,6 +104,10 @@ def main():
     else:
         lr_schedule = algo_args.lr
     callbacks = []
+    SR_check_callback = SucessRateCallback(check_freq=getattr(algo_args, 'log_interval', 10),
+                                      save_path=os.path.join(save_dir, 'checkpoints'),
+                                      name_prefix='SR')
+    callbacks.append(SR_check_callback)
     model = CustomPPO(
         CustomSelfAttnPolicy,
         env,

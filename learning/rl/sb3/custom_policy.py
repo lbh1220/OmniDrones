@@ -22,7 +22,7 @@ from stable_baselines3.common.distributions import (
 )
 from stable_baselines3.common.type_aliases import Schedule
 
-from rl.networks.selfAttn_srnn_temp_node import selfAttn_merge_SRNN
+from rl.networks.selfAttn_srnn_temp_node import selfAttn_merge_SRNN, simple_mlp_policy
 
 
 class CustomSelfAttnPolicy(BasePolicy):
@@ -65,6 +65,7 @@ class CustomSelfAttnPolicy(BasePolicy):
         
         # Initialize the base network (selfAttn_merge_SRNN)
         self.base_network = selfAttn_merge_SRNN(observation_space, args, infer=False)
+        # self.base_network = simple_mlp_policy(args)
         self.is_recurrent = True
         
         # Get network output size (this is our latent_dim_pi)

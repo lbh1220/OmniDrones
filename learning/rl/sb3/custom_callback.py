@@ -140,10 +140,10 @@ class SucessRateCallback(BaseCallback):
                 collision_rate = recent_collision / total_recent
                 timeout_rate = recent_timeout / total_recent
 
-                self.logger.record("train/success_rate", success_rate)
-                self.logger.record("train/collision_rate", collision_rate)
-                self.logger.record("train/timeout_rate", timeout_rate)
-                self.logger.record("train/mean_recent_reward", mean_recent_reward)
+                self.logger.record("val/success_rate", success_rate)
+                self.logger.record("val/collision_rate", collision_rate)
+                self.logger.record("val/timeout_rate", timeout_rate)
+                self.logger.record("val/mean_recent_reward", mean_recent_reward)
                 if success_rate > self.best_success_rate:
                     self.best_success_rate = success_rate
                     model_path = self._checkpoint_path(extension="zip")
@@ -155,9 +155,10 @@ class SucessRateCallback(BaseCallback):
                         self.model.get_vec_normalize_env().save(vec_normalize_path)
 
             else:
-                self.logger.record("train/success_rate", 0)
-                self.logger.record("train/collision_rate", 0)
-                self.logger.record("train/timeout_rate", 0)
+                self.logger.record("val/success_rate", 0)
+                self.logger.record("val/collision_rate", 0)
+                self.logger.record("val/timeout_rate", 0)
+                self.logger.record("val/mean_recent_reward", 0)
                 
     def _on_step(self) -> bool:
         # 获取当前环境的reward和info

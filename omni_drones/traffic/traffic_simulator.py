@@ -203,6 +203,8 @@ class TrafficSimulator:
             safety_radius.append(self.drone_manager.get_safety_radius())
         if self.evtol_manager is not None:
             safety_radius.append(self.evtol_manager.get_safety_radius())
+        if len(safety_radius) == 0:
+            return torch.empty(0, device=self.device)
         return torch.cat(safety_radius, dim=0)
     
     def get_aircraft_types(self) -> torch.Tensor:
@@ -216,6 +218,8 @@ class TrafficSimulator:
             types.append(torch.ones(self.config.num_drones, device=self.device))
         if self.evtol_manager is not None:
             types.append(torch.zeros(self.config.num_evtols, device=self.device))
+        if len(types) == 0:
+            return torch.empty(0, device=self.device)
         return torch.cat(types, dim=0)
 
     def get_aircraft_velocities(self) -> torch.Tensor:

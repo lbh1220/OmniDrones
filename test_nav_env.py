@@ -39,8 +39,9 @@ def main():
             cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
             cfg.num_actions = 2
             cfg.num_observations = 7
-            cfg.traffic_sim.num_drones = 10
-            cfg.traffic_sim.num_evtols = 2
+            cfg.traffic_sim.num_drones = 0
+            cfg.traffic_sim.num_evtols = 0
+            cfg.use_discrete_action = True
             print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
             env = TrafficEnv(cfg=cfg)
         else:
@@ -72,10 +73,11 @@ def main():
     for step in range(2000):
         # 随机动作
 
-        actions = torch.randn(env.num_envs, env.num_actions, device=env.device)
-
-        
-        actions = actions.clamp(-1.0, 1.0)  # 限制到有效范围
+        if env.cfg.use_discrete_action:
+            actions = torch.randint(0, env.cfg.action_space_num_per_dim * env.cfg.action_space_num_per_dim, (env.num_envs,), device=env.device)
+        else:
+            actions = torch.randn(env.num_envs, env.num_actions, device=env.device)
+            actions = actions.clamp(-1.0, 1.0)
         
         # 执行动作
         obs, reward, terminated, truncated, info = env.step(actions)
@@ -96,8 +98,11 @@ def main():
         try:
             while True:
                 # 继续运行环境
-                actions = torch.randn(env.num_envs, env.num_actions, device=env.device)
-                actions = actions.clamp(-1.0, 1.0)
+                if env.cfg.use_discrete_action:
+                    actions = torch.randint(0, env.cfg.action_space_num_per_dim * env.cfg.action_space_num_per_dim, (env.num_envs,), device=env.device)
+                else:
+                    actions = torch.randn(env.num_envs, env.num_actions, device=env.device)
+                    actions = actions.clamp(-1.0, 1.0)
                 obs, reward, terminated, truncated, info = env.step(actions)
                 
                 # 检查是否有环境需要重置
