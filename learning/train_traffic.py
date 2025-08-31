@@ -52,12 +52,20 @@ def main():
     parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
     parser.add_argument("--experiment_name", type=str, default=None,
                        help="Experiment name for saving")
-    parser.add_argument("--course_num", type=int, default=1, help="Number of courses")
+    parser.add_argument("--course_num", type=int, default=0, help="Number of courses")
     # 添加wandb相关参数
     parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging")
     parser.add_argument("--wandb_project", type=str, default="omni_drones_traffic", help="Wandb project name")
     parser.add_argument("--wandb_entity", type=str, default=None, help="Wandb entity/username")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="Custom wandb run name")
+
+
+    # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
+    parser.add_argument("--drones_num", type=int, default=1, help="Number of drones")
+    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
+    parser.add_argument("--drone_future_penalty", type=float, default=0.0, help="Drone future penalty")
+    parser.add_argument("--evtol_future_penalty", type=float, default=0.0, help="Evtol future penalty")
+
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
@@ -97,10 +105,12 @@ def main():
         cfg.rew_evtol_future_penalty = 0.8
         cfg.rew_drone_future_penalty = 1.0
     else:
-        cfg.traffic_sim.num_drones = 0
-        cfg.traffic_sim.num_evtols = 1
-        cfg.rew_evtol_future_penalty = 0.0
-        cfg.rew_drone_future_penalty = 0.0
+        cfg.traffic_sim.num_drones = args.drones_num
+        cfg.rew_drone_future_penalty = args.drone_future_penalty
+
+        cfg.traffic_sim.num_evtols = args.evtols_num
+        cfg.rew_evtol_future_penalty = args.evtol_future_penalty
+
 
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
     algo_args.human_human_edge_input_size = algo_args.human_human_edge_input_size + 1
@@ -219,7 +229,23 @@ def main():
     new_logger = configure(os.path.join(save_dir, 'logs'), ["stdout","tensorboard", "log"])
     model.set_logger(new_logger)
     
-    print(f"Starting training for {algo_args.num_env_steps} timesteps...")
+    # print args
+    model.logger.info(f"drones_num: {cfg.traffic_sim.num_drones}")
+    model.logger.info(f"evtols_num: {cfg.traffic_sim.num_evtols}")
+    model.logger.info(f"drone_future_penalty: {cfg.rew_drone_future_penalty}")
+    model.logger.info(f"evtol_future_penalty: {cfg.rew_evtol_future_penalty}")
+    model.logger.info(f"lr: {algo_args.lr}")
+    model.logger.info(f"gamma: {algo_args.gamma}")
+    model.logger.info(f"entropy_coef: {algo_args.entropy_coef}")
+    model.logger.info(f"value_loss_coef: {algo_args.value_loss_coef}")
+    model.logger.info(f"ppo_epoch: {algo_args.ppo_epoch}")
+    model.logger.info(f"max_grad_norm: {algo_args.max_grad_norm}")
+    model.logger.info(f"clip_param: {algo_args.clip_param}")
+    model.logger.info(f"num_steps: {algo_args.num_steps}")
+    model.logger.info(f"num_envs: {algo_args.num_processes}")
+    model.logger.info(f"num_mini_batch: {algo_args.num_mini_batch}")
+    model.logger.info(f"num_env_steps: {algo_args.num_env_steps}")
+    model.logger.info(f"Starting training for {algo_args.num_env_steps} timesteps...")
     model.learn(total_timesteps=int(algo_args.num_env_steps), callback=callbacks, log_interval=getattr(algo_args, 'log_interval', 10))
     
     # 保存模型
