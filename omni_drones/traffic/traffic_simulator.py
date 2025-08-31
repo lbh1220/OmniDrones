@@ -178,36 +178,61 @@ class TrafficSimulator:
         
         return states
     
-    def get_aircraft_positions(self) -> torch.Tensor:
-        """Get positions of all traffic aircraft as a tensor."""
+    def get_aircraft_positions(self, 
+                                activate_drones_num: int = None, 
+                                activate_evtols_num: int = None) -> torch.Tensor:
+        """Get positions of all traffic aircraft as a tensor.
+        Args:
+            activate_drones_num: 激活的无人机数量, for curriculum learning
+            activate_evtols_num: 激活的eVTOL数量
+        """
         positions = []
         
         # Get drone positions
         if self.drone_manager is not None:
             drone_positions = self.drone_manager.get_positions()  # Shape [1, N, 3]
+            if activate_drones_num is not None:
+                if activate_drones_num >= 0 and activate_drones_num < drone_positions.shape[1]:
+                    drone_positions = drone_positions[:, :activate_drones_num]
             positions.append(drone_positions.squeeze(0))  # Convert to [N, 3]
         
         # Get eVTOL positions
         if self.evtol_manager is not None:
             evtol_positions = self.evtol_manager.get_positions()  # Shape [1, N, 3]
+            if activate_evtols_num is not None:
+                if activate_evtols_num >= 0 and activate_evtols_num < evtol_positions.shape[1]:
+                    evtol_positions = evtol_positions[:, :activate_evtols_num]
             positions.append(evtol_positions.squeeze(0))  # Convert to [N, 3]
         
         if positions:
             return torch.cat(positions, dim=0)  # Concatenate all aircraft positions
         else:
             return torch.empty(0, 3, device=self.device)
-    def get_aircraft_safety_radius(self) -> torch.Tensor:
+    def get_aircraft_safety_radius(self, 
+                                   activate_drones_num: int = None, 
+                                   activate_evtols_num: int = None) -> torch.Tensor:
         """Get safety radius of all traffic aircraft."""
         safety_radius = []
         if self.drone_manager is not None:
-            safety_radius.append(self.drone_manager.get_safety_radius())
+            drone_safety_radius = self.drone_manager.get_safety_radius()
+            if activate_drones_num is not None:
+                if activate_drones_num >= 0 and activate_drones_num < drone_safety_radius.shape[0]:
+                    drone_safety_radius = drone_safety_radius[:activate_drones_num]
+            safety_radius.append(drone_safety_radius)
         if self.evtol_manager is not None:
-            safety_radius.append(self.evtol_manager.get_safety_radius())
+            evtol_safety_radius = self.evtol_manager.get_safety_radius()
+            if activate_evtols_num is not None:
+                if activate_evtols_num >= 0 and activate_evtols_num < evtol_safety_radius.shape[0]:
+                    evtol_safety_radius = evtol_safety_radius[:activate_evtols_num]
+            safety_radius.append(evtol_safety_radius)
+
         if len(safety_radius) == 0:
             return torch.empty(0, device=self.device)
         return torch.cat(safety_radius, dim=0)
     
-    def get_aircraft_types(self) -> torch.Tensor:
+    def get_aircraft_types(self, 
+                           activate_drones_num: int = None, 
+                           activate_evtols_num: int = None) -> torch.Tensor:
         """
         Get types of all traffic aircraft.
         drone: 1
@@ -215,25 +240,41 @@ class TrafficSimulator:
         """
         types = []
         if self.drone_manager is not None:
-            types.append(torch.ones(self.config.num_drones, device=self.device))
+            drone_types = torch.ones(self.config.num_drones, device=self.device)
+            if activate_drones_num is not None:
+                if activate_drones_num >= 0 and activate_drones_num < drone_types.shape[0]:
+                    drone_types = drone_types[:activate_drones_num]
+            types.append(drone_types)
         if self.evtol_manager is not None:
-            types.append(torch.zeros(self.config.num_evtols, device=self.device))
+            evtol_types = torch.zeros(self.config.num_evtols, device=self.device)
+            if activate_evtols_num is not None:
+                if activate_evtols_num >= 0 and activate_evtols_num < evtol_types.shape[0]:
+                    evtol_types = evtol_types[:activate_evtols_num]
+            types.append(evtol_types)
         if len(types) == 0:
             return torch.empty(0, device=self.device)
         return torch.cat(types, dim=0)
 
-    def get_aircraft_velocities(self) -> torch.Tensor:
+    def get_aircraft_velocities(self, 
+                                activate_drones_num: int = None, 
+                                activate_evtols_num: int = None) -> torch.Tensor:
         """Get velocities of all traffic aircraft as a tensor."""
         velocities = []
         
         # Get drone velocities
         if self.drone_manager is not None:
             drone_velocities = self.drone_manager.get_velocities()  # Shape [1, N, 3]
+            if activate_drones_num is not None:
+                if activate_drones_num >= 0 and activate_drones_num < drone_velocities.shape[1]:
+                    drone_velocities = drone_velocities[:, :activate_drones_num]
             velocities.append(drone_velocities.squeeze(0))  # Convert to [N, 3]
         
         # Get eVTOL velocities
         if self.evtol_manager is not None:
             evtol_velocities = self.evtol_manager.get_velocities()  # Shape [1, N, 3]
+            if activate_evtols_num is not None:
+                if activate_evtols_num >= 0 and activate_evtols_num < evtol_velocities.shape[1]:
+                    evtol_velocities = evtol_velocities[:, :activate_evtols_num]
             velocities.append(evtol_velocities.squeeze(0))  # Convert to [N, 3]
         
         if velocities:
@@ -245,12 +286,14 @@ class TrafficSimulator:
         self, 
         external_positions: torch.Tensor, # 形状: (env_num, m, 3) 或 (m, 3)
         external_safety_radii: torch.Tensor, # 形状: (env_num, m) 或 (m)
+        activate_drones_num: int = None,
+        activate_evtols_num: int = None,
     ) -> torch.Tensor:
         """
         检查外部无人机与交通无人机之间是否存在潜在碰撞。
         此函数可以处理2D (m, ...) 或 3D (env_num, m, ...) 的输入。
         """
-        traffic_positions = self.get_aircraft_positions()
+        traffic_positions = self.get_aircraft_positions(activate_drones_num, activate_evtols_num)
         
         if traffic_positions.shape[0] == 0:
             return torch.zeros_like(external_safety_radii, dtype=torch.bool)
@@ -279,7 +322,7 @@ class TrafficSimulator:
         # 3. 计算阈值矩阵 (核心改动)
         # 我们需要一个和 distances 形状相同的阈值矩阵，
         # 其中每个元素 (i, j) 的值是第 i 架外部无人机和第 j 架交通无人机的安全半径之和。
-        traffic_radii = self.get_aircraft_safety_radius() # 形状: (N)
+        traffic_radii = self.get_aircraft_safety_radius(activate_drones_num, activate_evtols_num) # 形状: (N)
 
         # 利用广播机制：(env_num * m, 1) + (N,) -> (env_num * m, N)
         # unsqueeze(-1) 将 flat_external_radii 变为列向量

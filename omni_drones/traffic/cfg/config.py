@@ -22,7 +22,7 @@ class TrafficDroneCfg:
 @configclass
 class TrafficEvtolCfg:
     model: str = "iris"
-    safety_radius: float = 5.0
+    safety_radius: float = 10.0
     max_speed: float = 2.0
     arrival_threshold: float = 2.0
     turn_radius: float = 10.0

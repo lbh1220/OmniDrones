@@ -98,6 +98,7 @@ class SucessRateCallback(BaseCallback):
                  check_freq=100, 
                  save_path: str = "checkpoints",
                  name_prefix: str = "best_sr",
+                 queue_size=100,
                  verbose=0):
         super(SucessRateCallback, self).__init__(verbose)
 
@@ -112,8 +113,10 @@ class SucessRateCallback(BaseCallback):
         self.save_path = save_path
         self.name_prefix = name_prefix
         # 维护最近100次episode的结果
-        self.episode_results = deque(maxlen=100)
-        self.episode_rewards = deque(maxlen=100)
+        if queue_size < 100:
+            queue_size = 100
+        self.episode_results = deque(maxlen=queue_size)
+        self.episode_rewards = deque(maxlen=queue_size)
         
     def _checkpoint_path(self, checkpoint_type: str = "", extension: str = "") -> str:
         """
@@ -184,6 +187,7 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
                  check_freq=100, 
                  save_path: str = "checkpoints",
                  name_prefix: str = "sb3_train",
+                 queue_size=100,
                  verbose=0,
                  success_rate_threshold=0.8,
                  min_episodes_for_curriculum=20,
@@ -192,14 +196,8 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
                  total_timesteps_per_course=1000000,
                  warmup_steps=50000,
                  warmup_start_lr_factor=0.1,
-                 course_list=[
-                     {
-                         'success_rate_threshold': 0.8,
-                         'uav_num': 3,
-                         'evtol_num': 0,
-                     },
-                     
-                 ]):
+                 course_num=1
+                 ):
         super(CourseWithSuccessRateCallback, self).__init__(check_freq, save_path, name_prefix, verbose)
         
         # Curriculum learning parameters
@@ -228,9 +226,8 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
         self._lr_schedule_initialized = False
 
         # 课程列表，每个课程包含成功率阈值、无人机数量、电动飞行器数量
-        self.course_list = course_list
-        self.course_num = len(self.course_list)
-        self.success_rate_threshold = self.course_list[self.current_course]['success_rate_threshold']
+
+        self.course_num = course_num
 
     def _checkpoint_path(self, checkpoint_type: str = "", extension: str = "") -> str:
         """
@@ -261,6 +258,9 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
             if current_success_rate >= self.success_rate_threshold:
                 self._switch_to_next_course()
                 return True
+        steps_in_current_course = self.num_timesteps - self.curriculum_start_timesteps
+        if steps_in_current_course > self.total_timesteps_per_course:
+            return True
         return False
     
     def _switch_to_next_course(self):
@@ -271,16 +271,15 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
         if self.current_course >= self.course_num:
             self.current_course = self.course_num - 1
         self.course_switched = True
-        base_env = self.model.get_env().unwrapped.envs[0].env
-        if hasattr(base_env, 'state'):
-            base_env.state.uav_num = self.course_list[self.current_course]['uav_num']
-            base_env.state.evtol_num = self.course_list[self.current_course]['evtol_num']
-        # Clear episode results for new course
+        # base_env = self.model.get_env().unwrapped.envs[0].env
+        # # if hasattr(base_env, 'state'):
+        # #     base_env.state.uav_num = self.course_list[self.current_course]['uav_num']
+        # #     base_env.state.evtol_num = self.course_list[self.current_course]['evtol_num']
+        # # Clear episode results for new course
+        base_env = self.model.get_env().unwrapped
+        base_env.set_course(self.current_course)
         self.episode_results.clear()
         self.episode_rewards.clear()
-        
-        self.success_rate_threshold = self.course_list[self.current_course]['success_rate_threshold']
-
         
         # Reset learning rate for new curriculum
         self._reset_learning_rate()

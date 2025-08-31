@@ -22,7 +22,7 @@ class ArgsConfig:
         self.clip_param = 0.15
         self.value_loss_coef = 0.5
         self.entropy_coef = 0.01
-        self.lr = 3e-4
+        self.lr = 2e-4
         self.eps = 1e-5
         self.alpha = 0.99
         self.gamma = 0.99

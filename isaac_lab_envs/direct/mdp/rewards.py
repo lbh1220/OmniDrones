@@ -223,7 +223,8 @@ class TrafficRewardCalculator:
 
         # 使用 torch.where 根据类型选择不同的参数值
         penalty_factors = torch.where(is_evtol_mask, self.future_evtol_penalty, self.future_drone_penalty) # [total_traffic]
-        threshold_factors = torch.where(is_evtol_mask, 1.5, 2.0) # [total_traffic]
+        # threshold_factors = torch.where(is_evtol_mask, 1.5, 2.0) # [total_traffic]
+        threshold_factors = torch.where(is_evtol_mask, 1.5, 2.5) # [total_traffic]
         decay_factors = torch.where(is_evtol_mask, 0.9, 0.667) # [total_traffic]
         
         # --- 3. 计算随时间衰减的碰撞阈值 ---
