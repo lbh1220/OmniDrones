@@ -49,7 +49,7 @@ def create_env(cfg, headless=True):
 def main():
     parser = argparse.ArgumentParser(description="Train Traffic Environment with SB3 PPO")
     parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
-    parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
+    parser.add_argument("--num_mini_batch", type=int, default=16, help="Number of mini batches")
     parser.add_argument("--experiment_name", type=str, default=None,
                        help="Experiment name for saving")
     parser.add_argument("--course_num", type=int, default=0, help="Number of courses")
@@ -59,10 +59,14 @@ def main():
     parser.add_argument("--wandb_entity", type=str, default=None, help="Wandb entity/username")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="Custom wandb run name")
 
+    # success reward, collision reward
+    parser.add_argument("--rew_success", type=float, default=None, help="Success reward")
+    parser.add_argument("--rew_collision", type=float, default=None, help="Collision reward")
+
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
-    parser.add_argument("--drones_num", type=int, default=1, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
+    parser.add_argument("--drones_num", type=int, default=0, help="Number of drones")
+    parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
     parser.add_argument("--drone_future_penalty", type=float, default=0.0, help="Drone future penalty")
     parser.add_argument("--evtol_future_penalty", type=float, default=0.0, help="Evtol future penalty")
     parser.add_argument("--drones_threshold_factor", type=float, default=None, help="Drones threshold factor")
@@ -110,10 +114,15 @@ def main():
         cfg.traffic_sim.num_drones = args.drones_num
         cfg.traffic_sim.num_evtols = args.evtols_num
         
+    if args.rew_success is not None:
+        cfg.rew_success = args.rew_success
+    if args.rew_collision is not None:
+        cfg.rew_collision = args.rew_collision
 
     # future reward 
     cfg.rew_drone_future_penalty = args.drone_future_penalty
     cfg.rew_evtol_future_penalty = args.evtol_future_penalty
+
     if args.drones_threshold_factor is not None:
         cfg.rew_drones_threshold_factor = args.drones_threshold_factor
     if args.drones_decay_factor is not None:

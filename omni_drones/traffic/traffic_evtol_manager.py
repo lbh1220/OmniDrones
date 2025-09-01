@@ -115,14 +115,14 @@ class TrafficEVTOLManager:
             smooth_waypoints = self.all_smooth_waypoints[course_idx]
             initial_positions.append((smooth_waypoints[0].x, smooth_waypoints[0].y, smooth_waypoints[0].z))
             prim_paths.append(f"{self.traffic_prim_path}/traffic_evtol_{i}")
-            scales.append((2.0, 2.0, 1.0))  # EVTOL通常比较大
+            scales.append((self.config.evtol.safety_radius, self.config.evtol.safety_radius, 1.0))  # EVTOL通常比较大
         
         # 创建primitives - traffic 内部不碰撞
         created_prims = self.evtol.spawn(
             translations=initial_positions,
             prim_paths=prim_paths,
             scales=scales,
-            asset_name="Sphere",  # 使用立方体作为占位符
+            asset_name="Sphere",  # 使用球体作为占位符
             enable_collision=False  # traffic 内部不碰撞
         )
         

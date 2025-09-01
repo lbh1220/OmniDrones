@@ -77,7 +77,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     num_actions = 2  # 只输出vx,vy
     num_observations = 7  # robot_node(5) + temporal_edges(2) = 7
     num_states = 0
-    debug_vis = True
+    debug_vis = False
     is_training = True
 
     ui_window_class_type = NavEnvWindow
@@ -473,15 +473,31 @@ class NavEnv(DirectRLEnv):
                 marker_cfg.markers["cuboid"].size = (0.2, 0.2, 0.2)
                 marker_cfg.prim_path = "/Visuals/Command/target_position"
                 self.target_pos_visualizer = VisualizationMarkers(marker_cfg)
+
+            if not hasattr(self, "drone_pos_visualizer"):
+                # Create green marker for drone positions
+                drone_marker_cfg = CUBOID_MARKER_CFG.copy()
+                drone_marker_cfg.markers["cuboid"].size = (0.15, 0.15, 0.15)
+                drone_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 1.0, 0.0)  # Green color
+                drone_marker_cfg.prim_path = "/Visuals/Command/drone_position"
+                self.drone_pos_visualizer = VisualizationMarkers(drone_marker_cfg)
+
             self.target_pos_visualizer.set_visibility(True)
+            self.drone_pos_visualizer.set_visibility(True)
         else:
             if hasattr(self, "target_pos_visualizer"):
                 self.target_pos_visualizer.set_visibility(False)
+            if hasattr(self, "drone_pos_visualizer"):
+                self.drone_pos_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
         """Update debug visualization."""
         if hasattr(self, "target_pos_visualizer"):
             self.target_pos_visualizer.visualize(self.target_pos.squeeze(1))
+        
+        if hasattr(self, "drone_pos_visualizer"):
+            # Visualize drone positions - squeeze to remove the middle dimension (n_env, 3)
+            self.drone_pos_visualizer.visualize(self.drone.pos.squeeze(1))
 
     def _generate_crossing_task(self, num_env: int = 1, flight_height: float = 20.0):
         if num_env <= 0:

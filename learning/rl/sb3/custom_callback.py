@@ -127,7 +127,7 @@ class SucessRateCallback(BaseCallback):
         :param extension: Checkpoint file extension (zip for model, pkl for others)
         :return: Path to the checkpoint
         """
-        return os.path.join(self.save_path, f"{self.name_prefix}_{checkpoint_type}{self.num_timesteps}_steps.{extension}")
+        return os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}_steps_{checkpoint_type}.{extension}")
 
     def _on_rollout_end(self):
         self.check_num += 1

@@ -87,10 +87,10 @@ class TrafficEnvCfg(NavEnvCfg):
         num_evtols=3,
         flight_height=20.0,
         area_bounds=AreaBoundsCfg(
-            xmin=-50.0,
-            xmax=50.0,
-            ymin=-50.0,
-            ymax=50.0
+            xmin=-60.0,
+            xmax=60.0,
+            ymin=-60.0,
+            ymax=60.0
         )
     ))
     
@@ -106,7 +106,7 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_evtol_future_penalty = -0.8
     rew_drone_future_penalty = -1.0
     rew_time_penalty = 0.0
-    rew_drones_threshold_factor = 1.5
+    rew_drones_threshold_factor = 2.5
     rew_drones_decay_factor = 0.667
     rew_evtols_threshold_factor = 1.5
     rew_evtols_decay_factor = 0.9
