@@ -27,7 +27,7 @@ class ArgsConfig:
         self.alpha = 0.99
         self.gamma = 0.99
         self.max_grad_norm = 0.5
-        self.num_env_steps = int(2e7)
+        self.num_env_steps = int(1e7)
         self.use_linear_lr_decay = True
         self.use_cosine_lr_decay = False
         self.min_lr = 5e-6

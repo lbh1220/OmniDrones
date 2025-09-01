@@ -65,6 +65,10 @@ def main():
     parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
     parser.add_argument("--drone_future_penalty", type=float, default=0.0, help="Drone future penalty")
     parser.add_argument("--evtol_future_penalty", type=float, default=0.0, help="Evtol future penalty")
+    parser.add_argument("--drones_threshold_factor", type=float, default=None, help="Drones threshold factor")
+    parser.add_argument("--drones_decay_factor", type=float, default=None, help="Drones decay factor")
+    parser.add_argument("--evtols_threshold_factor", type=float, default=None, help="Evtols threshold factor")
+    parser.add_argument("--evtols_decay_factor", type=float, default=None, help="Evtols decay factor")
 
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
@@ -102,14 +106,22 @@ def main():
         cfg.curriculum_learning = True
         cfg.traffic_sim.num_drones = course_list[-1].drones_num
         cfg.traffic_sim.num_evtols = course_list[-1].evtol_num
-        cfg.rew_evtol_future_penalty = 0.8
-        cfg.rew_drone_future_penalty = 1.0
     else:
         cfg.traffic_sim.num_drones = args.drones_num
-        cfg.rew_drone_future_penalty = args.drone_future_penalty
-
         cfg.traffic_sim.num_evtols = args.evtols_num
-        cfg.rew_evtol_future_penalty = args.evtol_future_penalty
+        
+
+    # future reward 
+    cfg.rew_drone_future_penalty = args.drone_future_penalty
+    cfg.rew_evtol_future_penalty = args.evtol_future_penalty
+    if args.drones_threshold_factor is not None:
+        cfg.rew_drones_threshold_factor = args.drones_threshold_factor
+    if args.drones_decay_factor is not None:
+        cfg.rew_drones_decay_factor = args.drones_decay_factor
+    if args.evtols_threshold_factor is not None:
+        cfg.rew_evtols_threshold_factor = args.evtols_threshold_factor
+    if args.evtols_decay_factor is not None:
+        cfg.rew_evtols_decay_factor = args.evtols_decay_factor
 
 
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
