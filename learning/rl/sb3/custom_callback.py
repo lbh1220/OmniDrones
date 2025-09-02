@@ -127,7 +127,7 @@ class SucessRateCallback(BaseCallback):
         :param extension: Checkpoint file extension (zip for model, pkl for others)
         :return: Path to the checkpoint
         """
-        return os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}_steps_{checkpoint_type}.{extension}")
+        return os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}_steps{checkpoint_type}.{extension}")
 
     def _on_rollout_end(self):
         self.check_num += 1
@@ -154,7 +154,7 @@ class SucessRateCallback(BaseCallback):
                     self.logger.info(f"Best success rate: {self.best_success_rate}, save to {model_path}")
                     if self.model.get_vec_normalize_env() is not None:
                         # Save the VecNormalize statistics
-                        vec_normalize_path = self._checkpoint_path("vecnormalize_", extension="pkl")
+                        vec_normalize_path = self._checkpoint_path("_vecnormalize", extension="pkl")
                         self.model.get_vec_normalize_env().save(vec_normalize_path)
 
             else:
@@ -238,8 +238,8 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
         :param extension: Checkpoint file extension (zip for model, pkl for others)
         :return: Path to the checkpoint
         """
-        return os.path.join(self.save_path, f"{self.name_prefix}_{self.current_course}_{checkpoint_type}{self.num_timesteps}_steps.{extension}")
-    
+        return os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}_steps{checkpoint_type}.{extension}")
+
     def _check_curriculum_switch(self):
         """
         Check if curriculum should be switched based on success rate threshold

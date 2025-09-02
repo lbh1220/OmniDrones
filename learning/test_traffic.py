@@ -45,11 +45,11 @@ def main():
     """主函数"""
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
-    parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
+    parser.add_argument("--num_envs", type=int, default=10, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/homoe/u0e2_t2.5_f2.0/checkpoints",
+                        default="runs/traffic/homoe/u0e2_c-50.0_f3.0/checkpoints",
                        help="Path to the trained model directory")
-    parser.add_argument("--num_episodes", type=int, default=1000,
+    parser.add_argument("--num_episodes", type=int, default=100,
                        help="Number of episodes for evaluation")
     
 
@@ -62,7 +62,7 @@ def main():
     args = parser.parse_args()
     
     # 设置为非headless模式以便可视化
-    args.headless = False
+    args.headless = True
     # args.off
     
     # 启动Isaac Sim
@@ -78,8 +78,8 @@ def main():
     from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
     
     # 检查模型路径
-    model_file = os.path.join(args.model_dir, "SR_14942208_steps.zip")
-    vecnormalize_file = os.path.join(args.model_dir, "SR_vecnormalize_14942208_steps.pkl")
+    model_file = os.path.join(args.model_dir, "SR_11730944_steps_.zip")
+    vecnormalize_file = os.path.join(args.model_dir, "SR_11730944_steps_steps.pkl")
     
     if not os.path.exists(model_file):
         print(f"错误：找不到模型文件 {model_file}")

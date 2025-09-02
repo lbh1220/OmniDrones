@@ -103,12 +103,12 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
-    rew_evtol_future_penalty = -0.8
-    rew_drone_future_penalty = -1.0
+    rew_evtol_future_penalty = -0.0
+    rew_drone_future_penalty = -0.0
     rew_time_penalty = 0.0
-    rew_drones_threshold_factor = 2.5
+    rew_drones_threshold_factor = 2.0
     rew_drones_decay_factor = 0.667
-    rew_evtols_threshold_factor = 1.5
+    rew_evtols_threshold_factor = 2.0
     rew_evtols_decay_factor = 0.9
 
     # curriculum learning

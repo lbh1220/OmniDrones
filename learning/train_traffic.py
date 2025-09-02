@@ -74,6 +74,9 @@ def main():
     parser.add_argument("--evtols_threshold_factor", type=float, default=None, help="Evtols threshold factor")
     parser.add_argument("--evtols_decay_factor", type=float, default=None, help="Evtols decay factor")
 
+    # whether reward normalize
+    parser.add_argument("--reward_normalize", action="store_true", help="Reward normalize")
+
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
@@ -184,10 +187,13 @@ def main():
 
     # create env
     env = create_env(cfg, headless=True)
-    
+    if hasattr(args, 'reward_normalize'):
+        norm_reward = True
+    else:
+        norm_reward = False
     env = VecNormalize(env, 
                         norm_obs=False, 
-                        norm_reward=True, 
+                        norm_reward=norm_reward, 
                         training=True,
                         clip_obs=10.0, 
                         clip_reward=10.0,
