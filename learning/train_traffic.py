@@ -48,8 +48,14 @@ def create_env(cfg, headless=True):
 
 def main():
     parser = argparse.ArgumentParser(description="Train Traffic Environment with SB3 PPO")
-    parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
+
+    # learning params, num_envs, num_mini_batch, num_steps, learning_rate
+    parser.add_argument("--num_envs", type=int, default=1024, help="Number of environments")
     parser.add_argument("--num_mini_batch", type=int, default=16, help="Number of mini batches")
+    parser.add_argument("--num_steps", type=int, default=64, help="Number of steps")
+    parser.add_argument("--learning_rate", type=float, default=4e-5, help="Learning rate")
+
+
     parser.add_argument("--experiment_name", type=str, default=None,
                        help="Experiment name for saving")
     parser.add_argument("--course_num", type=int, default=0, help="Number of courses")
@@ -91,6 +97,9 @@ def main():
     algo_args = ArgsConfig()
     algo_args.num_processes = args.num_envs
     algo_args.num_mini_batch = args.num_mini_batch
+    algo_args.num_steps = args.num_steps
+    algo_args.lr = args.learning_rate
+    algo_args.seq_length = args.num_steps
 
 
 
