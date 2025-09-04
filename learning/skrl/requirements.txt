@@ -1,0 +1,35 @@
+# SKRL Traffic Environment Training Requirements
+# 安装命令: pip install -r requirements.txt
+
+# Core SKRL dependencies
+skrl[torch]>=1.0.0
+
+# PyTorch (根据你的CUDA版本调整)
+torch>=1.11.0
+torchvision>=0.12.0
+
+# Gymnasium (OpenAI Gym 的后续版本)
+gymnasium>=0.26.0
+
+# Isaac Lab 相关 (如果未通过 ./isaaclab.sh -i skrl 安装)
+# 注意：最好通过 Isaac Lab 的官方安装脚本安装
+
+# 日志和可视化
+tensorboard>=2.10.0
+wandb>=0.13.0
+
+# 配置文件处理
+PyYAML>=6.0
+
+# 数学和科学计算
+numpy>=1.21.0
+scipy>=1.7.0
+
+# 其他工具
+tqdm>=4.64.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# 可选：用于更好的命令行体验
+rich>=12.0.0
+click>=8.0.0

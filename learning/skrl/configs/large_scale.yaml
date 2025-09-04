@@ -1,0 +1,123 @@
+# Large Scale Training Configuration
+# 适用于高性能训练的大规模配置
+
+# Environment settings
+environment:
+  name: "TrafficEnv"
+  num_envs: 4096                 # 大规模环境数量
+  max_episode_length: 2000       # 较长的episode长度
+  headless: true
+
+# Agent configuration
+agent:
+  algorithm: "PPO"
+  
+  # PPO specific parameters
+  rollouts: 128                  # 更多的rollout步数
+  mini_batches: 32               # 更多的mini-batch
+  learning_epochs: 6             # 更多的学习epoch
+  
+  # Learning parameters
+  learning_rate: 2.0e-5          # 较低的学习率用于稳定性
+  learning_rate_scheduler: "KLAdaptiveLR"
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.005          # 更严格的KL阈值
+  
+  # PPO clipping
+  ratio_clip: 0.08               # 更小的裁剪范围
+  value_clip: 0.08
+  clip_predicted_values: true
+  
+  # Loss coefficients
+  entropy_loss_scale: 0.0005     # 较低的熵系数
+  value_loss_scale: 0.5
+  
+  # Discount and GAE
+  discount_factor: 0.995         # 更高的折扣因子
+  lambda: 0.98                   # 更高的GAE lambda
+  
+  # Optimization
+  grad_norm_clip: 0.3            # 更严格的梯度裁剪
+  
+  # Experience replay
+  memory_size: 128
+  random_timesteps: 0
+  learning_starts: 0
+
+# Network architecture
+network:
+  robot_node_input_size: 7
+  human_node_input_size: 3
+  max_human_num: 20              # 更多的human数量
+  human_node_embedding_size: 128 # 更大的embedding
+  attention_size: 512            # 更大的attention size
+  human_node_output_size: 512    # 更大的输出size
+  
+  # GAT layer parameters
+  dropout: 0.05                  # 较低的dropout
+  alpha: 0.2
+  num_heads: 8                   # 更多的注意力头
+  hidden_dim_per_head: 64        # 更大的隐藏维度
+
+# Training parameters
+training:
+  total_timesteps: 100000000     # 更多的总步数
+  log_interval: 20               # 较少频繁的日志
+  save_interval: 2000            # 较少频繁的保存
+  eval_interval: 200             # 较少频繁的评估
+
+# Experiment settings
+experiment:
+  name: null
+  directory: "runs/traffic_skrl_large"
+  write_interval: 20
+  checkpoint_interval: 2000
+
+# Traffic environment specific
+traffic:
+  drones_num: 15                 # 更多的无人机
+  evtols_num: 5                  # 更多的eVTOL
+  drone_future_penalty: 0.1
+  evtol_future_penalty: 0.1
+  drones_threshold_factor: 1.2
+  drones_decay_factor: 0.95
+  evtols_threshold_factor: 1.5
+  evtols_decay_factor: 0.9
+  rew_success: 10.0
+  rew_collision: -5.0
+  predict_steps: 10              # 更多的预测步数
+
+# Logging
+logging:
+  use_tensorboard: true
+  tensorboard_dir: "tensorboard"
+  
+  use_wandb: true                # 默认启用wandb
+  wandb_project: "omni_drones_traffic_skrl_large"
+  wandb_entity: null
+  wandb_run_name: null
+  wandb_tags: ["skrl", "ppo", "traffic", "gat", "large_scale", "production"]
+
+# Callbacks
+callbacks:
+  success_rate:
+    enabled: true
+    check_freq: 20               # 较少频繁的检查
+    queue_size: 2000             # 更大的队列
+    success_threshold: 0.85      # 更高的成功阈值
+    
+  model_checkpoint:
+    enabled: true
+    save_interval: 20000
+    
+  episode_stats:
+    enabled: true
+    log_interval: 200
+
+# Isaac Lab specific
+isaac_lab:
+  headless: true
+  device: "cuda"
+
+# Seeds
+seed: 42
