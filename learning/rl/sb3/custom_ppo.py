@@ -182,7 +182,7 @@ class CustomPPO(OnPolicyAlgorithm):
         assert self._last_obs is not None, "No previous observation was provided"
         
         # Switch to eval mode
-        self.policy.set_training_mode(False)
+        self.policy.eval()
         
         n_steps = 0
         rollout_buffer.reset()

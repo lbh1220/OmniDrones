@@ -11,13 +11,13 @@ from rl.sb3.config import ArgsConfig
 
 # 导入Isaac Lab
 from omni.isaac.lab.app import AppLauncher
-from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.logger import configure
 from rl.sb3.custom_callback import SucessRateCallback, CourseWithSuccessRateCallback
 from rl.sb3.custom_ppo import CustomPPO
 from rl.sb3.custom_policy import CustomSelfAttnPolicy
 from rl.sb3.network_utils import linear_schedule_with_min
 from rl.sb3.custom_callback import SucessRateCallback
+from rl.sb3.vec_normalize import VecNormalize
 
 # 添加wandb支持
 try:
@@ -200,13 +200,17 @@ def main():
         norm_reward = True
     else:
         norm_reward = False
+    norm_obs_keys = ['robot_node', 'spatial_edges', 'temporal_edges']
     env = VecNormalize(env, 
-                        norm_obs=False, 
+                        norm_obs=True, 
                         norm_reward=norm_reward, 
                         training=True,
                         clip_obs=10.0, 
                         clip_reward=10.0,
-                        gamma=algo_args.gamma)
+                        gamma=algo_args.gamma,
+                        norm_obs_keys=norm_obs_keys,
+                        shared_across_agents = True
+                        )
 
     policy_kwargs = dict(
         net_arch=dict(pi=[64, 64], vf=[64, 64]),

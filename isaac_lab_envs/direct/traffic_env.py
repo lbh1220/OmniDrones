@@ -87,10 +87,10 @@ class TrafficEnvCfg(NavEnvCfg):
         num_evtols=3,
         flight_height=20.0,
         area_bounds=AreaBoundsCfg(
-            xmin=-60.0,
-            xmax=60.0,
-            ymin=-60.0,
-            ymax=60.0
+            xmin=-80.0,
+            xmax=80.0,
+            ymin=-80.0,
+            ymax=80.0
         )
     ))
     

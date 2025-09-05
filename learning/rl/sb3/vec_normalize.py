@@ -1,16 +1,66 @@
 import inspect
 import pickle
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from gymnasium import spaces
 
 from stable_baselines3.common import utils
 from stable_baselines3.common.preprocessing import is_image_space
-from stable_baselines3.common.running_mean_std import RunningMeanStd
+from stable_baselines3.common.running_mean_std import RunningMeanStd as _RunningMeanStd
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvStepReturn, VecEnvWrapper
 
+class RunningMeanStd(_RunningMeanStd):
+    def __init__(self, epsilon: float = 1e-4, shape: Tuple[int, ...] = (), shared_across_agents: bool = False):
+        """
+        Enhanced RunningMeanStd that supports multi-agent normalization.
+        
+        :param epsilon: Small value to avoid division by zero
+        :param shape: Shape of the data stream's output
+        :param shared_across_agents: If True, when input has shape (batch_size, n_agents, dim),
+                                   the statistics will be shared across all agents (shape will be (dim,))
+                                   instead of maintaining separate stats for each agent (shape (n_agents, dim))
+        """
+        self.shared_across_agents = shared_across_agents
+        if shared_across_agents and len(shape) == 2:
+            # For multi-agent case, we only track stats for the feature dimension
+            # Assume shape is (n_agents, dim), we only want to track (dim,)
+            super().__init__(epsilon, shape[1:])
+        else:
+            super().__init__(epsilon, shape)
+    
+    def copy(self) -> "RunningMeanStd":
+        """
+        Return a copy of the current object.
+        """
+        new_object = RunningMeanStd(shape=self.mean.shape, shared_across_agents=self.shared_across_agents)
+        new_object.mean = self.mean.copy()
+        new_object.var = self.var.copy()
+        new_object.count = float(self.count)
+        return new_object
+    
+    def update(self, arr: np.ndarray) -> None:
+        """
+        Update statistics with new data.
+        
+        :param arr: Input array. For multi-agent case with shared_across_agents=True,
+                   expects shape (batch_size, n_agents, dim) and will reshape to 
+                   (batch_size * n_agents, dim) for shared statistics calculation.
+        """
+        if self.shared_across_agents and arr.ndim == 3:
+            # Reshape (batch_size, n_agents, dim) -> (batch_size * n_agents, dim)
+            # This way all agents share the same normalization statistics
+            original_shape = arr.shape
+            arr = arr.reshape(-1, original_shape[-1])
+        elif self.shared_across_agents and arr.ndim == 2:
+            # Handle case where input is (n_agents, dim) - treat each agent as a separate sample
+            pass
+        
+        batch_mean = np.mean(arr, axis=0)
+        batch_var = np.var(arr, axis=0)
+        batch_count = arr.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
 
 class VecNormalize(VecEnvWrapper):
     """
@@ -27,6 +77,9 @@ class VecNormalize(VecEnvWrapper):
     :param epsilon: To avoid division by zero
     :param norm_obs_keys: Which keys from observation dict to normalize.
         If not specified, all keys will be normalized.
+    :param shared_across_agents: If True, for multi-agent observations with shape (n_agents, dim),
+        all agents will share the same normalization statistics instead of maintaining
+        separate statistics for each agent.
     """
 
     def __init__(
@@ -40,18 +93,26 @@ class VecNormalize(VecEnvWrapper):
         gamma: float = 0.99,
         epsilon: float = 1e-8,
         norm_obs_keys: Optional[List[str]] = None,
+        shared_across_agents: bool = False,
     ):
         VecEnvWrapper.__init__(self, venv)
 
         self.norm_obs = norm_obs
         self.norm_obs_keys = norm_obs_keys
+        self.shared_across_agents = shared_across_agents
+        
         # Check observation spaces
         if self.norm_obs:
             self._sanity_checks()
 
             if isinstance(self.observation_space, spaces.Dict):
                 self.obs_spaces = self.observation_space.spaces
-                self.obs_rms = {key: RunningMeanStd(shape=self.obs_spaces[key].shape) for key in self.norm_obs_keys}
+                self.obs_rms = {
+                    key: RunningMeanStd(
+                        shape=self.obs_spaces[key].shape, 
+                        shared_across_agents=shared_across_agents
+                    ) for key in self.norm_obs_keys
+                }
                 # Update observation space when using image
                 # See explanation below and GH #1214
                 for key in self.obs_rms.keys():
@@ -65,7 +126,10 @@ class VecNormalize(VecEnvWrapper):
 
             else:
                 self.obs_spaces = None
-                self.obs_rms = RunningMeanStd(shape=self.observation_space.shape)
+                self.obs_rms = RunningMeanStd(
+                    shape=self.observation_space.shape, 
+                    shared_across_agents=shared_across_agents
+                )
                 # Update observation space when using image
                 # See GH #1214
                 # This is to raise proper error when
@@ -146,6 +210,9 @@ class VecNormalize(VecEnvWrapper):
         # Backward compatibility
         if "norm_obs_keys" not in state and isinstance(state["observation_space"], spaces.Dict):
             state["norm_obs_keys"] = list(state["observation_space"].spaces.keys())
+        # Backward compatibility for shared_across_agents
+        if "shared_across_agents" not in state:
+            state["shared_across_agents"] = False
         self.__dict__.update(state)
         assert "venv" not in state
         self.venv = None
@@ -214,7 +281,16 @@ class VecNormalize(VecEnvWrapper):
         :param obs_rms: associated statistics
         :return: normalized observation
         """
-        return np.clip((obs - obs_rms.mean) / np.sqrt(obs_rms.var + self.epsilon), -self.clip_obs, self.clip_obs)
+        if obs_rms.shared_across_agents and obs.ndim >= 2:
+            # For multi-agent case with shared stats, broadcasting will handle the normalization
+            # obs shape: (n_agents, dim) or (batch_size, n_agents, dim)
+            # obs_rms.mean shape: (dim,), obs_rms.var shape: (dim,)
+            normalized = (obs - obs_rms.mean) / np.sqrt(obs_rms.var + self.epsilon)
+        else:
+            # Standard case: shapes should match exactly
+            normalized = (obs - obs_rms.mean) / np.sqrt(obs_rms.var + self.epsilon)
+        
+        return np.clip(normalized, -self.clip_obs, self.clip_obs)
 
     def _unnormalize_obs(self, obs: np.ndarray, obs_rms: RunningMeanStd) -> np.ndarray:
         """
@@ -223,7 +299,14 @@ class VecNormalize(VecEnvWrapper):
         :param obs_rms: associated statistics
         :return: unnormalized observation
         """
-        return (obs * np.sqrt(obs_rms.var + self.epsilon)) + obs_rms.mean
+        if obs_rms.shared_across_agents and obs.ndim >= 2:
+            # For multi-agent case with shared stats, broadcasting will handle the unnormalization
+            # obs shape: (n_agents, dim) or (batch_size, n_agents, dim)
+            # obs_rms.mean shape: (dim,), obs_rms.var shape: (dim,)
+            return (obs * np.sqrt(obs_rms.var + self.epsilon)) + obs_rms.mean
+        else:
+            # Standard case: shapes should match exactly
+            return (obs * np.sqrt(obs_rms.var + self.epsilon)) + obs_rms.mean
 
     def normalize_obs(self, obs: Union[np.ndarray, Dict[str, np.ndarray]]) -> Union[np.ndarray, Dict[str, np.ndarray]]:
         """
