@@ -50,10 +50,12 @@ def main():
     parser = argparse.ArgumentParser(description="Train Traffic Environment with SB3 PPO")
 
     # learning params, num_envs, num_mini_batch, num_steps, learning_rate
-    parser.add_argument("--num_envs", type=int, default=1024, help="Number of environments")
-    parser.add_argument("--num_mini_batch", type=int, default=16, help="Number of mini batches")
-    parser.add_argument("--num_steps", type=int, default=64, help="Number of steps")
+    parser.add_argument("--num_envs", type=int, default=512, help="Number of environments")
+    parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
+    parser.add_argument("--num_steps", type=int, default=128, help="Number of steps")
     parser.add_argument("--learning_rate", type=float, default=4e-5, help="Learning rate")
+    # total timesteps
+    parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps")
 
 
     parser.add_argument("--experiment_name", type=str, default=None,
@@ -73,6 +75,7 @@ def main():
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
     parser.add_argument("--drones_num", type=int, default=0, help="Number of drones")
     parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
+    parser.add_argument("--evtol_radius", type=float, default=10.0, help="Evtol radius")    
     parser.add_argument("--drone_future_penalty", type=float, default=0.0, help="Drone future penalty")
     parser.add_argument("--evtol_future_penalty", type=float, default=0.0, help="Evtol future penalty")
     parser.add_argument("--drones_threshold_factor", type=float, default=None, help="Drones threshold factor")
@@ -100,6 +103,8 @@ def main():
     algo_args.num_steps = args.num_steps
     algo_args.lr = args.learning_rate
     algo_args.seq_length = args.num_steps
+    if args.total_timesteps is not None:
+        algo_args.num_env_steps = args.total_timesteps
 
 
 
@@ -112,19 +117,21 @@ def main():
     if args.course_num > 0:
         from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
         course_list = [
-                    TrafficCurriculumCfg(drones_num=2, evtol_num=1),
-                    TrafficCurriculumCfg(drones_num=5, evtol_num=1),
-                    TrafficCurriculumCfg(drones_num=5, evtol_num=2),
-                    TrafficCurriculumCfg(drones_num=5, evtol_num=3),
+                    TrafficCurriculumCfg(drones_num=6, evtol_num=1, evtol_radius=2.0),
+                    TrafficCurriculumCfg(drones_num=6, evtol_num=1, evtol_radius=4.0),
+                    TrafficCurriculumCfg(drones_num=6, evtol_num=1, evtol_radius=6.0),
+                    TrafficCurriculumCfg(drones_num=6, evtol_num=1, evtol_radius=8.0),
                 ]
         args.course_num = len(course_list)
         cfg.curriculum_list = course_list
         cfg.curriculum_learning = True
         cfg.traffic_sim.num_drones = course_list[-1].drones_num
         cfg.traffic_sim.num_evtols = course_list[-1].evtol_num
+        cfg.traffic_sim.evtol.safety_radius = course_list[0].evtol_radius
     else:
         cfg.traffic_sim.num_drones = args.drones_num
         cfg.traffic_sim.num_evtols = args.evtols_num
+        cfg.traffic_sim.evtol.safety_radius = args.evtol_radius
         
     if args.rew_success is not None:
         cfg.rew_success = args.rew_success
@@ -151,6 +158,10 @@ def main():
     if args.experiment_name is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.experiment_name = f"traffic_ppo_{timestamp}"
+    else:
+        # add timestamp to experiment name
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.experiment_name = f"{args.experiment_name}_{timestamp}"
 
     # 创建保存目录
     save_dir = f"runs/traffic/{args.experiment_name}"
@@ -184,7 +195,6 @@ def main():
         # 初始化wandb
         wandb.init(
             project=args.wandb_project,
-            entity=args.wandb_entity,
             name=run_name,
             config=wandb_config,
             sync_tensorboard=True,  # 自动同步tensorboard日志

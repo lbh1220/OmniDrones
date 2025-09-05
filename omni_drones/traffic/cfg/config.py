@@ -26,7 +26,7 @@ class TrafficEvtolCfg:
     max_speed: float = 2.0
     arrival_threshold: float = 2.0
     turn_radius: float = 10.0
-    course_num: int = 5
+    course_num: int = 8
 
 @configclass
 class OrcaCfg:

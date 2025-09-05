@@ -62,7 +62,7 @@ def main():
     args = parser.parse_args()
     
     # 设置为非headless模式以便可视化
-    args.headless = True
+    args.headless = False
     # args.off
     
     # 启动Isaac Sim

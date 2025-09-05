@@ -84,6 +84,8 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # 初始化配置和处理器
 cfg = TrafficEnvCfg()
+cfg.rew_drone_future_penalty = -2.0
+cfg.rew_evtol_future_penalty = -3.0
 obs_processor = TrafficObservationProcessor(cfg, device)
 reward_calculator = TrafficRewardCalculator(cfg, device)
 
@@ -261,10 +263,10 @@ def visualize_traffic_and_penalty():
     
     # 将结果转换为numpy并reshape
     penalty_grid = penalties.cpu().numpy().reshape(X.shape)
-    
     # 创建热力图
     # 使用负值的对数来更好地显示分布（因为penalty都是负数）
     penalty_for_plot = -penalty_grid  # 转为正数
+
     penalty_for_plot = np.maximum(penalty_for_plot, 1e-6)  # 避免log(0)
     
     # 绘制热力图

@@ -21,13 +21,13 @@ class ArgsConfig:
         self.ppo_epoch = 4
         self.clip_param = 0.10
         self.value_loss_coef = 0.5
-        self.entropy_coef = 0.02
+        self.entropy_coef = 0.01
         self.lr = 4e-5
         self.eps = 1e-5
         self.alpha = 0.99
         self.gamma = 0.99
         self.max_grad_norm = 0.5
-        self.num_env_steps = int(40e6)
+        self.num_env_steps = int(50e6)
         self.use_linear_lr_decay = True
         self.use_cosine_lr_decay = False
         self.min_lr = 5e-6

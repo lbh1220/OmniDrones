@@ -62,10 +62,11 @@ class TrafficCurriculumCfg:
     """Configuration for the Traffic curriculum learning environment."""
     drones_num: int = 1
     evtol_num: int = 0
-    def __init__(self, drones_num: int = 1, evtol_num: int = 0):
+    evtol_radius: float = 10.0
+    def __init__(self, drones_num: int = 1, evtol_num: int = 0, evtol_radius: float = 10.0):
         self.drones_num = drones_num
         self.evtol_num = evtol_num
-
+        self.evtol_radius = evtol_radius
 class NavEnvWindow(BaseEnvWindow):
     """Window manager for the Nav environment."""
 
@@ -110,6 +111,7 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_drones_decay_factor = 0.667
     rew_evtols_threshold_factor = 2.0
     rew_evtols_decay_factor = 0.9
+    ## drones in previous, 2.0, 0.667; evtols in previous, 1.5, 0.9
 
     # curriculum learning
     curriculum_learning: bool = False
@@ -327,6 +329,9 @@ class TrafficEnvWithCurriculum(TrafficEnv):
             self.current_course = self.course_num - 1
         self.active_drones_num = self.cfg.curriculum_list[self.current_course].drones_num
         self.active_evtols_num = self.cfg.curriculum_list[self.current_course].evtol_num
+        previous_evtol_radius = self.traffic_sim.evtol_manager.state.safety_radius
+        new_evtol_radius = torch.ones(previous_evtol_radius.shape) * self.cfg.curriculum_list[self.current_course].evtol_radius
+        self.traffic_sim.evtol_manager.state.safety_radius = new_evtol_radius
         
     def _detect_collisions(self) -> torch.Tensor:
         """检测与traffic aircraft的碰撞"""
