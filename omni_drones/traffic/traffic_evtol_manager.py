@@ -165,6 +165,10 @@ class TrafficEVTOLManager:
         max_speed = [self.max_speed] * self.num_evtols
         self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, self.device)
         
+        # 随机生成EVTOL的属性
+        # 这个暂时没办法用，因为simulator很少reset
+        self.random_attributes(self.config.evtol.random_speed, self.config.evtol.random_safety_radius)
+        
         # 为每个EVTOL在state中设置对应的平滑后轨迹
         for i in range(self.num_evtols):
             course_idx = self.evtol_course_assignments[i]
@@ -385,10 +389,19 @@ class TrafficEVTOLManager:
         
         return states.unsqueeze(0)  # [1, N, 13]
     
-    def get_state_manager(self) -> TrafficState:
-        """获取状态管理器"""
-        return self.state
-    
+    def random_attributes(self, random_speed, random_safety_radius):
+        """随机生成EVTOL的属性"""
+        if random_speed:
+            # 为速度添加 ±0.1 范围内的随机扰动
+            speed_perturbation = torch.empty_like(self.state.max_speed).uniform_(-0.1, 0.1)
+            self.state.max_speed = self.state.max_speed + speed_perturbation
+            
+        if random_safety_radius:
+            # 为安全半径添加向下的扰动，扰动值为当前半径的0.4
+            radius_perturbation = torch.empty_like(self.state.safety_radius).uniform_(-0.4, 0.4)
+            self.state.safety_radius = self.state.safety_radius + radius_perturbation
+            self.state.safety_radius = torch.clamp(self.state.safety_radius, min=0.0, max=10.0)
+
     def reset(self):
         """重置所有EVTOL"""
         if not self.is_initialized:

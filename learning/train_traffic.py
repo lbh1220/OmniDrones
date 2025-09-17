@@ -74,7 +74,7 @@ def main():
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
     parser.add_argument("--drones_num", type=int, default=0, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
+    parser.add_argument("--evtols_num", type=int, default=2, help="Number of evtols")
     parser.add_argument("--evtol_radius", type=float, default=10.0, help="Evtol radius")    
     parser.add_argument("--drone_future_penalty", type=float, default=0.0, help="Drone future penalty")
     parser.add_argument("--evtol_future_penalty", type=float, default=0.0, help="Evtol future penalty")
@@ -132,7 +132,8 @@ def main():
         cfg.traffic_sim.num_drones = args.drones_num
         cfg.traffic_sim.num_evtols = args.evtols_num
         cfg.traffic_sim.evtol.safety_radius = args.evtol_radius
-        
+
+    cfg.traffic_sim.evtol.random_safety_radius = True
     if args.rew_success is not None:
         cfg.rew_success = args.rew_success
     if args.rew_collision is not None:
@@ -156,11 +157,11 @@ def main():
     algo_args.human_human_edge_input_size = algo_args.human_human_edge_input_size + 1
     # 设置实验名称
     if args.experiment_name is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%m%d_%H%M%S")
         args.experiment_name = f"traffic_ppo_{timestamp}"
     else:
         # add timestamp to experiment name
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%m%d_%H%M%S")
         args.experiment_name = f"{args.experiment_name}_{timestamp}"
 
     # 创建保存目录
@@ -240,7 +241,7 @@ def main():
         SR_check_callback = CourseWithSuccessRateCallback(check_freq=getattr(algo_args, 'log_interval', 10),
                                                             save_path=os.path.join(save_dir, 'checkpoints'),
                                                             queue_size=args.num_envs,
-                                                            success_rate_threshold=0.8,
+                                                            success_rate_threshold=1.1,
                                                             min_episodes_for_curriculum=50,
                                                             initial_lr=algo_args.lr,
                                                             min_lr=algo_args.min_lr,

@@ -27,7 +27,9 @@ class TrafficEvtolCfg:
     arrival_threshold: float = 2.0
     turn_radius: float = 10.0
     course_num: int = 8
-
+    random_speed: bool = False
+    random_safety_radius: bool = False
+    
 @configclass
 class OrcaCfg:
     enable: bool = True
