@@ -31,7 +31,6 @@ class NavigationNamespace:
     
     # 距离和状态
     current_dist_to_target: torch.Tensor = None  # 当前到目标距离 [num_envs]
-    prev_dist_to_target: torch.Tensor = None     # 上一步到目标距离 [num_envs]
     
     # 任务状态
     reached_target_mask: torch.Tensor = None     # 到达目标mask [num_envs]
@@ -47,6 +46,8 @@ class NavigationNamespace:
     local_goals: torch.Tensor = None           # 局部目标 [num_envs, 1, 3]
     projection_points: torch.Tensor = None      # 投影点 [num_envs, 1, 3]
     cross_track_errors: torch.Tensor = None      # 横向误差 [num_envs]
+    current_dist_along_path: torch.Tensor = None      # 投影点，到终点的距离 [num_envs]
+
 
 @dataclass
 class CollisionNamespace:
@@ -127,7 +128,6 @@ class EnvState:
         self.navigation.target_positions = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.navigation.start_positions = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.navigation.current_dist_to_target = torch.zeros(self.num_envs, device=self.device)
-        self.navigation.prev_dist_to_target = torch.zeros(self.num_envs, device=self.device)
         self.navigation.reached_target_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.navigation.velocity_commands = torch.zeros(self.num_envs, 1, 3, device=self.device)
         # 航路点信息
@@ -140,7 +140,7 @@ class EnvState:
         self.navigation.local_goals = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.navigation.projection_points = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.navigation.cross_track_errors = torch.zeros(self.num_envs, device=self.device)
-        
+        self.navigation.current_dist_along_path = torch.zeros(self.num_envs, device=self.device)
         # 碰撞状态
         self.collision.collision_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.collision.collision_objects = [None] * self.num_envs
@@ -181,14 +181,16 @@ class EnvState:
         # 重置导航状态
         if self.navigation.current_dist_to_target is not None:
             self.navigation.current_dist_to_target[env_ids] = 0.0
-        if self.navigation.prev_dist_to_target is not None:
-            self.navigation.prev_dist_to_target[env_ids] = 0.0
+
         if self.navigation.reached_target_mask is not None:
             self.navigation.reached_target_mask[env_ids] = False
             
         # 重置碰撞状态
         if self.collision.collision_mask is not None:
             self.collision.collision_mask[env_ids] = False
+
+        if self.navigation.current_dist_along_path is not None:
+            self.navigation.current_dist_along_path[env_ids] = 0.0
             
         # 重置任务状态
         if self.mission.success_mask is not None:
@@ -344,8 +346,28 @@ class EnvState:
             
             gathered_dist_to_start = torch.gather(dist_to_segment_start, 1, best_segment_indices_long.unsqueeze(-1)).squeeze(-1)
             gathered_segment_len = torch.gather(segment_lengths, 1, best_segment_indices_long.unsqueeze(-1)).squeeze(-1)
+
             dist_to_projection = gathered_dist_to_start + best_ratios_long * gathered_segment_len
+
+            # --- 新增代码开始: 计算到终点的距离 ---
+            # 1. 计算每条路径的总长度
+            #    路径总长等于其最后一个有效航路段的累积长度
+            last_segment_indices = waypoint_lengths[long_path_mask] - 2
+            #    钳制以防止路径只有1个航路段时索引为负
+            last_segment_indices = torch.clamp(last_segment_indices, min=0) 
             
+            #    使用 gather 批量获取每条路径的总长度
+            total_path_lengths = torch.gather(cumulative_lengths, 1, last_segment_indices.unsqueeze(-1)).squeeze(-1)
+            
+            # 2. 计算投影点到终点的距离
+            dist_projection_to_goal = total_path_lengths - dist_to_projection
+            #    确保距离不为负
+            dist_projection_to_goal = torch.clamp(dist_projection_to_goal, min=0.0)
+            
+            # 3. 存入状态
+            self.navigation.current_dist_along_path[env_ids[long_path_mask]] = dist_projection_to_goal
+            # --- 新增代码结束 ---
+
             # 计算目标点在路径上的总距离
             target_dist_along_path = dist_to_projection + lookahead_distance
             
@@ -389,7 +411,9 @@ class EnvState:
             # 如果路径点>0,则为长度-1，否则为0
             short_path_indices = torch.clamp(waypoint_lengths[short_path_mask] - 1, min=0)
             self.navigation.current_waypoint_indices[env_ids[short_path_mask]] = short_path_indices
-            
+            self.navigation.current_dist_along_path[env_ids[short_path_mask]] = torch.norm(target_positions[short_path_mask] - positions_3d[short_path_mask], dim=-1)
+
+    # this func is deprecated
     def update_navigation_state_iterative(self, lookahead_distance: float = 10.0, env_ids: torch.Tensor | None = None):
         """
         通过遍历的方式，为每个环境更新其导航状态。
@@ -419,6 +443,7 @@ class EnvState:
                 self.navigation.projection_points[i, 0] = current_pos_3d
                 self.navigation.cross_track_errors[i] = 0.0
                 self.navigation.current_waypoint_indices[i] = num_waypoints - 1 if num_waypoints > 0 else 0
+                self.navigation.current_dist_along_path[i] = 0.0
                 continue
                 
             waypoints_2d = self.navigation.waypoints[i, :num_waypoints, :2] # shape: (num_waypoints, 2)

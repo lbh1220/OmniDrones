@@ -86,6 +86,9 @@ def main():
     # whether reward normalize
     parser.add_argument("--reward_normalize", action="store_true", help="Reward normalize")
 
+    parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
+    parser.add_argument("--rew_cross_track_coeff", type=float, default=-0.1, help="Cross track coeff")
+
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
@@ -114,6 +117,7 @@ def main():
     # 创建环境配置
     cfg = TrafficEnvCfg()
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
+
     if args.course_num > 0:
         from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
         course_list = [
@@ -151,6 +155,9 @@ def main():
         cfg.rew_evtols_threshold_factor = args.evtols_threshold_factor
     if args.evtols_decay_factor is not None:
         cfg.rew_evtols_decay_factor = args.evtols_decay_factor
+
+    cfg.use_global_path = args.use_global_path
+    cfg.rew_cross_track_coeff = args.rew_cross_track_coeff
 
 
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
@@ -223,6 +230,9 @@ def main():
                         shared_across_agents = True
                         )
 
+
+    # change robot_node_input_size
+    algo_args.robot_node_input_size = env.observation_space['robot_node'].shape[1] + env.observation_space['temporal_edges'].shape[1]
     policy_kwargs = dict(
         net_arch=dict(pi=[64, 64], vf=[64, 64]),
         ortho_init=True,
@@ -285,6 +295,8 @@ def main():
     model.logger.info(f"evtols_num: {cfg.traffic_sim.num_evtols}")
     model.logger.info(f"drone_future_penalty: {cfg.rew_drone_future_penalty}")
     model.logger.info(f"evtol_future_penalty: {cfg.rew_evtol_future_penalty}")
+    model.logger.info(f"use_global_path: {cfg.use_global_path}")
+    model.logger.info(f"rew_cross_track_coeff: {cfg.rew_cross_track_coeff}")
     model.logger.info(f"lr: {algo_args.lr}")
     model.logger.info(f"gamma: {algo_args.gamma}")
     model.logger.info(f"entropy_coef: {algo_args.entropy_coef}")

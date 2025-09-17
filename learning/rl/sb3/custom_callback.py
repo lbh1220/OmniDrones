@@ -117,6 +117,7 @@ class SucessRateCallback(BaseCallback):
             queue_size = 100
         self.episode_results = deque(maxlen=queue_size)
         self.episode_rewards = deque(maxlen=queue_size)
+        self.episode_cross_track_errors = deque(maxlen=queue_size)
         
     def _checkpoint_path(self, checkpoint_type: str = "", extension: str = "") -> str:
         """
@@ -142,11 +143,12 @@ class SucessRateCallback(BaseCallback):
                 success_rate = recent_success / total_recent
                 collision_rate = recent_collision / total_recent
                 timeout_rate = recent_timeout / total_recent
-
+                mean_recent_cross_track_error = np.mean(self.episode_cross_track_errors)
                 self.logger.record("val/success_rate", success_rate)
                 self.logger.record("val/collision_rate", collision_rate)
                 self.logger.record("val/timeout_rate", timeout_rate)
                 self.logger.record("val/mean_recent_reward", mean_recent_reward)
+                self.logger.record("val/mean_recent_cross_track_error", mean_recent_cross_track_error)
                 if success_rate > self.best_success_rate:
                     self.best_success_rate = success_rate
                     model_path = self._checkpoint_path(extension="zip")
@@ -162,7 +164,7 @@ class SucessRateCallback(BaseCallback):
                 self.logger.record("val/collision_rate", 0)
                 self.logger.record("val/timeout_rate", 0)
                 self.logger.record("val/mean_recent_reward", 0)
-                
+                self.logger.record("val/mean_recent_cross_track_error", 0)
     def _on_step(self) -> bool:
         # 获取当前环境的reward和info
         for i, done in enumerate(self.locals['dones']):
@@ -174,6 +176,11 @@ class SucessRateCallback(BaseCallback):
                     self.episode_results.append('collision')
                 else:
                     self.episode_results.append('timeout')
+                if 'eposide_cross_error' in self.locals['infos'][i]:
+                    self.episode_cross_track_errors.append(self.locals['infos'][i]['eposide_cross_error'].item())
+                else:
+                    self.episode_cross_track_errors.append(0)
+
                 info = self.locals['infos'][i]
                 if 'episode' in info:
                     self.episode_rewards.append(info['episode']['r'])
@@ -280,10 +287,10 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
         base_env.set_course(self.current_course)
         self.episode_results.clear()
         self.episode_rewards.clear()
-        
+        self.episode_cross_track_errors.clear()
         # Reset learning rate for new curriculum
         self._reset_learning_rate()
-        
+
         # Log curriculum switch
         self.logger.info(f"Curriculum switched to course {self.current_course}")
         self.logger.record("train/current_course", self.current_course)
@@ -294,7 +301,7 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
         self.success_num = 0
         self.collision_num = 0
         self.timeout_num = 0
-        
+
     def _reset_learning_rate(self):
         """
         Reset learning rate and start warmup phase for new curriculum

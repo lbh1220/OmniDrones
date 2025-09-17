@@ -16,7 +16,7 @@ class NavRewardCalculator:
         self.potential_factor = cfg.rew_potential
         
         # 势能缓存
-        self.prev_dist_to_target = None
+        self.previous_potential = None
     
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         """计算基础导航奖励
@@ -38,27 +38,56 @@ class NavRewardCalculator:
         reward[reached_target_mask] += self.success_reward
         
         # 2. 潜力奖励 (距离变化)
-        if self.prev_dist_to_target is not None:
-            # 如果距离比上一步近了，给正奖励；如果远了，给负奖励
-            dist_change = self.prev_dist_to_target - current_dist_to_target
-            potential_reward = dist_change * self.potential_factor
-            reward += potential_reward
-        
-        # 更新上一步距离
-        self.prev_dist_to_target = current_dist_to_target.clone()
+        potential_reward = self._compute_potential_reward(state)
+        reward += potential_reward
         
         return reward
     
-    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
-        """重置指定环境的势能缓存"""
-        if env_ids is None or len(env_ids) == 0:
-            return
+    def _compute_potential_reward(self, state: EnvState) -> torch.Tensor:
+        """计算势能奖励（基于距离变化）
         
-        current_dist_to_target = state.navigation.current_dist_to_target
-        if self.prev_dist_to_target is None:
-            self.prev_dist_to_target = current_dist_to_target.clone()
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            potential_reward: [N] 势能奖励
+        """
+        # 计算当前势能（负距离）
+
+        
+        # 计算2D距离（只考虑x,y）
+        current_distance = state.navigation.current_dist_to_target # [N]
+        current_potential = -current_distance  # [N]
+        
+        if self.previous_potential is None:
+            # 第一次调用，初始化previous_potential
+            self.previous_potential = current_potential.clone()
+            return torch.zeros_like(current_potential)
+        
+        # 计算势能变化
+        potential_reward = self.pot_factor * (current_potential - self.previous_potential)
+        
+        # 更新previous_potential
+        self.previous_potential = current_potential.clone()
+        
+        return potential_reward
+    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+        """重置势能缓存"""
+        # 计算当前势能（负距离）
+        if env_ids is None or env_ids.shape[0] == 0:
+            return
+            
+        
+        # 计算2D距离（只考虑x,y）
+        current_distance = state.navigation.current_dist_to_target[env_ids] # [N]
+        current_potential = -current_distance  # [N]
+        if self.previous_potential is None:
+            # 第一次调用，初始化previous_potential
+            self.previous_potential = current_potential.clone()
         else:
-            self.prev_dist_to_target[env_ids] = current_dist_to_target[env_ids]
+            self.previous_potential[env_ids] = current_potential.clone()   
+
+
 
 class TrafficRewardCalculator:
     """Traffic环境的奖励计算器，基于Isaac Lab tensor操作优化"""
@@ -132,10 +161,7 @@ class TrafficRewardCalculator:
         # 对于既没有碰撞也没有到达目标的环境，计算其他奖励
         # continue_mask = ~(collision_mask | reached_target_mask)
 
-        potential_reward = self._compute_potential_reward(
-            drone_state, 
-            target_pos
-        )
+        potential_reward = self._compute_potential_reward(state)
         reward += potential_reward
 
         # 3. 不适距离惩罚（与traffic的距离过近）
@@ -161,23 +187,21 @@ class TrafficRewardCalculator:
         
         return reward
     
-    def _compute_potential_reward(self, drone_state: torch.Tensor, target_pos: torch.Tensor) -> torch.Tensor:
+    def _compute_potential_reward(self, state: EnvState) -> torch.Tensor:
         """计算势能奖励（基于距离变化）
         
         Args:
-            drone_state: [N, 1, 13] drone状态
-            target_pos: [N, 1, 3] 目标位置
+            state: 环境状态对象
             
         Returns:
             potential_reward: [N] 势能奖励
         """
         # 计算当前势能（负距离）
-        robot_pos = drone_state[:, :, :3]  # [N, 1, 3]
-        goal_pos = target_pos  # [N, 1, 3]
+
         
         # 计算2D距离（只考虑x,y）
-        current_distance = torch.norm(goal_pos[:, :, :2] - robot_pos[:, :, :2], dim=-1)  # [N, 1]
-        current_potential = -current_distance.squeeze(-1)  # [N]
+        current_distance = state.navigation.current_dist_to_target # [N]
+        current_potential = -current_distance  # [N]
         
         if self.previous_potential is None:
             # 第一次调用，初始化previous_potential
@@ -191,7 +215,22 @@ class TrafficRewardCalculator:
         self.previous_potential = current_potential.clone()
         
         return potential_reward
-    
+    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+        """重置势能缓存"""
+        # 计算当前势能（负距离）
+        if env_ids is None or env_ids.shape[0] == 0:
+            return
+            
+        
+        # 计算2D距离（只考虑x,y）
+        current_distance = state.navigation.current_dist_to_target[env_ids] # [N]
+        current_potential = -current_distance  # [N]
+        if self.previous_potential is None:
+            # 第一次调用，初始化previous_potential
+            self.previous_potential = current_potential.clone()
+        else:
+            self.previous_potential[env_ids] = current_potential.clone()    
+
     def _compute_discomfort_penalty(self, drone_state: torch.Tensor, 
                                   traffic_positions: torch.Tensor,
                                   traffic_velocities: torch.Tensor) -> torch.Tensor:
@@ -329,23 +368,105 @@ class TrafficRewardCalculator:
         # 确保惩罚不会是正的
         return torch.min(future_penalty, torch.zeros_like(future_penalty))
     
+
+
+
+class TrafficRewardCalculatorWithPath(TrafficRewardCalculator):
+    """支持横向误差奖励的交通环境奖励计算器"""
+    
+    def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
+        super().__init__(cfg, device)
+        
+        # 横向误差奖励系数
+        self.cross_track_reward_coeff = getattr(cfg, 'rew_cross_track_coeff', 0.0)
+        
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        """计算包含横向误差的交通环境奖励
+        
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            reward: [num_envs] 奖励张量
+        """
+        # 调用父类的基础奖励计算
+        reward = super().compute_reward(state)
+        
+        # 添加横向误差奖励项
+        if self.cross_track_reward_coeff != 0.0 and state.navigation.cross_track_errors is not None:
+            cross_track_reward = self._compute_cross_track_reward(state)
+            reward += cross_track_reward
+            
+        return reward
+    
+    def _compute_cross_track_reward(self, state: EnvState) -> torch.Tensor:
+        """计算横向误差奖励
+        
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            cross_track_reward: [num_envs] 横向误差奖励
+        """
+        cross_track_errors = state.navigation.cross_track_errors  # [num_envs]
+        safety_radius = state.collision.safety_radius
+        
+        # 减去安全半径，如果小于安全半径则影响不大
+        effective_errors = torch.clamp(cross_track_errors - safety_radius, min=0.0)
+        
+        if self.cross_track_reward_coeff > 0:
+            # 正系数：奖励模式 - 距离越小奖励越大
+            # this value is in range [0, 1]
+            cross_track_reward = self.cross_track_reward_coeff * torch.exp(-effective_errors)
+        else:
+            # 负系数：惩罚模式 - 距离越大惩罚越大
+            # clamp this value to [0, 1]
+            cross_track_reward = self.cross_track_reward_coeff * torch.clamp(effective_errors**2, max=1.0)
+
+            
+        return cross_track_reward
+
+
+    def _compute_potential_reward(self, state: EnvState) -> torch.Tensor:
+        """计算势能奖励（基于距离变化）
+        
+        Args:
+            state: 环境状态对象
+            use dist along path for potential reward
+        Returns:
+            potential_reward: [N] 势能奖励
+        """
+        # 计算当前势能（负距离）
+
+        
+        # 计算2D距离（只考虑x,y）
+        current_distance = state.navigation.current_dist_along_path # [N]
+        current_potential = -current_distance  # [N]
+        
+        if self.previous_potential is None:
+            # 第一次调用，初始化previous_potential
+            self.previous_potential = current_potential.clone()
+            return torch.zeros_like(current_potential)
+        
+        # 计算势能变化
+        potential_reward = self.pot_factor * (current_potential - self.previous_potential)
+        
+        # 更新previous_potential
+        self.previous_potential = current_potential.clone()
+        
+        return potential_reward
     def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
         """重置势能缓存"""
         # 计算当前势能（负距离）
         if env_ids is None or env_ids.shape[0] == 0:
             return
             
-        drone_state = state.ego_drone.drone_state
-        target_pos = state.navigation.target_positions
-        
-        robot_pos = drone_state[env_ids, :, :3]  # [N, 1, 3]
-        goal_pos = target_pos[env_ids, :, :3]  # [N, 1, 3]
         
         # 计算2D距离（只考虑x,y）
-        current_distance = torch.norm(goal_pos[:, :, :2] - robot_pos[:, :, :2], dim=-1)  # [N, 1]
-        current_potential = -current_distance.squeeze(-1)  # [N]
+        current_distance = state.navigation.current_dist_along_path[env_ids] # [N]
+        current_potential = -current_distance  # [N]
         if self.previous_potential is None:
             # 第一次调用，初始化previous_potential
             self.previous_potential = current_potential.clone()
         else:
-            self.previous_potential[env_ids] = current_potential.clone()    
+            self.previous_potential[env_ids] = current_potential.clone()   

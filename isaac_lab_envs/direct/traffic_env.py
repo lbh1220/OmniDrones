@@ -111,6 +111,7 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_drones_decay_factor = 0.667
     rew_evtols_threshold_factor = 2.0
     rew_evtols_decay_factor = 0.9
+    rew_cross_track_coeff = 0.0
     ## drones in previous, 2.0, 0.667; evtols in previous, 1.5, 0.9
 
     # curriculum learning
@@ -136,10 +137,17 @@ class TrafficEnv(NavEnv):
 
     def _init_mdp_components(self, cfg: TrafficEnvCfg):
         """初始化模块化组件"""
-        from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
-        from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
-        self.obs_processor = TrafficObservationProcessor(cfg)
-        self.reward_calculator = TrafficRewardCalculator(cfg)
+        if cfg.use_global_path:
+            from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessorWithPath
+            from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculatorWithPath
+            self.obs_processor = TrafficObservationProcessorWithPath(cfg)
+            self.reward_calculator = TrafficRewardCalculatorWithPath(cfg)
+
+        else:
+            from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
+            from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
+            self.obs_processor = TrafficObservationProcessor(cfg)
+            self.reward_calculator = TrafficRewardCalculator(cfg)
 
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""

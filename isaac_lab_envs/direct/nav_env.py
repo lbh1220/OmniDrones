@@ -148,6 +148,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
+
     
     # 随机化配置
     randomization: Dict = field(default_factory=dict)
@@ -156,6 +157,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     # global planner
     use_global_path: bool = True
     lookahead_distance: float = 10.0
+    rew_cross_track_coeff = 0.0
 
 
 class NavEnv(DirectRLEnv):
@@ -203,8 +205,12 @@ class NavEnv(DirectRLEnv):
         
         self.extras = {
             "goal_reached": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
-            "collision": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+            "collision": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         }
+        if self.cfg.use_global_path:
+            self.extras["cross_track_error_avg"] = torch.zeros(self.num_envs, device=self.device)
+            self.extras["eposide_cross_error"] = torch.zeros(self.num_envs, device=self.device)
+            
         # debug可视化
         if self.sim.has_gui():
             from omni_drones.envs.isaac_env import DebugDraw
@@ -382,6 +388,27 @@ class NavEnv(DirectRLEnv):
             # self.state.update_navigation_state_iterative(self.cfg.lookahead_distance, env_ids)
             self.state.update_navigation_state_vectorized(self.cfg.lookahead_distance, env_ids)
             # pass
+            
+            # 更新cross_track_error的累积平均值
+            self._update_cross_track_error_avg()
+
+    def _update_cross_track_error_avg(self):
+        """更新cross_track_error的累积平均值"""
+        if (self.state.navigation.cross_track_errors is not None and 
+            self.cfg.use_global_path):
+            
+            # 当前episode的步数 (从1开始计数)
+            current_step = self.episode_length_buf + 1  # [num_envs]
+            
+            # 当前cross_track_error
+            current_errors = self.state.navigation.cross_track_errors  # [num_envs]
+            
+            # 递增平均值公式: new_avg = (old_avg * (n-1) + new_value) / n
+            old_avg = self.extras["cross_track_error_avg"]  # [num_envs]
+            new_avg = (old_avg * (current_step - 1) + current_errors) / current_step
+            
+            self.extras["cross_track_error_avg"] = new_avg
+
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
         # 使用观测处理器计算观测
@@ -440,6 +467,7 @@ class NavEnv(DirectRLEnv):
             self.state.navigation.waypoints[env_ids] = waypoints
             self.state.navigation.waypoint_lengths[env_ids] = waypoints.shape[1]
             self.state.navigation.current_waypoint_indices[env_ids] = 0
+            # TODO, 应该为每个env配置他的实际waypoints长度
         else:
             start, goal = self._generate_crossing_task(len(env_ids), flight_height=self.cfg.flight_height)
         
@@ -459,6 +487,11 @@ class NavEnv(DirectRLEnv):
         
         # 重置状态对象
         self.state.reset_env_states(env_ids)
+        
+        # 重置cross_track_error累积平均值
+        if self.cfg.use_global_path:
+            self.extras["eposide_cross_error"][env_ids] = self.extras["cross_track_error_avg"][env_ids].clone()
+            self.extras["cross_track_error_avg"][env_ids] = 0.0
         
         # 更新状态信息
         self._post_physics_step(env_ids=env_ids)

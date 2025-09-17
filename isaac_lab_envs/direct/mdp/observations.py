@@ -64,12 +64,71 @@ class NavObservationProcessor:
         
         return {"policy": policy_obs}
 
+class NavObservationProcessorWithPath(NavObservationProcessor):
+    """支持局部目标的导航观测处理器"""
+    
+    def generate_policy_obs_dict(self):
+        """生成观测空间字典 - 增加local goal和projection point维度"""
+        policy_space_dict = {
+            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 9), dtype=np.float32),  # 5+2+2=9
+            'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 2), dtype=np.float32)
+        }
+        return policy_space_dict
+    
+    def process_observation(self, state: EnvState) -> dict:
+        """处理包含局部目标的观测
+        
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            观测字典
+        """
+        # 从状态对象提取数据
+        drone_state = state.ego_drone.drone_state
+        target_pos = state.navigation.target_positions
+        local_goals = state.navigation.local_goals
+        projection_points = state.navigation.projection_points
+        
+        # 提取位置和速度
+        robot_pos = drone_state[:, :, :2]  # [num_envs, 1, 2] (x, y)
+        robot_vel = drone_state[:, :, 7:9]  # [num_envs, 1, 2] (vx, vy)
+        
+        # 计算相对目标位置
+        goal_pos = target_pos[:, :, :2]  # [num_envs, 1, 2] 只取x,y
+        relative_goal_pos = goal_pos - robot_pos  # [num_envs, 1, 2]
+        
+        # 计算相对局部目标位置
+        local_goal_pos = local_goals[:, :, :2] if local_goals is not None else goal_pos  # [num_envs, 1, 2]
+        relative_local_goal_pos = local_goal_pos - robot_pos  # [num_envs, 1, 2]
+        
+        # 计算相对投影点位置
+        projection_pos = projection_points[:, :, :2] if projection_points is not None else robot_pos  # [num_envs, 1, 2]
+        relative_projection_pos = projection_pos - robot_pos  # [num_envs, 1, 2]
+        
+        # 计算速度方向yaw
+        robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
+        
+        # 机器人参数
+        robot_radius = torch.full((drone_state.shape[0], 1, 1), self.cfg.safety_radius, device=self.device)
+        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.max_speed, device=self.device)
+        
+        # 构建扩展的robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw, rel_local_goal_x, rel_local_goal_y, rel_proj_x, rel_proj_y]
+        robot_node = torch.cat([
+            relative_goal_pos,           # [num_envs, 1, 2] - 前2个维度
+            robot_radius,                # [num_envs, 1, 1] - 第3个维度
+            robot_v_pref,                # [num_envs, 1, 1] - 第4个维度
+            robot_yaw.unsqueeze(-1),     # [num_envs, 1, 1] - 第5个维度
+            relative_local_goal_pos,     # [num_envs, 1, 2] - 第6-7个维度
+            relative_projection_pos,     # [num_envs, 1, 2] - 第8-9个维度
+        ], dim=-1)  # [num_envs, 1, 9]
 
-class SimpleObservationProcessor:
-    def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
-        self.cfg = cfg
-        self.device = device
-
+        policy_obs = {
+            'robot_node': robot_node,
+            'temporal_edges': robot_vel
+        }
+        
+        return {"policy": policy_obs}
 
 
 class TrafficObservationProcessor:
@@ -278,3 +337,91 @@ class TrafficObservationProcessor:
         detected_counts = detected_counts.unsqueeze(-1) # [num_envs, 1]
         return spatial_edges, detected_counts
     
+
+
+
+
+class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
+    """支持局部目标的Traffic环境观测处理器"""
+    
+    def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
+        super().__init__(cfg, device)
+        
+    def generate_policy_obs_dict(self):
+        """生成观测空间字典 - 增加local goal和projection point维度"""
+        # 计算traffic数量配置
+        total_traffic_num = self.cfg.traffic_sim.num_drones + self.cfg.traffic_sim.num_evtols
+        
+        # 1. 创建内层字典 "policy" 的内容
+        policy_space_dict = {
+            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 9), dtype=np.float32),  # 5+2+2=9
+            'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 2), dtype=np.float32),
+            'spatial_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(total_traffic_num, self.spatial_dim), dtype=np.float32),
+            'detected_human_num': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
+        }
+        return policy_space_dict
+
+    def process_observation(self, state: EnvState) -> dict:
+        """处理包含局部目标的观测数据（使用预计算的轨迹）
+        
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            观测字典
+        """
+        # 从状态对象提取数据
+        drone_state = state.ego_drone.drone_state
+        target_pos = state.navigation.target_positions
+        local_goals = state.navigation.local_goals
+        projection_points = state.navigation.projection_points
+        num_envs = drone_state.shape[0]
+        
+        # 提取ego drone信息
+        robot_pos = drone_state[:, :, :2]  # [num_envs, 1, 2] (x, y)
+        robot_vel = drone_state[:, :, 7:9]  # [num_envs, 1, 2] (vx, vy)
+        
+        # 计算相对目标位置
+        goal_pos = target_pos[:, :, :2]  # [num_envs, 1, 2] 只取x,y
+        relative_goal_pos = goal_pos - robot_pos  # [num_envs, 1, 2]
+        relative_goal_pos = relative_goal_pos / (2*self.circle_radius) * self.observation_norm_scale
+        
+        # 计算相对局部目标位置
+        local_goal_pos = local_goals[:, :, :2] if local_goals is not None else goal_pos  # [num_envs, 1, 2]
+        relative_local_goal_pos = local_goal_pos - robot_pos  # [num_envs, 1, 2]
+        relative_local_goal_pos = relative_local_goal_pos / (2*self.circle_radius) * self.observation_norm_scale
+        
+        # 计算相对投影点位置
+        projection_pos = projection_points[:, :, :2] if projection_points is not None else robot_pos  # [num_envs, 1, 2]
+        relative_projection_pos = projection_pos - robot_pos  # [num_envs, 1, 2]
+        relative_projection_pos = relative_projection_pos / (2*self.circle_radius) * self.observation_norm_scale
+        
+        # 计算速度方向yaw
+        robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
+        
+        # 机器人参数
+        robot_radius = torch.full((num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
+        robot_v_pref = torch.full((num_envs, 1, 1), self.cfg.max_speed, device=self.device)
+        
+        # 构建扩展的robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw, rel_local_goal_x, rel_local_goal_y, rel_proj_x, rel_proj_y]
+        robot_node = torch.cat([
+            relative_goal_pos,           # [num_envs, 1, 2]
+            robot_radius,                # [num_envs, 1, 1]  
+            robot_v_pref,                # [num_envs, 1, 1]
+            robot_yaw.unsqueeze(-1),     # [num_envs, 1, 1]
+            relative_local_goal_pos,     # [num_envs, 1, 2]
+            relative_projection_pos,     # [num_envs, 1, 2]
+        ], dim=-1)  # [num_envs, 1, 9]
+        
+        # 计算空间边观测（使用预计算的轨迹）
+        spatial_edges, detected_counts = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
+        
+        # 构建观测字典
+        policy_obs = {
+            'robot_node': robot_node,
+            'temporal_edges': robot_vel,  # [num_envs, 1, 2]
+            'spatial_edges': spatial_edges,
+            'detected_human_num': detected_counts,
+        }
+        
+        return {"policy": policy_obs}
