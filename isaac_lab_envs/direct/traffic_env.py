@@ -125,23 +125,21 @@ class TrafficEnv(NavEnv):
     def __init__(self, cfg: TrafficEnvCfg, render_mode: str | None = None, **kwargs):
         # 保存配置参数（在父类初始化之前）
         self.traffic_sim = None
-        
-        # 初始化观测和奖励处理器
-        self.obs_processor = None
-        self.reward_calculator = None
-        from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
-        from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
-        # 初始化处理器（在父类初始化后，这样可以访问device）
-        self.obs_processor = TrafficObservationProcessor(cfg)
-        self.reward_calculator = TrafficRewardCalculator(cfg)
+    
         # 父类初始化 - 这会调用 _setup_scene()
         super().__init__(cfg, render_mode, **kwargs)
         
-        self.obs_processor.device = self.device
-        self.reward_calculator.device = self.device
+        # 初始化traffic命名空间
+        self.state.init_traffic_namespace(cfg.predict_steps, cfg.pred_timestep)
         self.traffic_sim.reset()
         # traffic env 不是reset idx，不是每次step都reset
 
+    def _init_mdp_components(self, cfg: TrafficEnvCfg):
+        """初始化模块化组件"""
+        from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
+        from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
+        self.obs_processor = TrafficObservationProcessor(cfg)
+        self.reward_calculator = TrafficRewardCalculator(cfg)
 
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""
@@ -182,7 +180,7 @@ class TrafficEnv(NavEnv):
 
         super()._reset_idx(env_ids)
         if self.reward_calculator is not None:
-            self.reward_calculator.reset_potential(self.drone_state, self.target_pos, env_ids)
+            self.reward_calculator.reset_potential(self.state, env_ids)
 
     def _configure_gym_env_spaces(self):
         """Configure the action and observation spaces for the Gym environment."""
@@ -204,38 +202,19 @@ class TrafficEnv(NavEnv):
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
         # 使用观测处理器计算观测（已包含预计算的轨迹）
-
-        observations = self.obs_processor.process_observation(
-            self.drone_state,     # [num_envs, 1, 13]
-            self.target_pos,      # [num_envs, 1, 3]
-        )
+        observations = self.obs_processor.process_observation(self.state)
         
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
         """计算基于Traffic环境的复杂奖励。"""
-        # 获取traffic aircraft状态（使用预计算的数据）
-        traffic_positions = self.obs_processor.traffic_positions  # [total_traffic, 3]
-        traffic_velocities = self.obs_processor.traffic_velocities  # [total_traffic, 3]
-        traffic_types = self.obs_processor.traffic_types  # [total_traffic] tensor
-        traffic_safety_radius = self.obs_processor.traffic_safety_radius  # [total_traffic] tensor
-        traffic_future_traj = self.obs_processor.traffic_future_traj  # [total_traffic, predict_steps+1, 3] tensor
-        # 计算碰撞和到达目标的mask
+        # 计算碰撞和到达目标的mask，并更新到state中
         collision_mask, reached_target_mask = self._compute_collision_and_target_masks()
+        self.state.collision.collision_mask = collision_mask
+        self.state.navigation.reached_target_mask = reached_target_mask
         
         # 使用奖励计算器计算奖励
-        reward = self.reward_calculator.compute_reward(
-            self.drone_state,      # [num_envs, 1, 13]
-            self.target_pos,       # [num_envs, 1, 3]
-            traffic_positions,     # [total_traffic, 3]
-            traffic_velocities,    # [total_traffic, 3]
-            collision_mask,
-            reached_target_mask,
-            traffic_future_traj,
-            traffic_safety_radius,
-            traffic_types
-
-        )
+        reward = self.reward_calculator.compute_reward(self.state)
                
         return reward
 
@@ -249,14 +228,14 @@ class TrafficEnv(NavEnv):
         self.extras["goal_reached"] = reached_target_mask
         self.extras["collision"] = collision_mask
         # 3. 高度异常条件（保持在合理高度范围内）
-        robot_height = self.drone_state.squeeze(1)[:, 2]  # [num_envs]
+        robot_height = self.state.ego_drone.positions.squeeze(1)[:, 2]  # [num_envs]
         height_abnormal = (
             (robot_height < (self.cfg.flight_height - 3*self.cfg.safety_radius)) |
             (robot_height > (self.cfg.flight_height + 3*self.cfg.safety_radius))
         )
         
         # 4. NaN检测
-        hasnan = torch.isnan(self.drone_state).any(dim=(1, 2))
+        hasnan = torch.isnan(self.state.ego_drone.drone_state).any(dim=(1, 2))
         
         # 终止条件：到达目标、碰撞、高度异常或NaN
         terminated = reached_target_mask | collision_mask | height_abnormal | hasnan
@@ -268,14 +247,17 @@ class TrafficEnv(NavEnv):
     
     def _compute_collision_and_target_masks(self) -> tuple[torch.Tensor, torch.Tensor]:
         """计算碰撞和到达目标的mask"""
-        # 计算距离目标的距离（用于到达判断和奖励）
-        robot_pos = self.drone_state[:, :, :2]  # [num_envs, 1, 2]
-        goal_pos = self.target_pos[:, :, :2]    # [num_envs, 1, 2]
+        # 从state对象获取位置信息
+        robot_pos = self.state.ego_drone.positions[:, :, :2]  # [num_envs, 1, 2]
+        goal_pos = self.state.navigation.target_positions[:, :, :2]    # [num_envs, 1, 2]
         relative_goal_pos = goal_pos - robot_pos # [num_envs, 1, 2]
-        self.current_dist_to_target = torch.norm(relative_goal_pos.squeeze(1), dim=1)  # [num_envs]
+        
+        # 更新距离信息到state
+        current_dist_to_target = torch.norm(relative_goal_pos.squeeze(1), dim=1)  # [num_envs]
+        self.state.navigation.current_dist_to_target = current_dist_to_target
         
         # 1. 到达目标检测
-        reached_target_mask = self.current_dist_to_target <= self.cfg.arrival_threshold
+        reached_target_mask = current_dist_to_target <= self.cfg.arrival_threshold
         
         # 2. 碰撞检测
         collision_mask = self._detect_collisions()
@@ -287,7 +269,7 @@ class TrafficEnv(NavEnv):
     def _detect_collisions(self) -> torch.Tensor:
         """检测与traffic aircraft的碰撞"""
         
-        ego_pos = self.drone_state[:, :, :3]
+        ego_pos = self.state.ego_drone.positions
         ego_safety_radius = torch.ones(self.num_envs, device=self.device) * self.cfg.safety_radius
 
         collision_mask = self.traffic_sim.check_collision(
@@ -303,9 +285,18 @@ class TrafficEnv(NavEnv):
         traffic_velocities = self.traffic_sim.get_aircraft_velocities()  # [total_traffic, 3]
         traffic_types = self.traffic_sim.get_aircraft_types()  # [total_traffic] tensor
         traffic_safety_radius = self.traffic_sim.get_aircraft_safety_radius()  # [total_traffic] tensor
+        
+        # 更新state中的traffic数据
+        self.state.traffic.traffic_positions = traffic_positions
+        self.state.traffic.traffic_velocities = traffic_velocities
+        self.state.traffic.traffic_types = traffic_types
+        self.state.traffic.traffic_safety_radius = traffic_safety_radius
+        
+        # 同时更新观测处理器的缓存（保持兼容性）
         self.obs_processor.predict_traffic_trajectory(
             traffic_positions, traffic_velocities, traffic_types, traffic_safety_radius
         )
+        self.state.traffic.traffic_future_traj = self.obs_processor.traffic_future_traj.clone()
 
 
 class TrafficEnvWithCurriculum(TrafficEnv):
@@ -337,7 +328,7 @@ class TrafficEnvWithCurriculum(TrafficEnv):
     def _detect_collisions(self) -> torch.Tensor:
         """检测与traffic aircraft的碰撞"""
         
-        ego_pos = self.drone_state[:, :, :3]
+        ego_pos = self.state.ego_drone.positions
         ego_safety_radius = torch.ones(self.num_envs, device=self.device) * self.cfg.safety_radius
 
         collision_mask = self.traffic_sim.check_collision(
@@ -359,7 +350,16 @@ class TrafficEnvWithCurriculum(TrafficEnv):
                                                             activate_evtols_num=self.active_evtols_num)  # [total_traffic] tensor
         traffic_safety_radius = self.traffic_sim.get_aircraft_safety_radius(activate_drones_num=self.active_drones_num, 
                                                             activate_evtols_num=self.active_evtols_num)  # [total_traffic] tensor
+        
+        # 更新state中的traffic数据
+        self.state.traffic.traffic_positions = traffic_positions
+        self.state.traffic.traffic_velocities = traffic_velocities
+        self.state.traffic.traffic_types = traffic_types
+        self.state.traffic.traffic_safety_radius = traffic_safety_radius
+        
+        # 同时更新观测处理器的缓存（保持兼容性）
         self.obs_processor.predict_traffic_trajectory(
             traffic_positions, traffic_velocities, traffic_types, traffic_safety_radius
         )
+        self.state.traffic.traffic_future_traj = self.obs_processor.traffic_future_traj.clone()
 

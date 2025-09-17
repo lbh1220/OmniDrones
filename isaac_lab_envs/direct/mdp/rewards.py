@@ -1,6 +1,64 @@
 import torch
 from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
 from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
+from isaac_lab_envs.direct.mdp.state import EnvState
+
+
+class NavRewardCalculator:
+    """基础导航环境的奖励计算器"""
+    
+    def __init__(self, cfg, device: str = "cuda"):
+        self.cfg = cfg
+        self.device = device
+        
+        # 奖励配置参数
+        self.success_reward = cfg.rew_success
+        self.potential_factor = cfg.rew_potential
+        
+        # 势能缓存
+        self.prev_dist_to_target = None
+    
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        """计算基础导航奖励
+        
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            reward: [num_envs] 奖励张量
+        """
+        # 从状态对象提取数据
+        num_envs = state.num_envs
+        current_dist_to_target = state.navigation.current_dist_to_target
+        reached_target_mask = state.navigation.reached_target_mask
+        
+        reward = torch.zeros(num_envs, device=self.device)
+        
+        # 1. 到达奖励
+        reward[reached_target_mask] += self.success_reward
+        
+        # 2. 潜力奖励 (距离变化)
+        if self.prev_dist_to_target is not None:
+            # 如果距离比上一步近了，给正奖励；如果远了，给负奖励
+            dist_change = self.prev_dist_to_target - current_dist_to_target
+            potential_reward = dist_change * self.potential_factor
+            reward += potential_reward
+        
+        # 更新上一步距离
+        self.prev_dist_to_target = current_dist_to_target.clone()
+        
+        return reward
+    
+    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+        """重置指定环境的势能缓存"""
+        if env_ids is None or len(env_ids) == 0:
+            return
+        
+        current_dist_to_target = state.navigation.current_dist_to_target
+        if self.prev_dist_to_target is None:
+            self.prev_dist_to_target = current_dist_to_target.clone()
+        else:
+            self.prev_dist_to_target[env_ids] = current_dist_to_target[env_ids]
 
 class TrafficRewardCalculator:
     """Traffic环境的奖励计算器，基于Isaac Lab tensor操作优化"""
@@ -36,31 +94,28 @@ class TrafficRewardCalculator:
         self.evtols_threshold_factor = cfg.rew_evtols_threshold_factor
         self.evtols_decay_factor = cfg.rew_evtols_decay_factor
         
-    def compute_reward(self, 
-                      drone_state: torch.Tensor,
-                      target_pos: torch.Tensor,
-                      traffic_positions: torch.Tensor,
-                      traffic_velocities: torch.Tensor,
-                      collision_mask: torch.Tensor,
-                      reached_target_mask: torch.Tensor,
-                      traffic_future_traj: torch.Tensor,
-                      traffic_safety_radius: torch.Tensor,
-                      traffic_types: torch.Tensor) -> torch.Tensor:
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
         """计算复杂奖励
         
         Args:
-            drone_state: [num_envs, 1, 13] ego drone状态
-            target_pos: [num_envs, 1, 3] 目标位置
-            traffic_positions: [total_traffic, 3] traffic位置
-            traffic_velocities: [total_traffic, 3] traffic速度
-            traffic_types: traffic类型列表
-            collision_mask: [num_envs] 碰撞mask
-            reached_target_mask: [num_envs] 到达目标mask
-            obs_processor: 观测处理器（用于获取预测轨迹）
+            state: 环境状态对象
             
         Returns:
             reward: [num_envs] 奖励张量
         """
+        # 从状态对象提取数据
+        drone_state = state.ego_drone.drone_state
+        target_pos = state.navigation.target_positions
+        collision_mask = state.collision.collision_mask
+        reached_target_mask = state.navigation.reached_target_mask
+        
+        # 从交通命名空间提取数据
+        traffic_positions = state.traffic.traffic_positions if state.traffic else None
+        traffic_velocities = state.traffic.traffic_velocities if state.traffic else None
+        traffic_types = state.traffic.traffic_types if state.traffic else None
+        traffic_safety_radius = state.traffic.traffic_safety_radius if state.traffic else None
+        traffic_future_traj = state.traffic.traffic_future_traj if state.traffic else None
+        
         num_envs = drone_state.shape[0]
         reward = torch.zeros(num_envs, device=self.device)
         
@@ -274,11 +329,15 @@ class TrafficRewardCalculator:
         # 确保惩罚不会是正的
         return torch.min(future_penalty, torch.zeros_like(future_penalty))
     
-    def reset_potential(self, drone_state: torch.Tensor, target_pos: torch.Tensor, env_ids: torch.Tensor):
+    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
         """重置势能缓存"""
         # 计算当前势能（负距离）
         if env_ids is None or env_ids.shape[0] == 0:
             return
+            
+        drone_state = state.ego_drone.drone_state
+        target_pos = state.navigation.target_positions
+        
         robot_pos = drone_state[env_ids, :, :3]  # [N, 1, 3]
         goal_pos = target_pos[env_ids, :, :3]  # [N, 1, 3]
         

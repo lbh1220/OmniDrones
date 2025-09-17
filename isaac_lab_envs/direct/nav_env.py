@@ -48,6 +48,9 @@ from omni_drones.utils.torch import euler_to_quaternion
 from tensordict.tensordict import TensorDict
 
 
+from isaac_lab_envs.direct.mdp.state import EnvState
+
+
 ##
 # Pre-defined configs
 ##
@@ -159,15 +162,27 @@ class NavEnv(DirectRLEnv):
     def __init__(self, cfg: NavEnvCfg, render_mode: str | None = None, **kwargs):
         # 保存配置参数（在父类初始化之前）
         # self.reward_effort_weight = cfg.reward_effort_weight  # 暂时不需要
+        self.obs_processor = None
+        self.reward_calculator = None
         self.time_encoding = cfg.time_encoding
         self.randomization = cfg.randomization
         self.has_payload = "payload" in self.randomization.keys()
         self.lidar_resolution = cfg.lidar_resolution
+        
+        # 初始化观测和奖励处理器
+        self._init_mdp_components(cfg)
+        
         # 父类初始化 - 这会调用 _setup_scene()
         super().__init__(cfg, render_mode, **kwargs)
         
         # 在父类初始化完成后进行无人机特定的初始化
         self._post_init_setup()
+        
+        # 初始化状态管理对象
+        self.state = EnvState(device=self.device, num_envs=self.num_envs)
+        self.state.initialize_basic_tensors()
+        self.state.collision.safety_radius = cfg.safety_radius
+
         
         # 设置离散动作空间映射
         if cfg.use_discrete_action:
@@ -179,12 +194,8 @@ class NavEnv(DirectRLEnv):
             torch.tensor([0.2, 0.2, 2.], device=self.device) * torch.pi
         )
         
-        # 目标位置（完全按照原始配置）
-        self.target_pos = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        # 保留command_vel_xy作为控制命令（不是状态的一部分）
         self.command_vel_xy = None
-        
-        # 用于潜力奖励的距离跟踪
-        self.prev_dist_to_target = torch.zeros(self.num_envs, device=self.device)
         
         self.extras = {
             "goal_reached": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
@@ -202,6 +213,13 @@ class NavEnv(DirectRLEnv):
         
         # debug visualization
         self.set_debug_vis(self.cfg.debug_vis)
+
+    def _init_mdp_components(self, cfg: NavEnvCfg):
+        """初始化模块化组件"""
+        from isaac_lab_envs.direct.mdp.observations import NavObservationProcessor
+        from isaac_lab_envs.direct.mdp.rewards import NavRewardCalculator
+        self.obs_processor = NavObservationProcessor(cfg)
+        self.reward_calculator = NavRewardCalculator(cfg)
 
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""
@@ -262,6 +280,10 @@ class NavEnv(DirectRLEnv):
         print(f"环境数量: {self.num_envs}")
         print(f"无人机位置形状: {self.drone._envs_positions.shape if hasattr(self.drone, '_envs_positions') else 'None'}")
 
+        # 设置处理器的设备
+        self.obs_processor.device = self.device
+        self.reward_calculator.device = self.device
+        
 
     def _setup_lidar(self):
         """Setup the lidar sensor exactly like original implementation."""
@@ -344,88 +366,44 @@ class NavEnv(DirectRLEnv):
         # 如果放在apply action之后，那更新太频繁了
         # 暂时放在get dones之前和reset_idx之后
         self._lidar.update(self.step_dt)
-        self.drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 25]
+        
+        # 更新状态对象
+        drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 25]
+        self.state.update_ego_drone_state(drone_state)
+        self.state.update_navigation_distances()
+        self.state.update_reached_target_mask(self.cfg.arrival_threshold)
 
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
-        # 获取无人机状态
+        # 使用观测处理器计算观测
+        observations = self.obs_processor.process_observation(self.state)
         
-        
-        # 提取位置和速度
-        robot_pos = self.drone_state[:, :, :2]  # [num_envs, 1, 2] (x, y)
-        robot_vel = self.drone_state[:, :, 7:9]  # [num_envs, 1, 2] (vx, vy)
-        
-        # 计算相对目标位置
-        goal_pos = self.target_pos[:, :, :2]  # [num_envs, 1, 2] 只取x,y
-        relative_goal_pos = goal_pos - robot_pos  # [num_envs, 1, 2]
-        
-
-        
-        # 计算速度方向yaw
-        robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
-        
-        # 机器人参数
-        robot_radius = torch.full((self.num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
-        robot_v_pref = torch.full((self.num_envs, 1, 1), self.cfg.max_speed, device=self.device)
-        
-        # 构建robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw]
-        robot_node = torch.cat([
-            relative_goal_pos,  # [num_envs, 1, 2]
-            robot_radius,       # [num_envs, 1, 1]  
-            robot_v_pref,       # [num_envs, 1, 1]
-            robot_yaw.unsqueeze(1)  # [num_envs, 1, 1]
-        ], dim=-1)  # [num_envs, 1, 5]
-
-        policy_obs = {
-            'robot_node': robot_node,
-            'temporal_edges': robot_vel
-        }
-        
-        observations = {"policy": policy_obs}
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
         """计算基于2D导航的奖励。"""
-        reward = torch.zeros(self.num_envs, device=self.device)
-        
-        # 1. 到达奖励
-        reached_target = self.current_dist_to_target <= self.cfg.arrival_threshold
-        reward[reached_target] += self.cfg.rew_success
-        
-        # 2. 潜力奖励 (距离变化)
-        # 如果距离比上一步近了，给正奖励；如果远了，给负奖励
-        dist_change = self.prev_dist_to_target - self.current_dist_to_target
-        potential_reward = dist_change * self.cfg.rew_potential
-        reward += potential_reward
-        
-        # 更新上一步距离
-        self.prev_dist_to_target = self.current_dist_to_target.clone()
-        
-        # 更新统计信息
-
+        # 使用奖励计算器计算奖励
+        reward = self.reward_calculator.compute_reward(self.state)
         
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """计算基于2D导航的终止条件。"""
         self._post_physics_step()
-        # 计算距离（用于奖励和终止条件）
-        robot_pos = self.drone_state[:, :, :2]
-        goal_pos = self.target_pos[:, :, :2]
-        relative_goal_pos = goal_pos - robot_pos # [num_envs, 1, 2]
-        self.current_dist_to_target = torch.norm(relative_goal_pos.squeeze(1), dim=1)  # [num_envs]
-        reached_target = self.current_dist_to_target <= self.cfg.arrival_threshold
+        
+        # 从状态对象获取数据
+        reached_target = self.state.navigation.reached_target_mask
         self.extras["goal_reached"] = reached_target
         
         # 3. 高度异常条件（保持在合理高度范围内）
-        robot_height = self.drone_state.squeeze(1)[:, 2]  # [num_envs]
+        robot_height = self.state.ego_drone.positions.squeeze(1)[:, 2]  # [num_envs]
         height_abnormal = (
             (robot_height < (self.cfg.flight_height - 3*self.cfg.safety_radius)) |
             (robot_height > (self.cfg.flight_height + 3*self.cfg.safety_radius))
         )
         
         # 4. NaN检测
-        hasnan = torch.isnan(self.drone_state).any(dim=(1, 2))
+        hasnan = torch.isnan(self.state.ego_drone.drone_state).any(dim=(1, 2))
         
         # 终止条件：到达目标、高度异常或NaN
         terminated = reached_target | height_abnormal | hasnan
@@ -453,16 +431,24 @@ class NavEnv(DirectRLEnv):
         # 随机初始姿态（使用原始分布）
         rpy = self.init_rpy_dist.sample((*env_ids.shape, 1))
         rot = euler_to_quaternion(rpy)
-        self.target_pos[env_ids] = goal
+        
+        # 更新状态对象中的目标位置
+        self.state.navigation.target_positions[env_ids] = goal
+        self.state.navigation.start_positions[env_ids] = start
         
         # 设置位置和姿态（使用原始方法）
         self.drone.set_world_poses(start, rot, env_ids)
         self.drone.set_velocities(self.init_vels[env_ids], env_ids)
         
-        # 重置距离跟踪
-        initial_dist = torch.norm(goal[:, :2].squeeze(1) - start[:, :2].squeeze(1), dim=1)
-        self.prev_dist_to_target[env_ids] = initial_dist
+        # 重置状态对象
+        self.state.reset_env_states(env_ids)
+        
+        # 更新状态信息
         self._post_physics_step()
+        
+        # 重置奖励计算器的势能缓存
+        self.reward_calculator.reset_potential(self.state, env_ids)
+        
         super()._reset_idx(env_ids)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
@@ -493,7 +479,7 @@ class NavEnv(DirectRLEnv):
     def _debug_vis_callback(self, event):
         """Update debug visualization."""
         if hasattr(self, "target_pos_visualizer"):
-            self.target_pos_visualizer.visualize(self.target_pos.squeeze(1))
+            self.target_pos_visualizer.visualize(self.state.navigation.target_positions.squeeze(1))
         
         if hasattr(self, "drone_pos_visualizer"):
             # Visualize drone positions - squeeze to remove the middle dimension (n_env, 3)
@@ -564,11 +550,9 @@ class NavEnv(DirectRLEnv):
         super()._configure_gym_env_spaces()
         import gymnasium as gym
         import numpy as np
-        # 1. 创建内层字典 "policy" 的内容
-        policy_space_dict = {
-            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 5), dtype=np.float32),
-            'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 2), dtype=np.float32)
-        }
+        
+        # 使用观测处理器生成观测空间字典
+        policy_space_dict = self.obs_processor.generate_policy_obs_dict()
         
         # 2. 将内层字典包装成一个 gym.spaces.Dict
         policy_space = gym.spaces.Dict(policy_space_dict)

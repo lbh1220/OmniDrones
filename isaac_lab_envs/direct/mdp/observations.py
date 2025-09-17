@@ -2,15 +2,73 @@ import torch
 from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
 import numpy as np
 import gymnasium as gym
+from isaac_lab_envs.direct.mdp.state import EnvState
 
+
+
+class NavObservationProcessor:
+    """基础导航环境的观测处理器"""
+    
+    def __init__(self, cfg, device: str = "cuda"):
+        self.cfg = cfg
+        self.device = device
+        
+    def generate_policy_obs_dict(self):
+        """生成观测空间字典"""
+        policy_space_dict = {
+            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 5), dtype=np.float32),
+            'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 2), dtype=np.float32)
+        }
+        return policy_space_dict
+    
+    def process_observation(self, state: EnvState) -> dict:
+        """处理基础导航观测
+        
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            观测字典
+        """
+        # 从状态对象提取数据
+        drone_state = state.ego_drone.drone_state
+        target_pos = state.navigation.target_positions
+        
+        # 提取位置和速度
+        robot_pos = drone_state[:, :, :2]  # [num_envs, 1, 2] (x, y)
+        robot_vel = drone_state[:, :, 7:9]  # [num_envs, 1, 2] (vx, vy)
+        
+        # 计算相对目标位置
+        goal_pos = target_pos[:, :, :2]  # [num_envs, 1, 2] 只取x,y
+        relative_goal_pos = goal_pos - robot_pos  # [num_envs, 1, 2]
+        
+        # 计算速度方向yaw
+        robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
+        
+        # 机器人参数
+        robot_radius = torch.full((drone_state.shape[0], 1, 1), self.cfg.safety_radius, device=self.device)
+        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.max_speed, device=self.device)
+        
+        # 构建robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw]
+        robot_node = torch.cat([
+            relative_goal_pos,  # [num_envs, 1, 2]
+            robot_radius,       # [num_envs, 1, 1]  
+            robot_v_pref,       # [num_envs, 1, 1]
+            robot_yaw.unsqueeze(-1)  # [num_envs, 1, 1]
+        ], dim=-1)  # [num_envs, 1, 5]
+
+        policy_obs = {
+            'robot_node': robot_node,
+            'temporal_edges': robot_vel
+        }
+        
+        return {"policy": policy_obs}
 
 
 class SimpleObservationProcessor:
     def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
         self.cfg = cfg
         self.device = device
-
-        
 
 
 
@@ -95,16 +153,18 @@ class TrafficObservationProcessor:
         }
         return policy_space_dict
 
-    def process_observation(self, drone_state: torch.Tensor, target_pos: torch.Tensor) -> dict:
+    def process_observation(self, state: EnvState) -> dict:
         """处理观测数据（使用预计算的轨迹）
         
         Args:
-            drone_state: [num_envs, 1, 13] ego drone状态
-            target_pos: [num_envs, 1, 3] 目标位置
+            state: 环境状态对象
             
         Returns:
             观测字典
         """
+        # 从状态对象提取数据
+        drone_state = state.ego_drone.drone_state
+        target_pos = state.navigation.target_positions
         num_envs = drone_state.shape[0]
         
         # 提取ego drone信息

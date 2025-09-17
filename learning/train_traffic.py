@@ -73,8 +73,8 @@ def main():
 
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
-    parser.add_argument("--drones_num", type=int, default=0, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=2, help="Number of evtols")
+    parser.add_argument("--drones_num", type=int, default=1, help="Number of drones")
+    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
     parser.add_argument("--evtol_radius", type=float, default=10.0, help="Evtol radius")    
     parser.add_argument("--drone_future_penalty", type=float, default=0.0, help="Drone future penalty")
     parser.add_argument("--evtol_future_penalty", type=float, default=0.0, help="Evtol future penalty")
