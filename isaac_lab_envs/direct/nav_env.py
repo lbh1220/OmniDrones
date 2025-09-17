@@ -153,6 +153,10 @@ class NavEnvCfg(DirectRLEnvCfg):
     randomization: Dict = field(default_factory=dict)
     time_encoding: bool = True
 
+    # global planner
+    use_global_path: bool = True
+    lookahead_distance: float = 10.0
+
 
 class NavEnv(DirectRLEnv):
     """Nav navigation environment for drones using Direct RL workflow."""
@@ -334,31 +338,33 @@ class NavEnv(DirectRLEnv):
         # 使用原始无人机系统的apply_action方法
         # 应该在这里处理action，无论是做放缩，还是通过controller处理
         # rotor_commands = self.controller.compute(
-        #     root_state=drone_state,  # shape [1, N, 3]
-        #     target_vel_xy=target_vel_xy,  # shape [1, N, 2]
-        #     target_height=target_height,  # shape [1, N, 1]
-        #     target_yaw=target_yaws  # shape [1, N]
+        #     root_state=drone_state,  # shape [num_envs, N, 3]
+        #     target_vel_xy=target_vel_xy,  # shape [num_envs, N, 2]
+        #     target_height=target_height,  # shape [num_envs, N, 1]
+        #     target_yaw=target_yaws  # shape [num_envs, N]
         #     )
         # 有两种思路，apply action的频率更高，按理说应该这里把控制量算出来，然后apply action实时更新drone state然后重新计算力和 力矩
         # 如果是discrete action, 这里就需要算mapping了
         self.command_vel_xy = continuous_actions * self.cfg.max_speed
         self.command_vel_xy = torch.clamp(self.command_vel_xy, -self.cfg.max_speed, self.cfg.max_speed)
         self.command_vel_xy = self.command_vel_xy.unsqueeze(1)
+        self.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
 
     def _apply_action(self):
         """Actions are applied in _pre_physics_step."""
-        drone_state = self.drone.get_state(env_frame=False)[..., :13]#[1, N, 13]
+        drone_state = self.drone.get_state(env_frame=False)[..., :13]#[num_envs, N, 13]
         if self.command_vel_xy is None:
             self.command_vel_xy = torch.zeros(self.num_envs, 1, 2, device=self.device)
+            self.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
         target_height = self.cfg.flight_height * torch.ones(self.num_envs, 1, 1, device=self.device)
         rotor_commands = self.controller.compute(
-            root_state=drone_state,  # shape [1, N, 3]
-            target_vel_xy=self.command_vel_xy,  # shape [1, N, 2]
-            target_height=target_height,  # shape [1, N, 1]
+            root_state=drone_state,  # shape [num_envs, N, 3]
+            target_vel_xy=self.command_vel_xy,  # shape [num_envs, N, 2]
+            target_height=target_height,  # shape [num_envs, N, 1]
         ) 
         self.drone.apply_action(rotor_commands)
     
-    def _post_physics_step(self):
+    def _post_physics_step(self, env_ids: torch.Tensor = None):
         """
         Update sensors after physics step.
         direct rl env中没有这个函数
@@ -372,7 +378,10 @@ class NavEnv(DirectRLEnv):
         self.state.update_ego_drone_state(drone_state)
         self.state.update_navigation_distances()
         self.state.update_reached_target_mask(self.cfg.arrival_threshold)
-
+        if self.cfg.use_global_path:
+            # self.state.update_navigation_state_iterative(self.cfg.lookahead_distance, env_ids)
+            self.state.update_navigation_state_vectorized(self.cfg.lookahead_distance, env_ids)
+            # pass
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
         # 使用观测处理器计算观测
@@ -426,7 +435,13 @@ class NavEnv(DirectRLEnv):
 
         
         # 重置机器人到初始位置（完全按照原始实现）
-        start, goal = self._generate_crossing_task(len(env_ids), flight_height=self.cfg.flight_height)
+        if self.cfg.use_global_path:
+            start, goal, waypoints = self._generate_crossing_task_with_waypoints(len(env_ids), flight_height=self.cfg.flight_height)
+            self.state.navigation.waypoints[env_ids] = waypoints
+            self.state.navigation.waypoint_lengths[env_ids] = waypoints.shape[1]
+            self.state.navigation.current_waypoint_indices[env_ids] = 0
+        else:
+            start, goal = self._generate_crossing_task(len(env_ids), flight_height=self.cfg.flight_height)
         
         # 随机初始姿态（使用原始分布）
         rpy = self.init_rpy_dist.sample((*env_ids.shape, 1))
@@ -436,6 +451,8 @@ class NavEnv(DirectRLEnv):
         self.state.navigation.target_positions[env_ids] = goal
         self.state.navigation.start_positions[env_ids] = start
         
+        
+        
         # 设置位置和姿态（使用原始方法）
         self.drone.set_world_poses(start, rot, env_ids)
         self.drone.set_velocities(self.init_vels[env_ids], env_ids)
@@ -444,7 +461,7 @@ class NavEnv(DirectRLEnv):
         self.state.reset_env_states(env_ids)
         
         # 更新状态信息
-        self._post_physics_step()
+        self._post_physics_step(env_ids=env_ids)
         
         # 重置奖励计算器的势能缓存
         self.reward_calculator.reset_potential(self.state, env_ids)
@@ -468,13 +485,36 @@ class NavEnv(DirectRLEnv):
                 drone_marker_cfg.prim_path = "/Visuals/Command/drone_position"
                 self.drone_pos_visualizer = VisualizationMarkers(drone_marker_cfg)
 
+            if not hasattr(self, "local_goal_visualizer"):
+                # Create blue marker for local goals
+                local_goal_marker_cfg = CUBOID_MARKER_CFG.copy()
+                local_goal_marker_cfg.markers["cuboid"].size = (0.18, 0.18, 0.18)
+                local_goal_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 0.0, 1.0)  # Blue color
+                local_goal_marker_cfg.prim_path = "/Visuals/Command/local_goal"
+                self.local_goal_visualizer = VisualizationMarkers(local_goal_marker_cfg)
+
+            if not hasattr(self, "projection_point_visualizer"):
+                # Create orange marker for projection points
+                projection_point_marker_cfg = CUBOID_MARKER_CFG.copy()
+                projection_point_marker_cfg.markers["cuboid"].size = (0.12, 0.12, 0.12)
+                projection_point_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (1.0, 0.5, 0.0)  # Orange color
+                projection_point_marker_cfg.prim_path = "/Visuals/Command/projection_point"
+                self.projection_point_visualizer = VisualizationMarkers(projection_point_marker_cfg)
+
             self.target_pos_visualizer.set_visibility(True)
             self.drone_pos_visualizer.set_visibility(True)
+            # Only show local goals and projection points when using global path
+            self.local_goal_visualizer.set_visibility(self.cfg.use_global_path)
+            self.projection_point_visualizer.set_visibility(self.cfg.use_global_path)
         else:
             if hasattr(self, "target_pos_visualizer"):
                 self.target_pos_visualizer.set_visibility(False)
             if hasattr(self, "drone_pos_visualizer"):
                 self.drone_pos_visualizer.set_visibility(False)
+            if hasattr(self, "local_goal_visualizer"):
+                self.local_goal_visualizer.set_visibility(False)
+            if hasattr(self, "projection_point_visualizer"):
+                self.projection_point_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
         """Update debug visualization."""
@@ -484,6 +524,14 @@ class NavEnv(DirectRLEnv):
         if hasattr(self, "drone_pos_visualizer"):
             # Visualize drone positions - squeeze to remove the middle dimension (n_env, 3)
             self.drone_pos_visualizer.visualize(self.drone.pos.squeeze(1))
+            
+        # Visualize local goals and projection points (only when using global path)
+        if self.cfg.use_global_path:
+            if hasattr(self, "local_goal_visualizer") and self.state.navigation.local_goals is not None:
+                self.local_goal_visualizer.visualize(self.state.navigation.local_goals.squeeze(1))
+            
+            if hasattr(self, "projection_point_visualizer") and self.state.navigation.projection_points is not None:
+                self.projection_point_visualizer.visualize(self.state.navigation.projection_points.squeeze(1))
 
     def _generate_crossing_task(self, num_env: int = 1, flight_height: float = 20.0):
         if num_env <= 0:
@@ -499,6 +547,25 @@ class NavEnv(DirectRLEnv):
         goal_tensor = goal_tensor + area_center
 
         return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1)
+    
+    def _generate_crossing_task_with_waypoints(self, num_env: int = 1, flight_height: float = 20.0):
+        if num_env <= 0:
+            raise ValueError("num_aircraft must be greater than 0")
+        area_center = torch.tensor([(self.cfg.area_bounds.xmin + self.cfg.area_bounds.xmax) / 2, 
+                                    (self.cfg.area_bounds.ymin + self.cfg.area_bounds.ymax) / 2, 
+                                    flight_height], device=self.device)
+        area_center = area_center.unsqueeze(0)
+        start_tensor = math_utils.sample_cylinder(self.circle_radius, (0, 0), num_env, self.device)
+        goal_tensor = start_tensor.clone()
+        goal_tensor = -goal_tensor
+        start_tensor = start_tensor + area_center
+        goal_tensor = goal_tensor + area_center
+
+        inter_points = math_utils.sample_cylinder(self.circle_radius/2.0, (0, 0), num_env, self.device)
+        inter_points = inter_points + area_center
+        waypoints = torch.cat([start_tensor.unsqueeze(1), inter_points.unsqueeze(1), goal_tensor.unsqueeze(1)], dim=1)
+        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints
+
     
     def _setup_discrete_action(self):
         """设置离散动作空间"""

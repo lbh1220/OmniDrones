@@ -45,7 +45,7 @@ def main():
     """主函数"""
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
-    parser.add_argument("--num_envs", type=int, default=10, help="Number of environments")
+    parser.add_argument("--num_envs", type=int, default=2, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
                         default="runs/traffic/homoe/u0e2_c-50.0_f3.0/checkpoints",
                        help="Path to the trained model directory")
@@ -54,8 +54,8 @@ def main():
     
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
-    parser.add_argument("--drones_num", type=int, default=0, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=2, help="Number of evtols")
+    parser.add_argument("--drones_num", type=int, default=1, help="Number of drones")
+    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
   
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
@@ -100,8 +100,8 @@ def main():
 
     from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
     course_list = [
-                TrafficCurriculumCfg(drones_num=0, evtol_num=1),
-                TrafficCurriculumCfg(drones_num=0, evtol_num=2),
+                TrafficCurriculumCfg(drones_num=2, evtol_num=0),
+                TrafficCurriculumCfg(drones_num=2, evtol_num=0),
             ]
     args.course_num = len(course_list)
     cfg.curriculum_list = course_list

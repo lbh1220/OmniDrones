@@ -35,7 +35,18 @@ class NavigationNamespace:
     
     # 任务状态
     reached_target_mask: torch.Tensor = None     # 到达目标mask [num_envs]
+
+    velocity_commands: torch.Tensor = None     # 速度指令 [num_envs, 1, 3]
     
+    # 航路点信息
+    waypoints: torch.Tensor = None           # 航路点 [num_envs, 20, 4]
+    waypoint_lengths: torch.Tensor = None    # 航路点长度 [num_envs]
+    current_waypoint_indices: torch.Tensor = None  # 当前航路点索引 [num_envs]
+
+    # for local
+    local_goals: torch.Tensor = None           # 局部目标 [num_envs, 1, 3]
+    projection_points: torch.Tensor = None      # 投影点 [num_envs, 1, 3]
+    cross_track_errors: torch.Tensor = None      # 横向误差 [num_envs]
 
 @dataclass
 class CollisionNamespace:
@@ -118,6 +129,17 @@ class EnvState:
         self.navigation.current_dist_to_target = torch.zeros(self.num_envs, device=self.device)
         self.navigation.prev_dist_to_target = torch.zeros(self.num_envs, device=self.device)
         self.navigation.reached_target_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.navigation.velocity_commands = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        # 航路点信息
+
+        self.navigation.waypoints = torch.zeros(self.num_envs, 3, 3, device=self.device)
+        self.navigation.waypoint_lengths = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.navigation.current_waypoint_indices = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+        # for local 
+        self.navigation.local_goals = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self.navigation.projection_points = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self.navigation.cross_track_errors = torch.zeros(self.num_envs, device=self.device)
         
         # 碰撞状态
         self.collision.collision_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -241,3 +263,237 @@ class EnvState:
                     attr_value = getattr(self.traffic, attr_name)
                     if isinstance(attr_value, torch.Tensor):
                         setattr(self.traffic, attr_name, attr_value.to(device))
+    def update_navigation_state_vectorized(self, lookahead_distance: float = 10.0, env_ids: torch.Tensor | None = None):
+        """
+        【矢量化版】为指定环境（或全部环境）更新其导航状态。
+        - 逻辑与 iterative 版本完全一致，但使用并行的张量运算。
+        
+        Args:
+            lookahead_distance: 计算局部目标时，沿路径前进的距离。
+            env_ids: 需要更新的环境ID。如果为 None，则更新所有环境。
+        """
+        # 如果 env_ids 为 None，则处理所有环境
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        
+        # 如果没有需要处理的环境，则直接返回
+        if len(env_ids) == 0:
+            return
+
+        # --- 0. 提取需要处理的环境的数据子集 ---
+        positions_3d = self.ego_drone.positions[env_ids, 0]           # shape: (num_ids, 3)
+        positions_2d = positions_3d[:, :2]                            # shape: (num_ids, 2)
+        waypoints = self.navigation.waypoints[env_ids]                # shape: (num_ids, max_len, 3)
+        waypoints_2d = waypoints[:, :, :2]                            # shape: (num_ids, max_len, 2)
+        waypoint_lengths = self.navigation.waypoint_lengths[env_ids]  # shape: (num_ids,)
+        target_positions = self.navigation.target_positions[env_ids, 0] # shape: (num_ids, 3)
+
+        max_waypoints = waypoints.shape[1]
+        num_active_envs = len(env_ids)
+
+        # --- 1. 处理路径点过少的特殊情况 ---
+        short_path_mask = waypoint_lengths < 2
+        
+        # --- 2. 矢量化计算最佳投影点 ---
+        # 仅对路径点足够的环境进行计算
+        long_path_mask = ~short_path_mask
+        if torch.any(long_path_mask):
+            # 准备航路段张量
+            wp_starts = waypoints_2d[long_path_mask, :-1, :] # (N_long, max_len-1, 2)
+            wp_ends = waypoints_2d[long_path_mask, 1:, :]   # (N_long, max_len-1, 2)
+
+            # 矢量化投影计算
+            segment_vecs = wp_ends - wp_starts
+            segment_lens_sq = torch.sum(segment_vecs**2, dim=-1) + 1e-6
+            to_current_vecs = positions_2d[long_path_mask].unsqueeze(1) - wp_starts
+            projection_ratios = torch.einsum('nij,nij->ni', to_current_vecs, segment_vecs) / segment_lens_sq
+            clamped_ratios = torch.clamp(projection_ratios, 0.0, 1.0)
+            
+            # 计算所有航路段上的投影点
+            projection_points = wp_starts + clamped_ratios.unsqueeze(-1) * segment_vecs
+            
+            # 计算所有误差并应用掩码
+            cross_track_errors_sq = torch.sum((positions_2d[long_path_mask].unsqueeze(1) - projection_points)**2, dim=-1)
+            segment_indices = torch.arange(max_waypoints - 1, device=self.device).unsqueeze(0)
+            valid_segment_mask = segment_indices < (waypoint_lengths[long_path_mask] - 1).unsqueeze(-1)
+            cross_track_errors_sq[~valid_segment_mask] = float('inf')
+            
+            # 找到每个环境的最佳航路段索引
+            best_segment_indices_long = torch.argmin(cross_track_errors_sq, dim=1) # (N_long,)
+            best_ratios_long = torch.gather(clamped_ratios, 1, best_segment_indices_long.unsqueeze(-1)).squeeze(-1) # (N_long,)
+            
+            # --- 3. 显式维护投影状态 ---
+            start_points = torch.gather(wp_starts, 1, best_segment_indices_long.view(-1, 1, 1).expand(-1, 1, 2)).squeeze(1)
+            end_points = torch.gather(wp_ends, 1, best_segment_indices_long.view(-1, 1, 1).expand(-1, 1, 2)).squeeze(1)
+            final_projection_point_2d = start_points + best_ratios_long.unsqueeze(-1) * (end_points - start_points)
+            
+            self.navigation.projection_points[env_ids[long_path_mask], 0, :2] = final_projection_point_2d
+            self.navigation.projection_points[env_ids[long_path_mask], 0, 2] = positions_3d[long_path_mask, 2]
+            min_dist_sq = torch.gather(cross_track_errors_sq, 1, best_segment_indices_long.unsqueeze(-1)).squeeze(-1)
+            self.navigation.cross_track_errors[env_ids[long_path_mask]] = torch.sqrt(min_dist_sq)
+
+            # --- 4. 矢量化计算局部目标 (Local Goal) ---
+            # 预计算所有有效航路段的长度
+            segment_lengths = torch.norm(segment_vecs, dim=-1) # (N_long, max_len-1)
+            segment_lengths[~valid_segment_mask] = 0.0 # 忽略无效段
+            
+            # 计算到投影点的路径总距离
+            cumulative_lengths = torch.cumsum(segment_lengths, dim=1)
+            # 减去自身长度，得到到航段起点的累积长度
+            dist_to_segment_start = cumulative_lengths - segment_lengths
+            
+            gathered_dist_to_start = torch.gather(dist_to_segment_start, 1, best_segment_indices_long.unsqueeze(-1)).squeeze(-1)
+            gathered_segment_len = torch.gather(segment_lengths, 1, best_segment_indices_long.unsqueeze(-1)).squeeze(-1)
+            dist_to_projection = gathered_dist_to_start + best_ratios_long * gathered_segment_len
+            
+            # 计算目标点在路径上的总距离
+            target_dist_along_path = dist_to_projection + lookahead_distance
+            
+            # 找到局部目标所在的航路段 (这是最关键的技巧)
+            # 比较目标总距离和每个航段终点的累积总距离
+            is_past_segment = target_dist_along_path.unsqueeze(1) > cumulative_lengths
+            # 对已通过的航路段求和，即可得到目标点所在的航路段索引
+            local_goal_segment_indices = torch.sum(is_past_segment, dim=1) # (N_long,)
+            
+            # 确保索引不越界
+            max_valid_segment_idx = waypoint_lengths[long_path_mask] - 2
+            local_goal_segment_indices = torch.min(local_goal_segment_indices, max_valid_segment_idx)
+
+            # 计算在目标航路段内的前进距离
+            dist_to_goal_segment_start = torch.gather(dist_to_segment_start, 1, local_goal_segment_indices.unsqueeze(-1)).squeeze(-1)
+            dist_into_goal_segment = target_dist_along_path - dist_to_goal_segment_start
+            
+            # 计算并插值得到最终的局部目标
+            goal_seg_starts = torch.gather(wp_starts, 1, local_goal_segment_indices.view(-1, 1, 1).expand(-1, 1, 2)).squeeze(1)
+            goal_seg_ends = torch.gather(wp_ends, 1, local_goal_segment_indices.view(-1, 1, 1).expand(-1, 1, 2)).squeeze(1)
+            goal_seg_vecs = goal_seg_ends - goal_seg_starts
+            goal_seg_lens = torch.norm(goal_seg_vecs, dim=-1, keepdim=True) + 1e-6
+            
+            ratio_on_goal_segment = (dist_into_goal_segment.unsqueeze(-1) / goal_seg_lens)
+            local_goals_2d = goal_seg_starts + torch.clamp(ratio_on_goal_segment, 0.0, 1.0) * goal_seg_vecs
+
+            # 维护局部目标状态
+            flight_altitude = waypoints[long_path_mask, 0, 2] # 使用固定高度
+            self.navigation.local_goals[env_ids[long_path_mask], 0, :2] = local_goals_2d
+            self.navigation.local_goals[env_ids[long_path_mask], 0, 2] = flight_altitude
+            
+            # --- 5. 矢量化更新当前目标航路点索引 ---
+            new_wp_indices_long = local_goal_segment_indices + 1
+            self.navigation.current_waypoint_indices[env_ids[long_path_mask]] = new_wp_indices_long
+
+        # --- 6. 合并特殊情况和一般情况的结果 ---
+        if torch.any(short_path_mask):
+            self.navigation.local_goals[env_ids[short_path_mask], 0] = target_positions[short_path_mask]
+            self.navigation.projection_points[env_ids[short_path_mask], 0] = positions_3d[short_path_mask]
+            self.navigation.cross_track_errors[env_ids[short_path_mask]] = 0.0
+            # 如果路径点>0,则为长度-1，否则为0
+            short_path_indices = torch.clamp(waypoint_lengths[short_path_mask] - 1, min=0)
+            self.navigation.current_waypoint_indices[env_ids[short_path_mask]] = short_path_indices
+            
+    def update_navigation_state_iterative(self, lookahead_distance: float = 10.0, env_ids: torch.Tensor | None = None):
+        """
+        通过遍历的方式，为每个环境更新其导航状态。
+        - 显式维护投影点和航迹误差。
+        - 基于局部目标位置更新当前目标航路点索引。
+        
+        Args:
+            lookahead_distance: 计算局部目标时，沿路径前进的距离。
+        """
+        
+        # --- 准备用于存储结果的张量 ---
+        # 我们可以直接在循环中修改 self.navigation 中的张量
+        
+        # --- 开始遍历所有并行环境 ---
+        for i in range(self.num_envs):
+            if env_ids is not None and i not in env_ids:
+                continue
+            # --- 1. 提取第 i 个环境的数据 ---
+            current_pos_3d = self.ego_drone.positions[i, 0] # shape: (3,)
+            current_pos_2d = current_pos_3d[:2]           # shape: (2,)
+            num_waypoints = self.navigation.waypoint_lengths[i]
+            
+            # 如果航路点少于2个（无法构成航路段），则进行特殊处理
+            if num_waypoints < 2:
+                final_target_3d = self.navigation.target_positions[i, 0]
+                self.navigation.local_goals[i, 0] = final_target_3d
+                self.navigation.projection_points[i, 0] = current_pos_3d
+                self.navigation.cross_track_errors[i] = 0.0
+                self.navigation.current_waypoint_indices[i] = num_waypoints - 1 if num_waypoints > 0 else 0
+                continue
+                
+            waypoints_2d = self.navigation.waypoints[i, :num_waypoints, :2] # shape: (num_waypoints, 2)
+            
+            # --- 2. 计算在路径上的最佳投影点 ---
+            min_dist_sq = torch.full((1,), float('inf'), device=self.device)
+            best_segment_idx = 0
+            best_projection_ratio = 0.0
+            
+            for j in range(num_waypoints - 1):
+                wp1 = waypoints_2d[j]
+                wp2 = waypoints_2d[j + 1]
+                segment_vec = wp2 - wp1
+                segment_len_sq = torch.dot(segment_vec, segment_vec)
+                
+                if segment_len_sq < 1e-6: continue
+                    
+                to_current_vec = current_pos_2d - wp1
+                projection_ratio = torch.dot(to_current_vec, segment_vec) / segment_len_sq
+                # projection_ratio could be negative, then clamp
+                clamped_ratio = torch.clamp(projection_ratio, 0.0, 1.0)
+                projection_point = wp1 + clamped_ratio * segment_vec
+                dist_sq = torch.sum((current_pos_2d - projection_point)**2)
+                
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    best_segment_idx = j
+                    best_projection_ratio = clamped_ratio
+
+            # --- 3. 显式维护投影状态 ---
+            final_projection_point_2d = waypoints_2d[best_segment_idx] + \
+                                        best_projection_ratio * (waypoints_2d[best_segment_idx+1] - waypoints_2d[best_segment_idx])
+            
+            # Z轴使用当前飞机的高度
+            self.navigation.projection_points[i, 0, :2] = final_projection_point_2d
+            self.navigation.projection_points[i, 0, 2] = current_pos_3d[2]
+            self.navigation.cross_track_errors[i] = torch.sqrt(min_dist_sq)
+
+            # --- 4. 计算局部目标 (Local Goal)，并记录其所在航路段 ---
+            remaining_dist = lookahead_distance
+            local_goal_2d = final_projection_point_2d.clone()
+            local_goal_segment_idx = best_segment_idx
+
+            for k in range(best_segment_idx, num_waypoints - 1):
+                start_point_2d = waypoints_2d[k]
+                if k == best_segment_idx:
+                    start_point_2d = final_projection_point_2d
+                
+                end_point_2d = waypoints_2d[k + 1]
+                segment_vec = end_point_2d - start_point_2d
+                segment_len = torch.norm(segment_vec)
+
+                if segment_len < 1e-6: continue
+
+                if remaining_dist <= segment_len:
+                    # 在当前航路段内即可找到局部目标
+                    local_goal_2d = start_point_2d + (remaining_dist / segment_len) * segment_vec
+                    local_goal_segment_idx = k
+                    break
+                else:
+                    # 无法在当前段内满足前进距离，移动到下一段的起点
+                    remaining_dist -= segment_len
+                    # 如果已经是倒数第二个航路段，说明local goal就在最终点
+                    # 航路段的数量比waypoints少1
+                    if k == num_waypoints - 2:
+                        local_goal_2d = end_point_2d
+                        local_goal_segment_idx = k
+                        break
+            
+            # 显式维护局部目标
+            flight_altitude = self.navigation.waypoints[i, 0, 2] # 使用路径的固定高度
+            self.navigation.local_goals[i, 0, :2] = local_goal_2d
+            self.navigation.local_goals[i, 0, 2] = flight_altitude
+            
+            # --- 5. 根据局部目标位置，更新当前目标航路点索引 ---
+            # 当前目标航路点，就是局部目标所在航路段的终点
+            new_wp_idx = local_goal_segment_idx + 1
+            self.navigation.current_waypoint_indices[i] = new_wp_idx

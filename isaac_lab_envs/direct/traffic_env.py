@@ -167,10 +167,10 @@ class TrafficEnv(NavEnv):
         self.traffic_sim._apply_actions()
         super()._apply_action()
     
-    def _post_physics_step(self):
+    def _post_physics_step(self, env_ids: torch.Tensor = None):
         """Update sensors after physics step."""
         self.traffic_sim._post_physics_step()
-        super()._post_physics_step()
+        super()._post_physics_step(env_ids)
 
         self._update_traffic_obs_processor()
         
