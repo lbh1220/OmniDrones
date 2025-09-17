@@ -29,7 +29,6 @@ class TrafficEvtolCfg:
     course_num: int = 8
     random_speed: bool = False
     random_safety_radius: bool = False
-    
 @configclass
 class OrcaCfg:
     enable: bool = True

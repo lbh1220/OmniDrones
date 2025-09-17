@@ -242,7 +242,8 @@ class TrafficEVTOLManager:
         current_waypoint_idx = self.state.current_waypoint_indices[evtol_idx].item()
         
         # 计算这一步要前进的距离
-        move_distance = self.max_speed * dt
+        # move_distance = self.max_speed * dt
+        move_distance = self.state.max_speed[evtol_idx].item() * dt
         
         # 如果当前航路点索引超出范围，需要重新设置航路
         if current_waypoint_idx >= len(smooth_waypoints):
