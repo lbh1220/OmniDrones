@@ -109,7 +109,7 @@ class SucessRateCallback(BaseCallback):
         self.check_freq = check_freq
         self.check_num = 0
         self.best_mean_reward = -np.inf
-        self.best_success_rate = 0.5
+        self.best_success_rate = -0.1
         self.save_path = save_path
         self.name_prefix = name_prefix
         # 维护最近100次episode的结果

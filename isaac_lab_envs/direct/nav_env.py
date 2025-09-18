@@ -158,6 +158,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     use_global_path: bool = True
     lookahead_distance: float = 10.0
     rew_cross_track_coeff = 0.0
+    rew_cross_track_alpha = 1.0
 
 
 class NavEnv(DirectRLEnv):

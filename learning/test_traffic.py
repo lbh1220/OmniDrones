@@ -13,7 +13,7 @@ from rl.sb3.config import ArgsConfig
 import torch
 from stable_baselines3.common.logger import configure
 from rl.sb3.custom_ppo import CustomPPO
-from stable_baselines3.common.vec_env import VecNormalize
+from rl.sb3.vec_normalize import VecNormalize
 # 移除evaluation导入，Isaac Lab SB3包装器不支持evaluate_policy
 
 # 导入Isaac Lab
@@ -56,7 +56,8 @@ def main():
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
     parser.add_argument("--drones_num", type=int, default=1, help="Number of drones")
     parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
-  
+    parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
+
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
@@ -97,6 +98,7 @@ def main():
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
+    cfg.use_global_path = args.use_global_path
 
     from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
     course_list = [
@@ -139,7 +141,8 @@ def main():
         # 测试时不更新归一化统计
         env.training = False
         env.norm_reward = False
-    
+
+    algo_args.robot_node_input_size = env.observation_space['robot_node'].shape[1] + env.observation_space['temporal_edges'].shape[1]
     # 加载训练好的模型
 
     model = CustomPPO.load(model_file, env=env, args=algo_args)

@@ -10,6 +10,7 @@ from stable_baselines3.common import utils
 from stable_baselines3.common.preprocessing import is_image_space
 from stable_baselines3.common.running_mean_std import RunningMeanStd as _RunningMeanStd
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvStepReturn, VecEnvWrapper
+from stable_baselines3.common.vec_env.vec_normalize import VecNormalize as _VecNormalize
 
 class RunningMeanStd(_RunningMeanStd):
     def __init__(self, epsilon: float = 1e-4, shape: Tuple[int, ...] = (), shared_across_agents: bool = False):
@@ -62,7 +63,7 @@ class RunningMeanStd(_RunningMeanStd):
         batch_count = arr.shape[0]
         self.update_from_moments(batch_mean, batch_var, batch_count)
 
-class VecNormalize(VecEnvWrapper):
+class VecNormalize(_VecNormalize):
     """
     A moving average, normalizing wrapper for vectorized environment.
     has support for saving/loading moving average,

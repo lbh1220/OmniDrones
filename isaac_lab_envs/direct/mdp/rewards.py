@@ -379,6 +379,7 @@ class TrafficRewardCalculatorWithPath(TrafficRewardCalculator):
         
         # 横向误差奖励系数
         self.cross_track_reward_coeff = getattr(cfg, 'rew_cross_track_coeff', 0.0)
+        self.alpha = getattr(cfg, 'rew_cross_track_alpha', 1.0)
         
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         """计算包含横向误差的交通环境奖励
@@ -417,7 +418,7 @@ class TrafficRewardCalculatorWithPath(TrafficRewardCalculator):
         if self.cross_track_reward_coeff > 0:
             # 正系数：奖励模式 - 距离越小奖励越大
             # this value is in range [0, 1]
-            cross_track_reward = self.cross_track_reward_coeff * torch.exp(-effective_errors)
+            cross_track_reward = self.cross_track_reward_coeff * torch.exp(-self.alpha * effective_errors)
         else:
             # 负系数：惩罚模式 - 距离越大惩罚越大
             # clamp this value to [0, 1]

@@ -86,8 +86,9 @@ def main():
     # whether reward normalize
     parser.add_argument("--reward_normalize", action="store_true", help="Reward normalize")
 
-    parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
-    parser.add_argument("--rew_cross_track_coeff", type=float, default=-0.1, help="Cross track coeff")
+    parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
+    parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
+    parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
 
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
@@ -158,6 +159,7 @@ def main():
 
     cfg.use_global_path = args.use_global_path
     cfg.rew_cross_track_coeff = args.rew_cross_track_coeff
+    cfg.rew_cross_track_alpha = args.rew_cross_track_alpha
 
 
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
@@ -297,6 +299,7 @@ def main():
     model.logger.info(f"evtol_future_penalty: {cfg.rew_evtol_future_penalty}")
     model.logger.info(f"use_global_path: {cfg.use_global_path}")
     model.logger.info(f"rew_cross_track_coeff: {cfg.rew_cross_track_coeff}")
+    model.logger.info(f"rew_cross_track_alpha: {cfg.rew_cross_track_alpha}")
     model.logger.info(f"lr: {algo_args.lr}")
     model.logger.info(f"gamma: {algo_args.gamma}")
     model.logger.info(f"entropy_coef: {algo_args.entropy_coef}")
@@ -312,8 +315,9 @@ def main():
     model.learn(total_timesteps=int(algo_args.num_env_steps), callback=callbacks, log_interval=getattr(algo_args, 'log_interval', 10))
     
     # 保存模型
-    model_path = os.path.join(save_dir, "ppo_traffic_demo")
+    model_path = os.path.join(save_dir, "final_model")
     model.save(model_path)
+    model.get_vec_normalize_env().save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
     print(f"Model saved to: {model_path}")
     
     # 完成wandb run

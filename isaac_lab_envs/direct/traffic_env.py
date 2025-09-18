@@ -111,9 +111,9 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_drones_decay_factor = 0.667
     rew_evtols_threshold_factor = 2.0
     rew_evtols_decay_factor = 0.9
-    rew_cross_track_coeff = 0.0
     ## drones in previous, 2.0, 0.667; evtols in previous, 1.5, 0.9
-
+    rew_cross_track_coeff = 0.0
+    
     # curriculum learning
     curriculum_learning: bool = False
     curriculum_list: List[TrafficCurriculumCfg] = field(default_factory=lambda: [TrafficCurriculumCfg()])
