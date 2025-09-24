@@ -141,9 +141,10 @@ class TrafficObservationProcessor:
         self.pred_timestep = cfg.pred_timestep
         self.observation_norm_scale = cfg.observation_norm_scale
         # Traffic aircraft数量
-        self.total_traffic_num = cfg.traffic_sim.num_drones + getattr(cfg.traffic_sim, 'num_evtols', 0)
+        # self.total_traffic_num = cfg.traffic_sim.num_drones + getattr(cfg.traffic_sim, 'num_evtols', 0)
         self.drone_num = cfg.traffic_sim.num_drones
         self.evtol_num = getattr(cfg.traffic_sim, 'num_evtols', 0)
+        self.total_traffic_num = max(self.drone_num+self.evtol_num, 20)
         
         # 传感器感知范围（使用NavEnv的observation_radius）
         self.sensor_range = cfg.observation_radius
@@ -201,7 +202,7 @@ class TrafficObservationProcessor:
 
     def generate_policy_obs_dict(self):
         # 计算traffic数量配置
-        total_traffic_num = self.cfg.traffic_sim.num_drones + self.cfg.traffic_sim.num_evtols
+        total_traffic_num = self.total_traffic_num
         
         # 1. 创建内层字典 "policy" 的内容
         policy_space_dict = {
@@ -350,7 +351,7 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
     def generate_policy_obs_dict(self):
         """生成观测空间字典 - 增加local goal和projection point维度"""
         # 计算traffic数量配置
-        total_traffic_num = self.cfg.traffic_sim.num_drones + self.cfg.traffic_sim.num_evtols
+        total_traffic_num = self.total_traffic_num
         
         # 1. 创建内层字典 "policy" 的内容
         policy_space_dict = {

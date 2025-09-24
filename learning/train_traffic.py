@@ -145,8 +145,8 @@ def main():
         cfg.rew_collision = args.rew_collision
 
     # future reward 
-    cfg.rew_drone_future_penalty = args.drone_future_penalty
-    cfg.rew_evtol_future_penalty = args.evtol_future_penalty
+    cfg.rew_drone_future_penalty = -abs(args.drone_future_penalty)
+    cfg.rew_evtol_future_penalty = -abs(args.evtol_future_penalty)
 
     if args.drones_threshold_factor is not None:
         cfg.rew_drones_threshold_factor = args.drones_threshold_factor

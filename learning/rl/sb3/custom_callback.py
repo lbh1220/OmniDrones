@@ -109,7 +109,7 @@ class SucessRateCallback(BaseCallback):
         self.check_freq = check_freq
         self.check_num = 0
         self.best_mean_reward = -np.inf
-        self.best_success_rate = -0.1
+        self.best_success_rate = 0.5
         self.save_path = save_path
         self.name_prefix = name_prefix
         # 维护最近100次episode的结果
@@ -149,7 +149,7 @@ class SucessRateCallback(BaseCallback):
                 self.logger.record("val/timeout_rate", timeout_rate)
                 self.logger.record("val/mean_recent_reward", mean_recent_reward)
                 self.logger.record("val/mean_recent_cross_track_error", mean_recent_cross_track_error)
-                if success_rate > self.best_success_rate:
+                if success_rate >= self.best_success_rate:
                     self.best_success_rate = success_rate
                     model_path = self._checkpoint_path(extension="zip")
                     self.model.save(model_path)
