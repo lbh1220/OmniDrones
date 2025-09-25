@@ -19,10 +19,10 @@ from rl.sb3.vec_normalize import VecNormalize
 # 导入Isaac Lab
 from omni.isaac.lab.app import AppLauncher
 
+import gymnasium as gym
 
 
-
-def create_test_env(cfg, headless=True):
+def create_test_env(cfg, headless=True, args=None):
     """创建并包装环境"""
     # 设置headless模式
     
@@ -31,10 +31,18 @@ def create_test_env(cfg, headless=True):
     from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
     # 创建环境
     if cfg.curriculum_learning:
-        env = TrafficEnvWithCurriculum(cfg=cfg)
+        env = TrafficEnvWithCurriculum(cfg=cfg, render_mode="rgb_array" if args.video else None)
     else:
-        env = TrafficEnv(cfg=cfg)
-    
+        env = TrafficEnv(cfg=cfg, render_mode="rgb_array" if args.video else None)
+    if args.video:
+        video_kwargs = {
+            "video_folder": os.path.join(args.model_dir, "test_videos"),
+            "step_trigger": lambda step: step % 500 == 0,
+            "video_length": 250,
+            "disable_logger": True,
+        }
+        print("[INFO] Recording videos during testing.")
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
     # 使用SB3包装器包装
     env = Sb3VecEnvWrapper(env)
     
@@ -45,18 +53,19 @@ def main():
     """主函数"""
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
-    parser.add_argument("--num_envs", type=int, default=1, help="Number of environments")
+    parser.add_argument("--num_envs", type=int, default=5, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/path/u20/rc-0.1_f0_0925_034339",
+                        default="runs/traffic/path/u10/rc-0.1_f0_ap-0.12_0925_042518",
                        help="Path to the trained model directory")
-    parser.add_argument("--num_episodes", type=int, default=100,
+    parser.add_argument("--num_episodes", type=int, default=10,
                        help="Number of episodes for evaluation")
     
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
-    parser.add_argument("--drones_num", type=int, default=20, help="Number of drones")
+    parser.add_argument("--drones_num", type=int, default=10, help="Number of drones")
     parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
     parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
+    parser.add_argument("--video", action="store_true", default=True, help="Record video")
 
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
@@ -64,6 +73,10 @@ def main():
     
     # 设置为非headless模式以便可视化
     args.headless = False
+    if args.video:
+        args.enable_cameras = True
+    else:
+        args.enable_cameras = False
     # args.off
     
     # 启动Isaac Sim
@@ -96,6 +109,7 @@ def main():
     # 创建环境配置
     cfg = TrafficEnvCfg()
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
+    cfg.seed = algo_args.seed
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
     cfg.use_global_path = args.use_global_path
@@ -129,14 +143,14 @@ def main():
     from omni.isaac.lab.envs.common import ViewerCfg
     cfg.viewer = ViewerCfg(
         resolution=(1920, 1080),
-        eye=(100, 0., 100),  #  <-- 使用非默认值
+        eye=(125, 0., 125),  #  <-- 使用非默认值
         lookat=(0., 0., 1.)
     )
     print(f"创建测试环境...")
 
     
     # 创建测试环境
-    env = create_test_env(cfg, headless=False)
+    env = create_test_env(cfg, headless=False, args=args)
     
     # 如果存在VecNormalize文件，加载归一化参数
     if os.path.exists(vecnormalize_file):
@@ -170,11 +184,11 @@ def main():
     episode_lengths = []
     base_env = model.get_env().unwrapped
 
-
+    step_count = 0
     while episode_count < args.num_episodes:
         action, states = model.predict(obs, state=states, episode_start=episode_starts, deterministic=True)
         obs, reward, done, info = env.step(action)
-
+        step_count += 1
         if done.any():
             for i, done_ in enumerate(done):
                 if done_:

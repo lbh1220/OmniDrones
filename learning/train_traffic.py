@@ -18,7 +18,7 @@ from rl.sb3.custom_policy import CustomSelfAttnPolicy
 from rl.sb3.network_utils import linear_schedule_with_min
 from rl.sb3.custom_callback import SucessRateCallback
 from rl.sb3.vec_normalize import VecNormalize
-
+import gymnasium as gym
 # 添加wandb支持
 try:
     import wandb
@@ -27,7 +27,7 @@ except ImportError:
     print("Warning: wandb not available. Install with: pip install wandb")
     WANDB_AVAILABLE = False
 
-def create_env(cfg, headless=True):
+def create_env(cfg, headless=True, args=None):
     """创建并包装环境"""
     # 设置headless模式
     
@@ -36,9 +36,19 @@ def create_env(cfg, headless=True):
     from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
     # 创建环境
     if cfg.curriculum_learning:
-        env = TrafficEnvWithCurriculum(cfg=cfg)
+        env = TrafficEnvWithCurriculum(cfg=cfg, render_mode="rgb_array" if args.video else None)
     else:
-        env = TrafficEnv(cfg=cfg)
+        env = TrafficEnv(cfg=cfg, render_mode="rgb_array" if args.video else None)
+    save_dir = f"runs/traffic/{args.experiment_name}"
+    if args.video:
+        video_kwargs = {
+            "video_folder": os.path.join(save_dir, "videos"),
+            "step_trigger": lambda step: step % args.video_interval == 0,
+            "video_length": args.video_length,
+            "disable_logger": True,
+        }
+        print("[INFO] Recording videos during training.")
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
     
     # 使用SB3包装器包装
     env = Sb3VecEnvWrapper(env)
@@ -50,9 +60,9 @@ def main():
     parser = argparse.ArgumentParser(description="Train Traffic Environment with SB3 PPO")
 
     # learning params, num_envs, num_mini_batch, num_steps, learning_rate
-    parser.add_argument("--num_envs", type=int, default=512, help="Number of environments")
+    parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
     parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
-    parser.add_argument("--num_steps", type=int, default=128, help="Number of steps")
+    parser.add_argument("--num_steps", type=int, default=50, help="Number of steps")
     parser.add_argument("--learning_rate", type=float, default=4e-5, help="Learning rate")
     # total timesteps
     parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps")
@@ -92,13 +102,23 @@ def main():
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
     parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
 
+
+    # video recording
+    parser.add_argument("--video", action="store_true", default=True, help="Record video")
+    parser.add_argument("--video_interval", type=int, default=500, help="Video interval")
+    parser.add_argument("--video_length", type=int, default=250, help="Video length")
+
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
     
     # 设置headless模式
     args.headless = True  # 强制使用headless模式进行训练
-    
+
+    if args.video:
+        args.enable_cameras = True
+    else:
+        args.enable_cameras = False
     # 启动Isaac Sim
     app_launcher = AppLauncher(args)
     simulation_app = app_launcher.app
@@ -120,6 +140,16 @@ def main():
     # 创建环境配置
     cfg = TrafficEnvCfg()
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
+
+    from omni.isaac.lab.envs.common import ViewerCfg
+    cfg.viewer = ViewerCfg(
+        resolution=(1920, 1080),
+        eye=(125, 0., 125),  #  <-- 使用非默认值
+        lookat=(0., 0., 1.)
+    )
+    cfg.seed = algo_args.seed
+    if args.video:
+        cfg.debug_vis = True
 
     if args.course_num > 0:
         from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
@@ -220,14 +250,14 @@ def main():
         print("Warning: wandb requested but not available. Continuing without wandb logging.")
 
     # create env
-    env = create_env(cfg, headless=True)
+    env = create_env(cfg, headless=True, args=args)
     if hasattr(args, 'reward_normalize'):
         norm_reward = True
     else:
         norm_reward = False
     norm_obs_keys = ['robot_node', 'spatial_edges', 'temporal_edges']
     env = VecNormalize(env, 
-                        norm_obs=True, 
+                        norm_obs=False, 
                         norm_reward=norm_reward, 
                         training=True,
                         clip_obs=10.0, 
