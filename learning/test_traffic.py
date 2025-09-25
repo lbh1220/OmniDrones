@@ -47,15 +47,15 @@ def main():
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
     parser.add_argument("--num_envs", type=int, default=1, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/path/u6e1/rc-0.1_f-0.5_0921_024710",
+                        default="runs/traffic/path/u20/rc-0.1_f0_0925_034339",
                        help="Path to the trained model directory")
     parser.add_argument("--num_episodes", type=int, default=100,
                        help="Number of episodes for evaluation")
     
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
-    parser.add_argument("--drones_num", type=int, default=6, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
+    parser.add_argument("--drones_num", type=int, default=20, help="Number of drones")
+    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
     parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
 
     # 添加AppLauncher参数

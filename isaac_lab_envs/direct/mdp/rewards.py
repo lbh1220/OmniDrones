@@ -105,6 +105,9 @@ class TrafficRewardCalculator:
         self.future_evtol_penalty = cfg.rew_evtol_future_penalty  # EVTOL未来碰撞惩罚
         self.future_drone_penalty = cfg.rew_drone_future_penalty  # Drone未来碰撞惩罚
 
+        self.action_penalty = cfg.rew_action_penalty  # 动作惩罚
+        self.action_penalty = -abs(cfg.rew_action_penalty)
+
 
         # self.future_penalty = cfg.rew_evtol_future_penalty  # 未来碰撞惩罚
         self.discomfort_dist = 0.2  # 不适距离
@@ -171,6 +174,10 @@ class TrafficRewardCalculator:
         #     traffic_velocities
         # )
         # reward[continue_mask] += discomfort_penalty
+
+        # 4. 动作奖励
+        action_reward = self._compute_action_reward(state)
+        reward += action_reward
             
             # 5. 未来碰撞风险惩罚
         future_penalty = self._compute_future_collision_penalty_refactored(
@@ -215,6 +222,32 @@ class TrafficRewardCalculator:
         self.previous_potential = current_potential.clone()
         
         return potential_reward
+
+    def _compute_action_reward(self, state: EnvState) -> torch.Tensor:
+        """计算动作奖励（速度变化惩罚）
+        
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            action_reward: [num_envs] 动作奖励（通常为负值，用于惩罚速度变化）
+        """
+        # 获取当前和上一步的实际速度
+        current_velocity = state.ego_drone.velocities   # [num_envs, 1, 3]
+        previous_velocity = state.ego_drone.previous_velocities   # [num_envs, 1, 3]
+        
+        # 计算速度变化（加速度）
+        velocity_change = current_velocity - previous_velocity  # [num_envs, 1, 3]
+        
+        # 计算速度变化的模（L2范数）
+        acceleration_magnitude = torch.norm(velocity_change.squeeze(1), dim=1)  # [num_envs]
+        
+        # 返回负的惩罚（鼓励平稳的速度变化）
+        action_reward = self.action_penalty * acceleration_magnitude
+        
+        return action_reward
+
+
     def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
         """重置势能缓存"""
         # 计算当前势能（负距离）

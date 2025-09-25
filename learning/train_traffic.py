@@ -83,6 +83,8 @@ def main():
     parser.add_argument("--evtols_threshold_factor", type=float, default=None, help="Evtols threshold factor")
     parser.add_argument("--evtols_decay_factor", type=float, default=None, help="Evtols decay factor")
 
+    parser.add_argument("--rew_action_penalty", type=float, default=None, help="Action penalty")
+
     # whether reward normalize
     parser.add_argument("--reward_normalize", action="store_true", help="Reward normalize")
 
@@ -143,7 +145,10 @@ def main():
         cfg.rew_success = args.rew_success
     if args.rew_collision is not None:
         cfg.rew_collision = args.rew_collision
-
+        
+    if args.rew_action_penalty is not None:
+        cfg.rew_action_penalty = args.rew_action_penalty
+        cfg.rew_action_penalty = -abs(args.rew_action_penalty)
     # future reward 
     cfg.rew_drone_future_penalty = -abs(args.drone_future_penalty)
     cfg.rew_evtol_future_penalty = -abs(args.evtol_future_penalty)
@@ -297,9 +302,12 @@ def main():
     model.logger.info(f"evtols_num: {cfg.traffic_sim.num_evtols}")
     model.logger.info(f"drone_future_penalty: {cfg.rew_drone_future_penalty}")
     model.logger.info(f"evtol_future_penalty: {cfg.rew_evtol_future_penalty}")
-    model.logger.info(f"use_global_path: {cfg.use_global_path}")
-    model.logger.info(f"rew_cross_track_coeff: {cfg.rew_cross_track_coeff}")
-    model.logger.info(f"rew_cross_track_alpha: {cfg.rew_cross_track_alpha}")
+    model.logger.info(f"rew_action_penalty: {cfg.rew_action_penalty}")
+    if cfg.use_global_path:
+        model.logger.info(f"use_global_path: {cfg.use_global_path}")
+        model.logger.info(f"rew_cross_track_coeff: {cfg.rew_cross_track_coeff}")
+        model.logger.info(f"rew_cross_track_alpha: {cfg.rew_cross_track_alpha}")
+
     model.logger.info(f"lr: {algo_args.lr}")
     model.logger.info(f"gamma: {algo_args.gamma}")
     model.logger.info(f"entropy_coef: {algo_args.entropy_coef}")

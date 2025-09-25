@@ -20,6 +20,7 @@ class EgoDroneNamespace:
     
     # 控制相关
     command_vel_xy: torch.Tensor = None      # 指令速度 [num_envs, 1, 2]
+    previous_velocities: torch.Tensor = None  # 上一步的实际速度 [num_envs, 1, 3]
     
 
 @dataclass
@@ -123,6 +124,7 @@ class EnvState:
         self.ego_drone.rotations = torch.zeros(self.num_envs, 1, 4, device=self.device)
         self.ego_drone.rotations[:, :, 0] = 1.0  # 初始化为单位四元数
         self.ego_drone.angular_velocities = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self.ego_drone.previous_velocities = torch.zeros(self.num_envs, 1, 3, device=self.device)
         
         # 导航状态
         self.navigation.target_positions = torch.zeros(self.num_envs, 1, 3, device=self.device)
@@ -155,6 +157,9 @@ class EnvState:
         self.ego_drone.drone_state = drone_state
         # 从完整状态中提取各个组件
         self.ego_drone.positions = drone_state[:, :, :3]
+
+        if self.ego_drone.velocities is not None:
+            self.ego_drone.previous_velocities = self.ego_drone.velocities.clone()
         self.ego_drone.velocities = drone_state[:, :, 7:10] if drone_state.shape[-1] > 10 else None
         # 可以根据需要提取更多组件
         

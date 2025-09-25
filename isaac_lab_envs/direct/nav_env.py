@@ -148,6 +148,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
+    rew_action_penalty = -0.1  # 动作惩罚系数（速度变化惩罚）
 
     
     # 随机化配置
@@ -211,6 +212,10 @@ class NavEnv(DirectRLEnv):
         if self.cfg.use_global_path:
             self.extras["cross_track_error_avg"] = torch.zeros(self.num_envs, device=self.device)
             self.extras["eposide_cross_error"] = torch.zeros(self.num_envs, device=self.device)
+            
+        # 加速度统计
+        self.extras["acceleration_avg"] = torch.zeros(self.num_envs, device=self.device)
+        self.extras["episode_acceleration"] = torch.zeros(self.num_envs, device=self.device)
             
         # debug可视化
         if self.sim.has_gui():
@@ -392,6 +397,9 @@ class NavEnv(DirectRLEnv):
             
             # 更新cross_track_error的累积平均值
             self._update_cross_track_error_avg()
+            
+        # 更新acceleration的累积平均值（使用previous和current velocity）
+        self._update_acceleration_avg()
 
     def _update_cross_track_error_avg(self):
         """更新cross_track_error的累积平均值"""
@@ -409,6 +417,30 @@ class NavEnv(DirectRLEnv):
             new_avg = (old_avg * (current_step - 1) + current_errors) / current_step
             
             self.extras["cross_track_error_avg"] = new_avg
+
+    def _update_acceleration_avg(self):
+        """更新acceleration的累积平均值"""
+        # 当前episode的步数 (从1开始计数)
+        current_step = self.episode_length_buf + 1  # [num_envs]
+        
+        # 计算当前加速度（速度变化的模）
+        if (self.state.ego_drone.velocities is not None and 
+            self.state.ego_drone.previous_velocities is not None):
+            
+            current_velocity = self.state.ego_drone.velocities   # [num_envs, 1, 3]
+            previous_velocity = self.state.ego_drone.previous_velocities   # [num_envs, 1, 3]
+            
+            # 计算速度变化（加速度）
+            velocity_change = current_velocity - previous_velocity  # [num_envs, 1, 3]
+            
+            # 计算速度变化的模（L2范数）
+            current_acceleration = torch.norm(velocity_change.squeeze(1), dim=1)  # [num_envs]
+            
+            # 递增平均值公式: new_avg = (old_avg * (n-1) + new_value) / n
+            old_avg = self.extras["acceleration_avg"]  # [num_envs]
+            new_avg = (old_avg * (current_step - 1) + current_acceleration) / current_step
+            
+            self.extras["acceleration_avg"] = new_avg
 
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
@@ -493,6 +525,10 @@ class NavEnv(DirectRLEnv):
         if self.cfg.use_global_path:
             self.extras["eposide_cross_error"][env_ids] = self.extras["cross_track_error_avg"][env_ids].clone()
             self.extras["cross_track_error_avg"][env_ids] = 0.0
+            
+        # 重置acceleration累积平均值
+        self.extras["episode_acceleration"][env_ids] = self.extras["acceleration_avg"][env_ids].clone()
+        self.extras["acceleration_avg"][env_ids] = 0.0
         
         # 更新状态信息
         self._post_physics_step(env_ids=env_ids)
