@@ -28,7 +28,7 @@ TrafficEVTOLManager - 管理交通EVTOL的类
 
 import torch
 import numpy as np
-import random
+# import random
 import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
@@ -109,7 +109,8 @@ class TrafficEVTOLManager:
         
         for i in range(self.num_evtols):
             # 随机分配一条course
-            course_idx = random.randint(0, len(self.all_courses) - 1)
+            # course_idx = random.randint(0, len(self.all_courses) - 1)
+            course_idx = torch.randint(0, len(self.all_courses), (1,), device=self.device).item()
             self.evtol_course_assignments.append(course_idx)            
             # 设置初始位置为航线起点
             smooth_waypoints = self.all_smooth_waypoints[course_idx]
@@ -193,9 +194,10 @@ class TrafficEVTOLManager:
         if not self.evtol or not self.evtol.is_valid:
             return
         for i in range(self.num_evtols):
-            course_idx = random.randint(0, len(self.all_smooth_waypoints) - 1)
+            course_idx = torch.randint(0, len(self.all_smooth_waypoints), (1,), device=self.device).item()
+
             smooth_waypoints = self.all_smooth_waypoints[course_idx]
-            start_idx = random.randint(0, len(smooth_waypoints) - 1)
+            start_idx = torch.randint(0, len(smooth_waypoints), (1,), device=self.device).item()
             self.state.positions[i] = torch.tensor([smooth_waypoints[start_idx].x, smooth_waypoints[start_idx].y, smooth_waypoints[start_idx].z], device=self.device)
             self.state.rotations[i] = torch.tensor([smooth_waypoints[start_idx].qw, smooth_waypoints[start_idx].qx, smooth_waypoints[start_idx].qy, smooth_waypoints[start_idx].qz], device=self.device)
             self.state.velocities[i] = torch.tensor([smooth_waypoints[start_idx].vx, smooth_waypoints[start_idx].vy, smooth_waypoints[start_idx].vz], device=self.device)
@@ -341,7 +343,9 @@ class TrafficEVTOLManager:
     def _reassign_course_for_evtol(self, evtol_idx: int):
         """为特定EVTOL重新分配预生成的航线"""
         # 随机选择一条新的航线
-        new_course_idx = random.randint(0, len(self.all_courses) - 1)
+        # new_course_idx = random.randint(0, len(self.all_courses) - 1)
+        new_course_idx = torch.randint(0, len(self.all_courses), (1,), device=self.device).item()
+
         self.evtol_course_assignments[evtol_idx] = new_course_idx
         
         # 重置航路点索引

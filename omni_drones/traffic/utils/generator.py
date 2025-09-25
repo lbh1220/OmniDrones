@@ -183,45 +183,6 @@ class EVTOLTargetGenerator:
         self.waypoints = []
         self.smooth_waypoints = []
     
-    def _generate_random_point(self) -> Tuple[float, float, float]:
-        """生成随机位置点"""
-        x_range = self.bounds.xmax - self.bounds.xmin
-        y_range = self.bounds.ymax - self.bounds.ymin
-        
-        x = random.uniform(self.bounds.xmin, self.bounds.xmax)
-        y = random.uniform(self.bounds.ymin, self.bounds.ymax)
-        z = self.flight_height
-        
-        return (x, y, z)
-    
-    def _generate_intermediate_waypoints(self, start: Tuple[float, float, float], 
-                                       end: Tuple[float, float, float], 
-                                       num_points: int = 3) -> List[Tuple[float, float, float]]:
-        """在起点和终点之间生成中间航路点"""
-        waypoints = []
-        
-        start_pos = np.array(start)
-        end_pos = np.array(end)
-        
-        for i in range(1, num_points + 1):
-            # 基本插值
-            alpha = i / (num_points + 1)
-            base_point = start_pos + alpha * (end_pos - start_pos)
-            
-            # 添加随机偏移以创建更有趣的路径
-            deviation = min(10.0, np.linalg.norm(end_pos - start_pos) * 0.2)
-            offset_x = random.uniform(-deviation, deviation)
-            offset_y = random.uniform(-deviation, deviation)
-            
-            waypoint = (
-                base_point[0] + offset_x,
-                base_point[1] + offset_y,
-                self.flight_height
-            )
-            waypoints.append(waypoint)
-        
-        return waypoints
-    
     def generate_course_with_smooth_trajectory(self):
         """生成航线并返回平滑后的轨迹"""
         # 随机选择起点和终点

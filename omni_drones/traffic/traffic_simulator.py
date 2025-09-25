@@ -128,6 +128,9 @@ class TrafficSimulator:
 
         self.step_count += 1
 
+        if self.step_count % 500 == 0:
+            self.reset()
+
     def _apply_actions(self):
         # 根据新的velocity,高频计算rotor command
         if self.drone_manager is not None:
