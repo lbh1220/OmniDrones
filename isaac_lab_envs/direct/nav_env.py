@@ -73,6 +73,8 @@ class NavEnvWindow(BaseEnvWindow):
 @configclass
 class NavEnvCfg(DirectRLEnvCfg):
     """Configuration for the Nav navigation environment."""
+
+    seed = None
     
     # environment settings
     episode_length_s = 200.0
@@ -81,6 +83,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     num_observations = 7  # robot_node(5) + temporal_edges(2) = 7
     num_states = 0
     debug_vis = False
+    debug_vis_num_envs = 5  # only visualize the first 5 environments
     is_training = True
 
     ui_window_class_type = NavEnvWindow
@@ -176,7 +179,9 @@ class NavEnv(DirectRLEnv):
         self.randomization = cfg.randomization
         self.has_payload = "payload" in self.randomization.keys()
         self.lidar_resolution = cfg.lidar_resolution
-        
+        # should seed before init, to control the initialization of drones and traffic
+        if cfg.seed is not None:
+            self.seed(cfg.seed)
         # 初始化观测和奖励处理器
         self._init_mdp_components(cfg)
         
@@ -550,32 +555,35 @@ class NavEnv(DirectRLEnv):
             if not hasattr(self, "drone_pos_visualizer"):
                 # Create green marker for drone positions
                 drone_marker_cfg = CUBOID_MARKER_CFG.copy()
-                drone_marker_cfg.markers["cuboid"].size = (0.15, 0.15, 0.15)
+                drone_marker_cfg.markers["cuboid"].size = (2.0, 2.0, 2.0)
                 drone_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 1.0, 0.0)  # Green color
                 drone_marker_cfg.prim_path = "/Visuals/Command/drone_position"
                 self.drone_pos_visualizer = VisualizationMarkers(drone_marker_cfg)
+            if self.cfg.use_global_path:
+                if not hasattr(self, "local_goal_visualizer"):
+                    # Create blue marker for local goals
+                    local_goal_marker_cfg = CUBOID_MARKER_CFG.copy()
+                    local_goal_marker_cfg.markers["cuboid"].size = (0.18, 0.18, 0.18)
+                    local_goal_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 0.0, 1.0)  # Blue color
+                    local_goal_marker_cfg.prim_path = "/Visuals/Command/local_goal"
+                    self.local_goal_visualizer = VisualizationMarkers(local_goal_marker_cfg)
 
-            if not hasattr(self, "local_goal_visualizer"):
-                # Create blue marker for local goals
-                local_goal_marker_cfg = CUBOID_MARKER_CFG.copy()
-                local_goal_marker_cfg.markers["cuboid"].size = (0.18, 0.18, 0.18)
-                local_goal_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 0.0, 1.0)  # Blue color
-                local_goal_marker_cfg.prim_path = "/Visuals/Command/local_goal"
-                self.local_goal_visualizer = VisualizationMarkers(local_goal_marker_cfg)
+                if not hasattr(self, "projection_point_visualizer"):
+                    # Create orange marker for projection points
+                    projection_point_marker_cfg = CUBOID_MARKER_CFG.copy()
+                    projection_point_marker_cfg.markers["cuboid"].size = (0.12, 0.12, 0.12)
+                    projection_point_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (1.0, 0.5, 0.0)  # Orange color
+                    projection_point_marker_cfg.prim_path = "/Visuals/Command/projection_point"
+                    self.projection_point_visualizer = VisualizationMarkers(projection_point_marker_cfg)
 
-            if not hasattr(self, "projection_point_visualizer"):
-                # Create orange marker for projection points
-                projection_point_marker_cfg = CUBOID_MARKER_CFG.copy()
-                projection_point_marker_cfg.markers["cuboid"].size = (0.12, 0.12, 0.12)
-                projection_point_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (1.0, 0.5, 0.0)  # Orange color
-                projection_point_marker_cfg.prim_path = "/Visuals/Command/projection_point"
-                self.projection_point_visualizer = VisualizationMarkers(projection_point_marker_cfg)
-
+            
+            # 确保它是可见的
             self.target_pos_visualizer.set_visibility(True)
             self.drone_pos_visualizer.set_visibility(True)
-            # Only show local goals and projection points when using global path
-            self.local_goal_visualizer.set_visibility(self.cfg.use_global_path)
-            self.projection_point_visualizer.set_visibility(self.cfg.use_global_path)
+            if self.cfg.use_global_path:
+                # Only show local goals and projection points when using global path
+                self.local_goal_visualizer.set_visibility(self.cfg.use_global_path)
+                self.projection_point_visualizer.set_visibility(self.cfg.use_global_path)
         else:
             if hasattr(self, "target_pos_visualizer"):
                 self.target_pos_visualizer.set_visibility(False)
@@ -586,22 +594,42 @@ class NavEnv(DirectRLEnv):
             if hasattr(self, "projection_point_visualizer"):
                 self.projection_point_visualizer.set_visibility(False)
 
+
     def _debug_vis_callback(self, event):
         """Update debug visualization."""
         if hasattr(self, "target_pos_visualizer"):
-            self.target_pos_visualizer.visualize(self.state.navigation.target_positions.squeeze(1))
+            # only visualize the first 10 targets
+            if self.state.navigation.target_positions.shape[0] < self.cfg.debug_vis_num_envs:
+                vis_target_pos = self.state.navigation.target_positions.squeeze(1)
+            else:
+                vis_target_pos = self.state.navigation.target_positions.squeeze(1)[:self.cfg.debug_vis_num_envs]
+            self.target_pos_visualizer.visualize(vis_target_pos)
         
         if hasattr(self, "drone_pos_visualizer"):
             # Visualize drone positions - squeeze to remove the middle dimension (n_env, 3)
-            self.drone_pos_visualizer.visualize(self.drone.pos.squeeze(1))
+            # only visualize the first 10 drones
+            # but need to in case drones are less than 10
+            if self.drone.pos.shape[0] < self.cfg.debug_vis_num_envs:
+                vis_drone_pos = self.drone.pos.squeeze(1)
+            else:
+                vis_drone_pos = self.drone.pos.squeeze(1)[:self.cfg.debug_vis_num_envs]
+            self.drone_pos_visualizer.visualize(vis_drone_pos)
             
         # Visualize local goals and projection points (only when using global path)
         if self.cfg.use_global_path:
             if hasattr(self, "local_goal_visualizer") and self.state.navigation.local_goals is not None:
-                self.local_goal_visualizer.visualize(self.state.navigation.local_goals.squeeze(1))
+                if self.state.navigation.local_goals.shape[0] < self.cfg.debug_vis_num_envs:
+                    vis_local_goals = self.state.navigation.local_goals.squeeze(1)
+                else:
+                    vis_local_goals = self.state.navigation.local_goals.squeeze(1)[:self.cfg.debug_vis_num_envs]
+                self.local_goal_visualizer.visualize(vis_local_goals)
             
             if hasattr(self, "projection_point_visualizer") and self.state.navigation.projection_points is not None:
-                self.projection_point_visualizer.visualize(self.state.navigation.projection_points.squeeze(1))
+                if self.state.navigation.projection_points.shape[0] < self.cfg.debug_vis_num_envs:
+                    vis_projection_points = self.state.navigation.projection_points.squeeze(1)
+                else:
+                    vis_projection_points = self.state.navigation.projection_points.squeeze(1)[:self.cfg.debug_vis_num_envs]
+                self.projection_point_visualizer.visualize(vis_projection_points)
 
     def _generate_crossing_task(self, num_env: int = 1, flight_height: float = 20.0):
         if num_env <= 0:

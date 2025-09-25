@@ -55,8 +55,7 @@ from omni_drones.traffic import TrafficSimulator, TrafficCfg, OrcaCfg, TrafficEv
 ##
 # Pre-defined configs
 ##
-from omni.isaac.lab.markers import CUBOID_MARKER_CFG  # isort: skip
-
+from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 class TrafficCurriculumCfg:
     """Configuration for the Traffic curriculum learning environment."""
@@ -226,6 +225,74 @@ class TrafficEnv(NavEnv):
         reward = self.reward_calculator.compute_reward(self.state)
                
         return reward
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        """Setup debug visualization."""
+
+        if debug_vis:
+            if not hasattr(self, "traffic_visualizer"):
+                # 2. 直接实例化 VisualizationMarkersCfg，而不是从预设copy()
+                traffic_marker_cfg = VisualizationMarkersCfg(
+                    prim_path="/Visuals/Command/traffic_pos",
+                    markers={
+                        # 3. 在 markers 字典中，手动创建一个球体配置
+                        #    这里的 "sphere" 是我们自己起的名字，可以任意
+                        "sphere": sim_utils.SphereCfg(
+                            radius=1.0,  # 设置球体的半径
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(1.0, 0.0, 0.0),  # 设置颜色为红色
+                                opacity=0.5
+                            ),
+                        )
+                    },
+                )
+                # 创建可视化实例
+                self.traffic_visualizer = VisualizationMarkers(traffic_marker_cfg)
+            
+            # 设置可见性
+            self.traffic_visualizer.set_visibility(True)
+            if not hasattr(self, "drone_pos_visualizer"):
+                drone_marker_cfg = VisualizationMarkersCfg(
+                    prim_path="/Visuals/Command/drone_position",
+                        markers={
+                            "sphere": sim_utils.SphereCfg(
+                                radius=1.0,  # 设置球体的半径
+                                visual_material=sim_utils.PreviewSurfaceCfg(
+                                    diffuse_color=(0.0, 1.0, 0.0),
+                                    opacity=0.5
+                                ),
+                            )
+                        },
+                    )
+                self.drone_pos_visualizer = VisualizationMarkers(drone_marker_cfg)
+            self.drone_pos_visualizer.set_visibility(True)
+
+
+
+        else:
+            if hasattr(self, "traffic_visualizer"):
+                self.traffic_visualizer.set_visibility(False)
+            if hasattr(self, "drone_visualizer"):
+                self.drone_pos_visualizer.set_visibility(False)
+        # 调用父类的方法
+        super()._set_debug_vis_impl(debug_vis)
+    def _debug_vis_callback(self, event):
+        """Update debug visualization."""
+        if hasattr(self, "traffic_visualizer") and self.traffic_visualizer.is_visible():
+            # 1. 获取位置张量
+            positions = self.state.traffic.traffic_positions
+
+            # 2. 获取 agent 的数量
+            num_agents = positions.shape[0]
+
+            # 3. 创建 scales 张量。
+            #    我们使用 .expand() 方法，这比 .repeat() 更高效，因为它不会复制数据。
+            #    同时，确保新的张量与 positions 在同一个设备上（CPU或GPU）。
+            scale_shape = torch.tensor([1.0, 1.0, 0.5], device=positions.device, dtype=positions.dtype)
+            scales = scale_shape.expand(num_agents, -1) # -1 表示保持维度大小不变
+
+            # 4. 调用 visualize 方法，同时传入 translations 和 scales
+            self.traffic_visualizer.visualize(translations=positions, scales=scales)
+        super()._debug_vis_callback(event)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """计算基于Traffic环境的终止条件，包括碰撞检测。"""
