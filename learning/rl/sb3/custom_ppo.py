@@ -132,6 +132,7 @@ class CustomPPO(OnPolicyAlgorithm):
             self.policy_kwargs = {}
             
         self.policy_kwargs["args"] = self.args
+        self.policy_kwargs["use_beta"] = self.args.action_space_type == "beta"
         
         self.policy = self.policy_class(
             self.observation_space,

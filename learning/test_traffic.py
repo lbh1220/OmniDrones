@@ -47,8 +47,7 @@ def main():
                         default="runs/traffic/path/u10/mult_test/1_0926_003558",
                        help="Path to the trained model directory")
     parser.add_argument("--model_name", type=str, default="final_model.zip", help="Model name")
-    parser.add_argument("--num_episodes", type=int, default=100,
-                       help="Number of episodes for evaluation")
+    parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes for evaluation")
     
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
@@ -143,8 +142,7 @@ def main():
     print(f"创建测试环境...")
     output_dir = os.path.join(args.model_dir, 'test_results', args.model_name.replace(".zip", "_") + time.strftime("%m%d_%H%M%S"))
     os.makedirs(output_dir, exist_ok=True)
-    from omni.isaac.lab.utils.io import dump_yaml
-    dump_yaml(os.path.join(output_dir, "env.yaml"), cfg)
+    
     # 创建测试环境
     env = create_test_env(cfg, args=args)
     if args.video:

@@ -20,6 +20,7 @@ from stable_baselines3.common.distributions import (
     DiagGaussianDistribution,
     make_proba_distribution
 )
+from .custom_distribution import BetaDistribution
 from stable_baselines3.common.type_aliases import Schedule
 
 from rl.networks.selfAttn_srnn_temp_node import selfAttn_merge_SRNN
@@ -42,6 +43,7 @@ class CustomSelfAttnPolicy(BasePolicy):
         activation_fn: Type[nn.Module] = nn.Tanh,
         ortho_init: bool = True,
         use_sde: bool = False,
+        use_beta: bool = False,
         log_std_init: float = 0.0,
         full_std: bool = True,
         use_expln: bool = False,
@@ -62,6 +64,7 @@ class CustomSelfAttnPolicy(BasePolicy):
         
         self.args = args
         self.lr_schedule = lr_schedule
+        self.use_beta = use_beta
         
         # Initialize the base network (selfAttn_merge_SRNN)
         self.base_network = selfAttn_merge_SRNN(observation_space, args, infer=False)
@@ -86,7 +89,10 @@ class CustomSelfAttnPolicy(BasePolicy):
         elif isinstance(self.action_space, spaces.Box):
             # Continuous action space
             num_outputs = self.action_space.shape[0]
-            self.action_dist = DiagGaussianDistribution(num_outputs)
+            if self.use_beta:
+                self.action_dist = BetaDistribution(num_outputs)
+            else:
+                self.action_dist = DiagGaussianDistribution(num_outputs)
             
         else:
             raise NotImplementedError(f"Action space {self.action_space} not supported")
@@ -109,6 +115,13 @@ class CustomSelfAttnPolicy(BasePolicy):
             # 对DiagGaussianDistribution的action_net做正交初始化，gain=1，bias=0
             nn.init.orthogonal_(self.action_net.weight, gain=1)
             nn.init.constant_(self.action_net.bias, 0)
+        elif isinstance(self.action_dist, BetaDistribution):
+            self.alpha_net, self.beta_net = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, alpha_init=1.0, beta_init=1.0
+            )
+            # 对BetaDistribution的alpha_net和beta_net做正交初始化，gain=1，bias已在proba_distribution_net中设置
+            nn.init.orthogonal_(self.alpha_net.weight, gain=1)
+            nn.init.orthogonal_(self.beta_net.weight, gain=1)
         elif isinstance(self.action_dist, CategoricalDistribution):
             self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
             # 对CategoricalDistribution的action_net做正交初始化，gain=0.01，bias=0
@@ -182,14 +195,20 @@ class CustomSelfAttnPolicy(BasePolicy):
         :param latent_pi: Latent code for the actor (our actor_features)
         :return: Action distribution
         """
-        # 先通过action_net，与SB3完全一致
-        mean_actions = self.action_net(latent_pi)
-
         if isinstance(self.action_dist, DiagGaussianDistribution):
+            # 先通过action_net，与SB3完全一致
+            mean_actions = self.action_net(latent_pi)
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
+        elif isinstance(self.action_dist, BetaDistribution):
+            # 通过alpha_net和beta_net获取Beta分布的参数
+            alpha_logits = self.alpha_net(latent_pi)
+            beta_logits = self.beta_net(latent_pi)
+            return self.action_dist.proba_distribution(alpha_logits, beta_logits)
         elif isinstance(self.action_dist, CategoricalDistribution):
-            # Here mean_actions are the logits before the softmax
-            return self.action_dist.proba_distribution(action_logits=mean_actions)
+            # 先通过action_net
+            action_logits = self.action_net(latent_pi)
+            # Here action_logits are the logits before the softmax
+            return self.action_dist.proba_distribution(action_logits=action_logits)
         else:
             raise ValueError("Invalid action distribution")
             

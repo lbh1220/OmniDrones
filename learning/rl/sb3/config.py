@@ -53,6 +53,7 @@ class ArgsConfig:
         self.env_name = 'AirspaceSimCity-v0'
         self.sort_humans = True
         self.cuda = True
+        self.action_space_type = "beta" # discrete or beta or Gaussian
 
 class Config(object):
     # for now, import all args from arguments.py

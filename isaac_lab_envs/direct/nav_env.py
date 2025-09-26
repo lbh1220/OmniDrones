@@ -140,8 +140,9 @@ class NavEnvCfg(DirectRLEnvCfg):
     ))
     
     # action space config
-    use_discrete_action: bool = True
+    action_space_type: str = "beta" # discrete or beta or Gaussian
     action_space_num_per_dim: int = 7  # 每个维度的离散动作数量
+    action_mode: str = "speed_direction"  # "velocity_components" or "speed_direction"
 
         # 原始参数配置
     lidar_range: float = 4.0
@@ -198,7 +199,7 @@ class NavEnv(DirectRLEnv):
 
         
         # 设置离散动作空间映射
-        if cfg.use_discrete_action:
+        if cfg.action_space_type == "discrete":
             self._setup_discrete_action()
         
         # 初始姿态分布
@@ -346,26 +347,64 @@ class NavEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         """Apply actions to the drone using original apply_action method."""
         # 处理离散动作空间
-        if self.cfg.use_discrete_action:
+        if self.cfg.action_space_type == "discrete":
             # 将离散动作转换为连续动作
             continuous_actions = self.discrete_to_continuous_action(actions)
+            if self.cfg.action_mode == "speed_direction":
+                raise ValueError("Speed direction action mode not supported for discrete action space")
         else:
             continuous_actions = actions
         
-        # 使用原始无人机系统的apply_action方法
-        # 应该在这里处理action，无论是做放缩，还是通过controller处理
-        # rotor_commands = self.controller.compute(
-        #     root_state=drone_state,  # shape [num_envs, N, 3]
-        #     target_vel_xy=target_vel_xy,  # shape [num_envs, N, 2]
-        #     target_height=target_height,  # shape [num_envs, N, 1]
-        #     target_yaw=target_yaws  # shape [num_envs, N]
-        #     )
-        # 有两种思路，apply action的频率更高，按理说应该这里把控制量算出来，然后apply action实时更新drone state然后重新计算力和 力矩
-        # 如果是discrete action, 这里就需要算mapping了
-        self.command_vel_xy = continuous_actions * self.cfg.max_speed
+        # 根据action_mode处理连续动作
+        if self.cfg.action_mode == "velocity_components":
+            # 原模式：vx, vy速度分量
+            self.command_vel_xy = self._process_velocity_components(continuous_actions)
+        elif self.cfg.action_mode == "speed_direction":
+            # 新模式：速度大小 + 方向
+            self.command_vel_xy = self._process_speed_direction(continuous_actions)
+        else:
+            raise ValueError(f"Unknown action mode: {self.cfg.action_mode}")
+        
+        # 确保速度在合理范围内
         self.command_vel_xy = torch.clamp(self.command_vel_xy, -self.cfg.max_speed, self.cfg.max_speed)
         self.command_vel_xy = self.command_vel_xy.unsqueeze(1)
         self.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
+    
+    def _process_velocity_components(self, actions: torch.Tensor) -> torch.Tensor:
+        """处理速度分量模式的动作"""
+        if self.cfg.action_space_type == "beta":
+            # Beta分布输出[0,1]，需要映射到[-1,1]然后乘以max_speed
+            actions_scaled = (actions * 2.0) - 1.0  # [0,1] -> [-1,1]
+            command_vel_xy = actions_scaled * self.cfg.max_speed
+        else:
+            # 高斯分布输出[-1,1]，直接乘以max_speed
+            command_vel_xy = actions * self.cfg.max_speed
+        
+        return command_vel_xy
+    
+    def _process_speed_direction(self, actions: torch.Tensor) -> torch.Tensor:
+        """处理速度大小+方向模式的动作"""
+        if self.cfg.action_space_type == "beta":
+            # Beta分布输出[0,1]
+            # 第一个维度：速度大小，直接乘以max_speed
+            speed = actions[:, 0] * self.cfg.max_speed
+            # 第二个维度：方向，映射到[0, 2π]
+            direction = actions[:, 1] * 2.0 * math.pi
+        else:
+            # 高斯分布输出[-1,1]
+            # 第一个维度：速度大小，从[-1,1]映射到[0,1]再乘以max_speed
+            speed = ((actions[:, 0] + 1.0) / 2.0) * self.cfg.max_speed
+            # 第二个维度：方向，从[-1,1]映射到[0, 2π]
+            direction = (actions[:, 1] + 1.0) / 2.0 * 2.0 * math.pi
+        
+        # 将极坐标转换为笛卡尔坐标
+        vx = speed * torch.cos(direction)
+        vy = speed * torch.sin(direction)
+        
+        # 组合成velocity命令
+        command_vel_xy = torch.stack([vx, vy], dim=1)
+        
+        return command_vel_xy
 
     def _apply_action(self):
         """Actions are applied in _pre_physics_step."""
@@ -727,9 +766,11 @@ class NavEnv(DirectRLEnv):
 
 
         # bound action space
-        if self.cfg.use_discrete_action:
+        if self.cfg.action_space_type == "discrete":
             total_actions = self.cfg.action_space_num_per_dim * self.cfg.action_space_num_per_dim
             self.single_action_space = gym.spaces.Discrete(total_actions)
+        elif self.cfg.action_space_type == "beta":
+            self.single_action_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.num_actions,))
         else:
             self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.num_actions,))
 

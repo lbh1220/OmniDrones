@@ -106,7 +106,7 @@ def main():
 
 
     # video recording
-    parser.add_argument("--video", action="store_true", default=False, help="Record video")
+    parser.add_argument("--video", action="store_true", default=True, help="Record video")
     parser.add_argument("--video_interval", type=int, default=1000, help="Video interval")
     parser.add_argument("--video_length", type=int, default=250, help="Video length")
 
@@ -201,6 +201,8 @@ def main():
 
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
     algo_args.human_human_edge_input_size = algo_args.human_human_edge_input_size + 1
+
+    algo_args.action_space_type = cfg.action_space_type
     # 设置实验名称
     if args.experiment_name is None:
         timestamp = datetime.now().strftime("%m%d_%H%M%S")
