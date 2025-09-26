@@ -19,6 +19,7 @@ from rl.sb3.network_utils import linear_schedule_with_min
 from rl.sb3.custom_callback import SucessRateCallback
 from rl.sb3.vec_normalize import VecNormalize
 import gymnasium as gym
+
 # 添加wandb支持
 try:
     import wandb
@@ -60,9 +61,9 @@ def main():
     parser = argparse.ArgumentParser(description="Train Traffic Environment with SB3 PPO")
 
     # learning params, num_envs, num_mini_batch, num_steps, learning_rate
-    parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
+    parser.add_argument("--num_envs", type=int, default=512, help="Number of environments")
     parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
-    parser.add_argument("--num_steps", type=int, default=50, help="Number of steps")
+    parser.add_argument("--num_steps", type=int, default=128, help="Number of steps")
     parser.add_argument("--learning_rate", type=float, default=4e-5, help="Learning rate")
     # total timesteps
     parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps")
@@ -97,6 +98,7 @@ def main():
 
     # whether reward normalize
     parser.add_argument("--reward_normalize", action="store_true", help="Reward normalize")
+    parser.add_argument("--obs_normalize", action="store_true", help="Reward normalize")
 
     parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
@@ -104,8 +106,8 @@ def main():
 
 
     # video recording
-    parser.add_argument("--video", action="store_true", default=True, help="Record video")
-    parser.add_argument("--video_interval", type=int, default=500, help="Video interval")
+    parser.add_argument("--video", action="store_true", default=False, help="Record video")
+    parser.add_argument("--video_interval", type=int, default=1000, help="Video interval")
     parser.add_argument("--video_length", type=int, default=250, help="Video length")
 
     # 添加AppLauncher参数
@@ -249,16 +251,15 @@ def main():
     elif args.use_wandb and not WANDB_AVAILABLE:
         print("Warning: wandb requested but not available. Continuing without wandb logging.")
 
+    from omni.isaac.lab.utils.io import dump_yaml
+    dump_yaml(os.path.join(save_dir, "env.yaml"), cfg)
     # create env
     env = create_env(cfg, headless=True, args=args)
-    if hasattr(args, 'reward_normalize'):
-        norm_reward = True
-    else:
-        norm_reward = False
+    env.seed(seed=algo_args.seed)
     norm_obs_keys = ['robot_node', 'spatial_edges', 'temporal_edges']
     env = VecNormalize(env, 
-                        norm_obs=False, 
-                        norm_reward=norm_reward, 
+                        norm_obs=args.obs_normalize, 
+                        norm_reward=args.reward_normalize, 
                         training=True,
                         clip_obs=10.0, 
                         clip_reward=10.0,
@@ -357,7 +358,8 @@ def main():
     model.save(model_path)
     model.get_vec_normalize_env().save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
     print(f"Model saved to: {model_path}")
-    
+    env.close()
+    simulation_app.close()
     # 完成wandb run
     if args.use_wandb and WANDB_AVAILABLE:
         # 记录最终模型路径

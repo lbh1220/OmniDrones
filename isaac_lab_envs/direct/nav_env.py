@@ -83,7 +83,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     num_observations = 7  # robot_node(5) + temporal_edges(2) = 7
     num_states = 0
     debug_vis = False
-    debug_vis_num_envs = 5  # only visualize the first 5 environments
+    debug_vis_num_envs = 10  # only visualize the first 5 environments
     is_training = True
 
     ui_window_class_type = NavEnvWindow

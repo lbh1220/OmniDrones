@@ -22,29 +22,18 @@ from omni.isaac.lab.app import AppLauncher
 import gymnasium as gym
 
 
-def create_test_env(cfg, headless=True, args=None):
+def create_test_env(cfg, args=None):
     """创建并包装环境"""
     # 设置headless模式
     
     from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvWithCurriculum
-    # SB3包装器
-    from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
+
     # 创建环境
     if cfg.curriculum_learning:
         env = TrafficEnvWithCurriculum(cfg=cfg, render_mode="rgb_array" if args.video else None)
     else:
         env = TrafficEnv(cfg=cfg, render_mode="rgb_array" if args.video else None)
-    if args.video:
-        video_kwargs = {
-            "video_folder": os.path.join(args.model_dir, "test_videos"),
-            "step_trigger": lambda step: step % 500 == 0,
-            "video_length": 250,
-            "disable_logger": True,
-        }
-        print("[INFO] Recording videos during testing.")
-        env = gym.wrappers.RecordVideo(env, **video_kwargs)
-    # 使用SB3包装器包装
-    env = Sb3VecEnvWrapper(env)
+
     
     return env
 
@@ -53,11 +42,12 @@ def main():
     """主函数"""
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
-    parser.add_argument("--num_envs", type=int, default=5, help="Number of environments")
+    parser.add_argument("--num_envs", type=int, default=10, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/path/u10/rc-0.1_f0_ap-0.12_0925_042518",
+                        default="runs/traffic/path/u10/mult_test/1_0926_003558",
                        help="Path to the trained model directory")
-    parser.add_argument("--num_episodes", type=int, default=10,
+    parser.add_argument("--model_name", type=str, default="final_model.zip", help="Model name")
+    parser.add_argument("--num_episodes", type=int, default=100,
                        help="Number of episodes for evaluation")
     
 
@@ -66,13 +56,14 @@ def main():
     parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
     parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
     parser.add_argument("--video", action="store_true", default=True, help="Record video")
-
+    parser.add_argument("--video_interval", type=int, default=1000, help="Video interval")
+    parser.add_argument("--video_length", type=int, default=500, help="Video length")
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
     
     # 设置为非headless模式以便可视化
-    args.headless = False
+    args.headless = True
     if args.video:
         args.enable_cameras = True
     else:
@@ -92,14 +83,17 @@ def main():
     from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
     
     # 检查模型路径
-    model_file = os.path.join(args.model_dir, "final_model.zip")
-    vecnormalize_file = os.path.join(args.model_dir, "final_model_vecnormalize.pkl")
+    model_file = os.path.join(args.model_dir, args.model_name)
+    
     
     if not os.path.exists(model_file):
-        print(f"错误：找不到模型文件 {model_file}")
-        return
+        model_file = os.path.join(args.model_dir, 'checkpoints', args.model_name)
+        if not os.path.exists(model_file):
+            print(f"错误：找不到模型文件 {model_file}")
+            return
     
     print(f"加载模型: {model_file}")
+    vecnormalize_file = model_file.replace(".zip", "_vecnormalize.pkl")
     if os.path.exists(vecnormalize_file):
         print(f"加载归一化参数: {vecnormalize_file}")
     
@@ -147,11 +141,25 @@ def main():
         lookat=(0., 0., 1.)
     )
     print(f"创建测试环境...")
-
-    
+    output_dir = os.path.join(args.model_dir, 'test_results', args.model_name.replace(".zip", "_") + time.strftime("%m%d_%H%M%S"))
+    os.makedirs(output_dir, exist_ok=True)
+    from omni.isaac.lab.utils.io import dump_yaml
+    dump_yaml(os.path.join(output_dir, "env.yaml"), cfg)
     # 创建测试环境
-    env = create_test_env(cfg, headless=False, args=args)
-    
+    env = create_test_env(cfg, args=args)
+    if args.video:
+        video_kwargs = {
+            "video_folder": os.path.join(output_dir, "videos"),
+            "step_trigger": lambda step: step % args.video_interval == 0,
+            "video_length": args.video_length,
+            "disable_logger": True,
+        }
+        print("[INFO] Recording videos during testing.")
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
+    # 使用SB3包装器包装
+    # SB3包装器
+    from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
+    env = Sb3VecEnvWrapper(env)
     # 如果存在VecNormalize文件，加载归一化参数
     if os.path.exists(vecnormalize_file):
         env = VecNormalize.load(vecnormalize_file, env)
@@ -165,8 +173,7 @@ def main():
     model = CustomPPO.load(model_file, env=env, args=algo_args)
 
 
-    output_dir = os.path.join(args.model_dir, 'test_results', time.strftime("%Y%m%d_%H%M%S"))
-    os.makedirs(output_dir, exist_ok=True)
+
     
     # 设置日志
     new_logger = configure(output_dir, ["stdout", "log"])
