@@ -28,32 +28,18 @@ except ImportError:
     print("Warning: wandb not available. Install with: pip install wandb")
     WANDB_AVAILABLE = False
 
-def create_env(cfg, headless=True, args=None):
+def create_env(cfg, args=None):
     """创建并包装环境"""
     # 设置headless模式
     
     from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvWithCurriculum
-    # SB3包装器
-    from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
+
     # 创建环境
     if cfg.curriculum_learning:
         env = TrafficEnvWithCurriculum(cfg=cfg, render_mode="rgb_array" if args.video else None)
     else:
         env = TrafficEnv(cfg=cfg, render_mode="rgb_array" if args.video else None)
-    save_dir = f"runs/traffic/{args.experiment_name}"
-    if args.video:
-        video_kwargs = {
-            "video_folder": os.path.join(save_dir, "videos"),
-            "step_trigger": lambda step: step % args.video_interval == 0,
-            "video_length": args.video_length,
-            "disable_logger": True,
-        }
-        print("[INFO] Recording videos during training.")
-        env = gym.wrappers.RecordVideo(env, **video_kwargs)
-    
-    # 使用SB3包装器包装
-    env = Sb3VecEnvWrapper(env)
-    
+
     return env
 
 
@@ -61,9 +47,9 @@ def main():
     parser = argparse.ArgumentParser(description="Train Traffic Environment with SB3 PPO")
 
     # learning params, num_envs, num_mini_batch, num_steps, learning_rate
-    parser.add_argument("--num_envs", type=int, default=512, help="Number of environments")
+    parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
     parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
-    parser.add_argument("--num_steps", type=int, default=128, help="Number of steps")
+    parser.add_argument("--num_steps", type=int, default=256, help="Number of steps")
     parser.add_argument("--learning_rate", type=float, default=4e-5, help="Learning rate")
     # total timesteps
     parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps")
@@ -97,12 +83,17 @@ def main():
     parser.add_argument("--rew_action_penalty", type=float, default=None, help="Action penalty")
 
     # whether reward normalize
-    parser.add_argument("--reward_normalize", action="store_true", help="Reward normalize")
-    parser.add_argument("--obs_normalize", action="store_true", help="Reward normalize")
+    parser.add_argument("--reward_normalize", action="store_true", default=False, help="Reward normalize")
+    parser.add_argument("--obs_normalize", action="store_true", default=False, help="Reward normalize")
 
-    parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
+    parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
     parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
+
+    # action space type
+    parser.add_argument("--action_space_type", type=str, default="beta", help="Action space type")
+    parser.add_argument("--action_space_num_per_dim", type=int, default=7, help="Action space num per dim")
+    parser.add_argument("--action_mode", type=str, default="velocity_components", help="Action mode")
 
 
     # video recording
@@ -202,6 +193,10 @@ def main():
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
     algo_args.human_human_edge_input_size = algo_args.human_human_edge_input_size + 1
 
+    cfg.action_space_type = args.action_space_type
+    cfg.action_mode = args.action_mode
+    cfg.action_space_num_per_dim = args.action_space_num_per_dim
+
     algo_args.action_space_type = cfg.action_space_type
     # 设置实验名称
     if args.experiment_name is None:
@@ -256,7 +251,22 @@ def main():
     from omni.isaac.lab.utils.io import dump_yaml
     dump_yaml(os.path.join(save_dir, "env.yaml"), cfg)
     # create env
-    env = create_env(cfg, headless=True, args=args)
+    env = create_env(cfg, args=args)
+
+    if args.video:
+        video_kwargs = {
+            "video_folder": os.path.join(save_dir, "videos"),
+            "step_trigger": lambda step: step % args.video_interval == 0,
+            "video_length": args.video_length,
+            "disable_logger": True,
+        }
+        print("[INFO] Recording videos during training.")
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
+    
+    # SB3包装器
+    from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
+    env = Sb3VecEnvWrapper(env)
+    
     env.seed(seed=algo_args.seed)
     norm_obs_keys = ['robot_node', 'spatial_edges', 'temporal_edges']
     env = VecNormalize(env, 

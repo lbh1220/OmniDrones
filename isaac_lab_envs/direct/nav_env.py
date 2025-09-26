@@ -140,7 +140,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     ))
     
     # action space config
-    action_space_type: str = "beta" # discrete or beta or Gaussian
+    action_space_type: str = "beta" # discrete or beta or gaussian
     action_space_num_per_dim: int = 7  # 每个维度的离散动作数量
     action_mode: str = "speed_direction"  # "velocity_components" or "speed_direction"
 
