@@ -498,6 +498,7 @@ class TrafficDroneManager:
         if self.num_drones <= 0:
             return
         
+        self.target_generator.initialize_targets(self.config.drone.target_num)
         # Generate new positions for all drones
         new_positions = []
         for i in range(self.num_drones):

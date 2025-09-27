@@ -50,6 +50,8 @@ class TrafficCfg:
     evtol: TrafficEvtolCfg = field(default_factory=TrafficEvtolCfg)
     orca: OrcaCfg = field(default_factory=OrcaCfg)
 
+    reset_interval: int = 500
+
 # --- 如何在您的主环境配置中使用 ---
 # @configclass
 # class MyEnvCfg:

@@ -128,7 +128,7 @@ class TrafficSimulator:
 
         self.step_count += 1
 
-        if self.step_count % 500 == 0:
+        if self.step_count % self.config.reset_interval == 0:
             self.reset()
 
     def _apply_actions(self):
