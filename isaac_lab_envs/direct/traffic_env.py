@@ -57,15 +57,13 @@ from omni_drones.traffic import TrafficSimulator, TrafficCfg, OrcaCfg, TrafficEv
 ##
 from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
+@configclass
 class TrafficCurriculumCfg:
     """Configuration for the Traffic curriculum learning environment."""
     drones_num: int = 1
     evtol_num: int = 0
     evtol_radius: float = 10.0
-    def __init__(self, drones_num: int = 1, evtol_num: int = 0, evtol_radius: float = 10.0):
-        self.drones_num = drones_num
-        self.evtol_num = evtol_num
-        self.evtol_radius = evtol_radius
+    
 class NavEnvWindow(BaseEnvWindow):
     """Window manager for the Nav environment."""
 
@@ -102,7 +100,7 @@ class TrafficEnvCfg(NavEnvCfg):
     # reward config
     rew_success = 15.0
     rew_collision = -16.0
-    rew_potential = 0.5
+    rew_potential = 1.0
     rew_action_penalty = -0.0
     rew_evtol_future_penalty = -0.0
     rew_drone_future_penalty = -0.0

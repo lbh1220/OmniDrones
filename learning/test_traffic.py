@@ -44,7 +44,7 @@ def main():
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
     parser.add_argument("--num_envs", type=int, default=10, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/path/u10/mult_test/1_0926_003558",
+                        default="runs/traffic/action/u10/gaussian/sd/ap--0.0_0927_063717",
                        help="Path to the trained model directory")
     parser.add_argument("--model_name", type=str, default="final_model.zip", help="Model name")
     parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes for evaluation")
@@ -62,7 +62,7 @@ def main():
     args = parser.parse_args()
     
     # 设置为非headless模式以便可视化
-    args.headless = True
+    args.headless = False
     if args.video:
         args.enable_cameras = True
     else:
@@ -79,8 +79,8 @@ def main():
     
 
         # 导入环境配置（必须在AppLauncher之后）
-    from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
-    
+    from omni.isaac.lab.utils.io import load_yaml
+    from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg, TrafficCurriculumCfg
     # 检查模型路径
     model_file = os.path.join(args.model_dir, args.model_name)
     
@@ -97,29 +97,41 @@ def main():
         print(f"加载归一化参数: {vecnormalize_file}")
     
 
+    cfg_yaml = os.path.join(args.model_dir, "env.yaml")
+
+    yaml_cfg = load_yaml(cfg_yaml)
+    yaml_cfg = TrafficEnvCfg(**yaml_cfg)
+
+
 
     
     # 创建环境配置
     cfg = TrafficEnvCfg()
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
+
+    loaded_keys = ["action_space_type", "action_space_num_per_dim", "action_mode"]
+    for key in loaded_keys:
+        setattr(cfg, key, getattr(yaml_cfg, key))
+
     cfg.seed = algo_args.seed
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
     cfg.use_global_path = args.use_global_path
 
-    from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
-    course_list = [
-                TrafficCurriculumCfg(drones_num=2, evtol_num=0),
-                TrafficCurriculumCfg(drones_num=2, evtol_num=0),
-            ]
-    args.course_num = len(course_list)
-    cfg.curriculum_list = course_list
-    cfg.curriculum_learning = False
+    # from dataclasses import field
+    # course_list = [
+    #             field(default_factory=lambda: TrafficCurriculumCfg(drones_num=2, evtol_num=0)),
+    #             field(default_factory=lambda: TrafficCurriculumCfg(drones_num=2, evtol_num=0)),
+    #         ]
+    # args.course_num = len(course_list)
+    # cfg.curriculum_list = course_list
+    # cfg.curriculum_learning = False
     # cfg.traffic_sim.num_drones = course_list[-1].drones_num
     # cfg.traffic_sim.num_evtols = course_list[-1].evtol_num
 
 
     cfg.use_global_path = True
+    
 
 
 
@@ -128,7 +140,7 @@ def main():
 
 
 
-
+    algo_args.action_space_type = cfg.action_space_type
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
     algo_args.human_human_edge_input_size = algo_args.human_human_edge_input_size + 1
       
