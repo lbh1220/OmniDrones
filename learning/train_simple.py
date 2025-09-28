@@ -71,7 +71,7 @@ def create_env(cfg, headless=True):
     # SB3包装器
     from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
     # 创建环境
-    env = TrafficEnv(cfg=cfg)
+    env = NavEnv(cfg=cfg)
     
 
     

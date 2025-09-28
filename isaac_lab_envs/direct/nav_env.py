@@ -365,8 +365,15 @@ class NavEnv(DirectRLEnv):
         else:
             raise ValueError(f"Unknown action mode: {self.cfg.action_mode}")
         
-        # 确保速度在合理范围内
-        self.command_vel_xy = torch.clamp(self.command_vel_xy, -self.cfg.max_speed, self.cfg.max_speed)
+        # 确保速度在合理范围内 - 按模长缩放而非简单裁切
+        speed_magnitude = torch.norm(self.command_vel_xy, dim=-1, keepdim=True)
+        # 如果模长超过max_speed，则按比例缩放到max_speed
+        scale_factor = torch.where(
+            speed_magnitude > self.cfg.max_speed,
+            self.cfg.max_speed / speed_magnitude,
+            torch.ones_like(speed_magnitude)
+        )
+        self.command_vel_xy = self.command_vel_xy * scale_factor
         self.command_vel_xy = self.command_vel_xy.unsqueeze(1)
         self.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
     

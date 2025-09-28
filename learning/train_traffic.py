@@ -81,23 +81,27 @@ def main():
     parser.add_argument("--evtols_decay_factor", type=float, default=None, help="Evtols decay factor")
 
     parser.add_argument("--rew_action_penalty", type=float, default=None, help="Action penalty")
+    
+    parser.add_argument("--predict_steps", type=int, default=5, help="Predict steps")
 
     # whether reward normalize
     parser.add_argument("--reward_normalize", action="store_true", default=False, help="Reward normalize")
     parser.add_argument("--obs_normalize", action="store_true", default=False, help="Reward normalize")
 
-    parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
+    parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
     parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
 
     # action space type
-    parser.add_argument("--action_space_type", type=str, default="beta", help="Action space type")
+    parser.add_argument("--action_space_type", type=str, default="discrete", help="Action space type")
     parser.add_argument("--action_space_num_per_dim", type=int, default=7, help="Action space num per dim")
     parser.add_argument("--action_mode", type=str, default="velocity_components", help="Action mode")
 
+    parser.add_argument("--init_gain", type=float, default=0.1, help="Init gain")
+
 
     # video recording
-    parser.add_argument("--video", action="store_true", default=True, help="Record video")
+    parser.add_argument("--video", action="store_true", default=False, help="Record video")
     parser.add_argument("--video_interval", type=int, default=1000, help="Video interval")
     parser.add_argument("--video_length", type=int, default=250, help="Video length")
 
@@ -188,7 +192,8 @@ def main():
     cfg.use_global_path = args.use_global_path
     cfg.rew_cross_track_coeff = args.rew_cross_track_coeff
     cfg.rew_cross_track_alpha = args.rew_cross_track_alpha
-
+    
+    cfg.predict_steps = args.predict_steps
 
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
     algo_args.human_human_edge_input_size = algo_args.human_human_edge_input_size + 1
@@ -197,6 +202,7 @@ def main():
     cfg.action_mode = args.action_mode
     cfg.action_space_num_per_dim = args.action_space_num_per_dim
 
+    algo_args.init_gain = args.init_gain
     algo_args.action_space_type = cfg.action_space_type
     # 设置实验名称
     if args.experiment_name is None:
@@ -350,7 +356,7 @@ def main():
         model.logger.info(f"use_global_path: {cfg.use_global_path}")
         model.logger.info(f"rew_cross_track_coeff: {cfg.rew_cross_track_coeff}")
         model.logger.info(f"rew_cross_track_alpha: {cfg.rew_cross_track_alpha}")
-
+    model.logger.info(f"init_gain: {algo_args.init_gain}")
     model.logger.info(f"lr: {algo_args.lr}")
     model.logger.info(f"gamma: {algo_args.gamma}")
     model.logger.info(f"entropy_coef: {algo_args.entropy_coef}")

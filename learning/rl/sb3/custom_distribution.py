@@ -30,7 +30,7 @@ class BetaDistribution(Distribution):
     :param min_beta: Minimum value for beta parameter to ensure numerical stability.
     """
 
-    def __init__(self, action_dim: int, min_alpha: float = 1.0, min_beta: float = 1.0):
+    def __init__(self, action_dim: int, min_alpha: float = 1e-6, min_beta: float = 1e-6):
         super().__init__()
         self.action_dim = action_dim
         self.min_alpha = min_alpha
@@ -38,7 +38,7 @@ class BetaDistribution(Distribution):
         self.alpha = None
         self.beta = None
 
-    def proba_distribution_net(self, latent_dim: int, alpha_init: float = 1.0, beta_init: float = 1.0) -> Tuple[nn.Module, nn.Module]:
+    def proba_distribution_net(self, latent_dim: int) -> Tuple[nn.Module, nn.Module]:
         """
         Create the layers that represent the distribution:
         Two separate networks will output the alpha and beta parameters of the Beta distribution.
@@ -52,9 +52,7 @@ class BetaDistribution(Distribution):
         alpha_net = nn.Linear(latent_dim, self.action_dim)
         beta_net = nn.Linear(latent_dim, self.action_dim)
         
-        # Initialize with small positive values to encourage exploration initially
-        nn.init.constant_(alpha_net.bias, alpha_init)
-        nn.init.constant_(beta_net.bias, beta_init)
+
         
         return alpha_net, beta_net
 

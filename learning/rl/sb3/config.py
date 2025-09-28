@@ -54,6 +54,7 @@ class ArgsConfig:
         self.sort_humans = True
         self.cuda = True
         self.action_space_type = "beta" # discrete or beta or Gaussian
+        self.init_gain = 0.1
 
 class Config(object):
     # for now, import all args from arguments.py

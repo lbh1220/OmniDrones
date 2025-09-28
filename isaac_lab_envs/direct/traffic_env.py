@@ -100,7 +100,7 @@ class TrafficEnvCfg(NavEnvCfg):
     # reward config
     rew_success = 15.0
     rew_collision = -16.0
-    rew_potential = 1.0
+    rew_potential = 0.5
     rew_action_penalty = -0.0
     rew_evtol_future_penalty = -0.0
     rew_drone_future_penalty = -0.0

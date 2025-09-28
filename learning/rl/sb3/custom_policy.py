@@ -65,6 +65,7 @@ class CustomSelfAttnPolicy(BasePolicy):
         self.args = args
         self.lr_schedule = lr_schedule
         self.use_beta = use_beta
+        self.init_gain = args.init_gain
         
         # Initialize the base network (selfAttn_merge_SRNN)
         self.base_network = selfAttn_merge_SRNN(observation_space, args, infer=False)
@@ -90,7 +91,7 @@ class CustomSelfAttnPolicy(BasePolicy):
             # Continuous action space
             num_outputs = self.action_space.shape[0]
             if self.use_beta:
-                self.action_dist = BetaDistribution(num_outputs)
+                self.action_dist = BetaDistribution(num_outputs, min_alpha=1.0, min_beta=1.0)
             else:
                 self.action_dist = DiagGaussianDistribution(num_outputs)
             
@@ -110,18 +111,21 @@ class CustomSelfAttnPolicy(BasePolicy):
         
         if isinstance(self.action_dist, DiagGaussianDistribution):
             self.action_net, self.log_std = self.action_dist.proba_distribution_net(
-                latent_dim=latent_dim_pi, log_std_init=0.0
+                latent_dim=latent_dim_pi, log_std_init=-0.5
             )
-            # 对DiagGaussianDistribution的action_net做正交初始化，gain=1，bias=0
-            nn.init.orthogonal_(self.action_net.weight, gain=1)
+            # 对DiagGaussianDistribution的action_net做正交初始化，使用更大的gain
+            nn.init.orthogonal_(self.action_net.weight, gain=0.1)
             nn.init.constant_(self.action_net.bias, 0)
         elif isinstance(self.action_dist, BetaDistribution):
+
             self.alpha_net, self.beta_net = self.action_dist.proba_distribution_net(
-                latent_dim=latent_dim_pi, alpha_init=1.0, beta_init=1.0
-            )
-            # 对BetaDistribution的alpha_net和beta_net做正交初始化，gain=1，bias已在proba_distribution_net中设置
-            nn.init.orthogonal_(self.alpha_net.weight, gain=1)
-            nn.init.orthogonal_(self.beta_net.weight, gain=1)
+                latent_dim=latent_dim_pi)
+            # 使用alpha=beta=2.0，经过softplus后约为2.13，这样熵更大，有利于探索
+            # 对BetaDistribution的alpha_net和beta_net做正交初始化，使用更大的gain
+            nn.init.orthogonal_(self.alpha_net.weight, gain=self.init_gain)
+            nn.init.orthogonal_(self.beta_net.weight, gain=self.init_gain)
+            nn.init.constant_(self.alpha_net.bias, 0)
+            nn.init.constant_(self.beta_net.bias, 0)
         elif isinstance(self.action_dist, CategoricalDistribution):
             self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
             # 对CategoricalDistribution的action_net做正交初始化，gain=0.01，bias=0
@@ -317,7 +321,7 @@ class CustomSelfAttnPolicy(BasePolicy):
             # Rescale and perform action
             clipped_actions = actions_np
             if isinstance(self.action_space, spaces.Box):
-                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+                clipped_actions = np.clip(actions_np, self.action_space.low, self.action_space.high)
             
             new_hidden_states_np = {}
             for key, value in new_hidden_states.items():
