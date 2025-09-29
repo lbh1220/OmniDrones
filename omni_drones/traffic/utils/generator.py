@@ -85,7 +85,7 @@ class DroneTargetGenerator:
         # 转换为张量 [num_candidates, 3]
         self.candidate_targets = torch.stack(candidate_targets)
         
-        print(f"Initialized {self.num_candidates} candidate targets")
+        # print(f"Initialized {self.num_candidates} candidate targets")
     
     def generate_targets(self, num_drones: int, max_offset = None) -> torch.Tensor:
         """Batch generate targets for multiple drones with random offsets.
