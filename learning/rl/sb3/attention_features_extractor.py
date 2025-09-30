@@ -168,7 +168,7 @@ class AttentionFeaturesExtractor(BaseFeaturesExtractor):
     """
     SB3 compatible features extractor based on attention mechanisms
     """
-    def __init__(self, observation_space: spaces.Dict, features_dim: int = 256):
+    def __init__(self, observation_space: spaces.Dict, features_dim: int = 128):
         # Use human_node_output_size as features dimension (same as original)
         # actual_features_dim = 256  # From config: human_node_output_size = 256
         super().__init__(observation_space, features_dim)
@@ -188,29 +188,43 @@ class AttentionFeaturesExtractor(BaseFeaturesExtractor):
         self.human_num = observation_space['spatial_edges'].shape[0]
         
         # Initialize attention modules
+        internal_features_dim = 256
+        spatial_attn_features_dim = 512
         self.spatial_attn = SpatialEdgeSelfAttn(
             input_size=self.spatial_edge_input_size,
-            attn_size=512,
+            attn_size=spatial_attn_features_dim,
             num_attn_heads=8
         )
         
         self.attn = EdgeAttention_M(
-            input_feature_size=features_dim,
+            input_feature_size=internal_features_dim,
             attention_size=self.attention_size
         )
         
         # Linear layers
         self.robot_linear = nn.Sequential(
-            nn.Linear(self.robot_node_input_size, features_dim), 
+            nn.Linear(self.robot_node_input_size, internal_features_dim), 
             nn.ReLU()
         )
         
         # this 512 followed spatial_attn.attn_size
         self.spatial_linear = nn.Sequential(
-            nn.Linear(512, features_dim), 
+            nn.Linear(spatial_attn_features_dim, internal_features_dim), 
             nn.ReLU()
         )
         
+        half_features_dim = features_dim//2
+        # half_features_dim = features_dim
+        self.final_robot_linear = nn.Sequential(
+            nn.Linear(internal_features_dim, half_features_dim), 
+            nn.ReLU()
+        )
+        # 原来的rnnbase中的encoder_linear
+        
+        self.final_spatial_linear = nn.Sequential(
+            nn.Linear(internal_features_dim, half_features_dim), 
+            nn.ReLU()
+        )# 原来rnnbase中的的edge_attention_embed
         # Initialize weights
         self._initialize_weights()
     
@@ -239,6 +253,9 @@ class AttentionFeaturesExtractor(BaseFeaturesExtractor):
         temporal_edges = observations['temporal_edges'] 
         spatial_edges = observations['spatial_edges']
         detected_human_num = observations['detected_human_num'].squeeze(-1).int()
+
+        # for the case that no human is detected, set the detected_human_num to 1
+        detected_human_num[detected_human_num == 0] = 1 
         
         batch_size = robot_node.shape[0]
         
@@ -266,6 +283,11 @@ class AttentionFeaturesExtractor(BaseFeaturesExtractor):
         # Following original network design: combine robot_states and attention output
         # In original network, this would go through GRU, but we skip that step
         # and directly combine the features for a 256-dimensional output
-        features = robot_states + hidden_attn_weighted  # [batch_size, 256]
+        # features = robot_states + hidden_attn_weighted  # [batch_size, 256]
+        # features = features.unsqueeze(1)
+        # return features
+        robot_states = self.final_robot_linear(robot_states)
+        hidden_attn_weighted = self.final_spatial_linear(hidden_attn_weighted) 
+        features = torch.cat((robot_states, hidden_attn_weighted), dim=-1)  # [batch_size,  features_dim]
         
         return features

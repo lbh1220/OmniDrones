@@ -14,10 +14,12 @@ import torch
 import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
-
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.logger import configure
+
+# SB3-contrib imports for recurrent PPO
+from sb3_contrib import RecurrentPPO
 from rl.sb3.vec_normalize import VecNormalize
 from rl.sb3.network_utils import linear_schedule_with_min
 from rl.sb3.custom_callback import SucessRateCallback
@@ -26,9 +28,10 @@ from omni.isaac.lab.app import AppLauncher
 
 
 
-# Import our custom features extractor
+# Import our custom features extractor and GRU policy
 from rl.sb3.attention_features_extractor import AttentionFeaturesExtractor
-
+from rl.sb3.gru_recurrent_policy import GRUMultiInputActorCriticPolicy
+from sb3_contrib.ppo_recurrent.policies import MultiInputLstmPolicy
 # Wandb support
 try:
     import wandb
@@ -78,6 +81,11 @@ def main():
     parser.add_argument("--clip_range", type=float, default=0.1, help="PPO clip range")
     parser.add_argument("--seed", type=int, default=425, help="Seed")
     
+    # Recurrent network parameters
+    parser.add_argument("--use_rnn", action="store_true", default=False, help="Use RNN-based recurrent policy")
+    parser.add_argument("--shared_gru", action="store_true", default=True, help="Share GRU between actor and critic")
+    parser.add_argument("--rnn_net_arch", type=str, default="lstm", help="RNN network architecture")
+    
     # Reward parameters
     parser.add_argument("--rew_success", type=float, default=15.0, help="Success reward")
     parser.add_argument("--rew_collision", type=float, default=-16.0, help="Collision penalty")
@@ -110,7 +118,7 @@ def main():
     
     # Video recording
     parser.add_argument("--video", action="store_true", help="Record videos")
-    parser.add_argument("--video_interval", type=int, default=100000, help="Video interval")
+    parser.add_argument("--video_interval", type=int, default=2500, help="Video interval")
     parser.add_argument("--video_length", type=int, default=250, help="Video length")
     
     # Wandb
@@ -207,6 +215,9 @@ def main():
     print(f"- drones_num: {args.drones_num}")
     print(f"- evtols_num: {args.evtols_num}")
     print(f"- predict_steps: {args.predict_steps}")
+    print(f"- use_rnn: {args.use_rnn}")
+    if args.use_rnn:
+        print(f"- shared_gru: {args.shared_gru}")
     
     # Save environment and training configurations
     from omni.isaac.lab.utils.io import dump_yaml
@@ -276,32 +287,73 @@ def main():
     # Matching original network architecture from selfAttn_srnn_temp_node.py
     policy_kwargs = dict(
         features_extractor_class=AttentionFeaturesExtractor,
-        features_extractor_kwargs=dict(features_dim=256),  # human_node_output_size
+        features_extractor_kwargs=dict(features_dim=128),  # concat robot_states and hidden_attn_weighted
         net_arch=dict(pi=[256, 256], vf=[256, 256]),       # Same as original actor/critic
-        activation_fn=nn.ReLU,  
+        activation_fn=nn.Tanh,  
         ortho_init=True,
     )
     
+    # Add GRU-specific configuration if using GRU
+    if args.use_rnn:
+        if args.rnn_net_arch == "gru":
+            policy_kwargs.update({
+                'gru_hidden_size': 128,
+                'n_gru_layers': 1,
+                'shared_gru': args.shared_gru,
+                'enable_critic_gru': not args.shared_gru,  # 如果不共享，则启用critic GRU
+            })
+        elif args.rnn_net_arch == "lstm":
+            policy_kwargs.update({
+                'lstm_hidden_size': 128,
+                'n_lstm_layers': 1,
+                'shared_lstm': args.shared_gru,
+                'enable_critic_lstm': not args.shared_gru,  # 如果不共享，则启用critic GRU
+            })
+        else:
+            raise ValueError(f"Invalid RNN network architecture: {args.rnn_net_arch}")
+    
+        
     # Create learning rate schedule
     lr_schedule = linear_schedule_with_min(args.learning_rate, args.learning_rate * 0.1)
     
-    # Create PPO model
-    batch_size = args.n_steps * args.num_envs // args.num_mini_batch
-    model = PPO(
-        "MultiInputPolicy",
-        env,
-        n_steps=args.n_steps,
-        batch_size=batch_size,
-        n_epochs=args.n_epochs,
-        learning_rate=lr_schedule,
-        gamma=args.gamma,
-        ent_coef=args.ent_coef,
-        clip_range=args.clip_range,
-        policy_kwargs=policy_kwargs,
-        verbose=1,
-        seed=cfg.seed,
-        tensorboard_log=os.path.join(save_dir, "tensorboard"),
-    )
+    # Create model based on whether to use GRU or not
+    if args.use_rnn:
+        # Calculate batch size for recurrent PPO
+        batch_size = args.n_steps * args.num_envs // args.num_mini_batch
+        policy_class = GRUMultiInputActorCriticPolicy if args.rnn_net_arch == "gru" else MultiInputLstmPolicy
+        model = RecurrentPPO(
+            policy_class,
+            env,
+            n_steps=args.n_steps,
+            batch_size=batch_size,
+            n_epochs=args.n_epochs,
+            learning_rate=lr_schedule,
+            gamma=args.gamma,
+            ent_coef=args.ent_coef,
+            clip_range=args.clip_range,
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            seed=cfg.seed,
+            tensorboard_log=os.path.join(save_dir, "tensorboard"),
+        )
+    else:
+        # Standard PPO
+        batch_size = args.n_steps * args.num_envs // args.num_mini_batch
+        model = PPO(
+            "MultiInputPolicy",
+            env,
+            n_steps=args.n_steps,
+            batch_size=batch_size,
+            n_epochs=args.n_epochs,
+            learning_rate=lr_schedule,
+            gamma=args.gamma,
+            ent_coef=args.ent_coef,
+            clip_range=args.clip_range,
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            seed=cfg.seed,
+            tensorboard_log=os.path.join(save_dir, "tensorboard"),
+        )
     
     # Set up logger
     new_logger = configure(os.path.join(save_dir, "logs"), ["stdout", "tensorboard", "log"])
@@ -326,6 +378,8 @@ def main():
     model.logger.info(f"n_steps: {args.n_steps}")
     model.logger.info(f"batch_size: {batch_size}")
     model.logger.info(f"n_epochs: {args.n_epochs}")
+    if args.use_rnn:
+        model.logger.info(f"shared_gru: {args.shared_gru}")
     
     # Start training
     start_time = time.time()
