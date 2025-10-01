@@ -46,10 +46,10 @@ def create_env(cfg, args=None):
 def main():
     parser = argparse.ArgumentParser(description="Train Traffic Environment with SB3 PPO")
 
-    # learning params, num_envs, num_mini_batch, num_steps, learning_rate
+    # learning params, num_envs, num_mini_batch, n_steps, learning_rate
     parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
     parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
-    parser.add_argument("--num_steps", type=int, default=256, help="Number of steps")
+    parser.add_argument("--n_steps", type=int, default=128, help="Number of steps")
     parser.add_argument("--learning_rate", type=float, default=4e-5, help="Learning rate")
     # total timesteps
     parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps")
@@ -70,7 +70,7 @@ def main():
 
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
-    parser.add_argument("--drones_num", type=int, default=1, help="Number of drones")
+    parser.add_argument("--drones_num", type=int, default=10, help="Number of drones")
     parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
     parser.add_argument("--evtol_radius", type=float, default=10.0, help="Evtol radius")    
     parser.add_argument("--drone_future_penalty", type=float, default=0.0, help="Drone future penalty")
@@ -85,19 +85,21 @@ def main():
     parser.add_argument("--predict_steps", type=int, default=5, help="Predict steps")
 
     # whether reward normalize
-    parser.add_argument("--reward_normalize", action="store_true", default=False, help="Reward normalize")
-    parser.add_argument("--obs_normalize", action="store_true", default=False, help="Reward normalize")
+    parser.add_argument("--norm_reward", action="store_true", default=False, help="Reward normalize")
+    parser.add_argument("--norm_obs", action="store_true", default=False, help="Reward normalize")
 
     parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
     parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
 
     # action space type
-    parser.add_argument("--action_space_type", type=str, default="discrete", help="Action space type")
+    parser.add_argument("--action_space_type", type=str, default="gaussian", help="Action space type")
     parser.add_argument("--action_space_num_per_dim", type=int, default=7, help="Action space num per dim")
     parser.add_argument("--action_mode", type=str, default="velocity_components", help="Action mode")
 
     parser.add_argument("--init_gain", type=float, default=0.1, help="Init gain")
+
+    parser.add_argument("--use_rnn", action="store_true", default=False, help="Use RNN-based recurrent policy")
 
 
     # video recording
@@ -123,9 +125,10 @@ def main():
     algo_args = ArgsConfig()
     algo_args.num_processes = args.num_envs
     algo_args.num_mini_batch = args.num_mini_batch
-    algo_args.num_steps = args.num_steps
+    algo_args.n_steps = args.n_steps
     algo_args.lr = args.learning_rate
-    algo_args.seq_length = args.num_steps
+    algo_args.seq_length = args.n_steps
+    algo_args.use_rnn = args.use_rnn
     if args.total_timesteps is not None:
         algo_args.num_env_steps = args.total_timesteps
 
@@ -233,7 +236,7 @@ def main():
             "gamma": algo_args.gamma,
             "entropy_coef": algo_args.entropy_coef,
             "ppo_epochs": algo_args.ppo_epoch,
-            "num_steps": algo_args.num_steps,
+            "n_steps": algo_args.n_steps,
         }
         
         # 确定run name
@@ -276,8 +279,8 @@ def main():
     env.seed(seed=algo_args.seed)
     norm_obs_keys = ['robot_node', 'spatial_edges', 'temporal_edges']
     env = VecNormalize(env, 
-                        norm_obs=args.obs_normalize, 
-                        norm_reward=args.reward_normalize, 
+                        norm_obs=args.norm_obs, 
+                        norm_reward=args.norm_reward, 
                         training=True,
                         clip_obs=10.0, 
                         clip_reward=10.0,
@@ -327,8 +330,8 @@ def main():
         CustomSelfAttnPolicy,
         env,
         args=algo_args,
-        n_steps=algo_args.num_steps,
-        batch_size=algo_args.num_steps * algo_args.num_processes // algo_args.num_mini_batch,
+        n_steps=algo_args.n_steps,
+        batch_size=algo_args.n_steps * algo_args.num_processes // algo_args.num_mini_batch,
         learning_rate=lr_schedule,
         gamma=algo_args.gamma,
         ent_coef=algo_args.entropy_coef,
@@ -364,7 +367,7 @@ def main():
     model.logger.info(f"ppo_epoch: {algo_args.ppo_epoch}")
     model.logger.info(f"max_grad_norm: {algo_args.max_grad_norm}")
     model.logger.info(f"clip_param: {algo_args.clip_param}")
-    model.logger.info(f"num_steps: {algo_args.num_steps}")
+    model.logger.info(f"n_steps: {algo_args.n_steps}")
     model.logger.info(f"num_envs: {algo_args.num_processes}")
     model.logger.info(f"num_mini_batch: {algo_args.num_mini_batch}")
     model.logger.info(f"num_env_steps: {algo_args.num_env_steps}")

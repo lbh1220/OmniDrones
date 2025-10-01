@@ -268,6 +268,8 @@ class EndRNN(RNNBase):
         # Output linear layer
         self.output_linear = nn.Linear(self.rnn_size, self.output_size)
 
+        self.use_rnn = args.use_rnn
+
 
 
     def forward(self, robot_s, h_spatial_other, h, masks):
@@ -290,9 +292,14 @@ class EndRNN(RNNBase):
 
         concat_encoded = torch.cat((encoded_input, h_edges_embedded), -1)
 
-        x, h_new = self._forward_gru(concat_encoded, h, masks)
+        # self.use_rnn = True
+        if self.use_rnn:
+            x, h_new = self._forward_gru(concat_encoded, h, masks)
 
-        outputs = self.output_linear(x)
+            outputs = self.output_linear(x)
+        else:
+            outputs = self.output_linear(concat_encoded)
+            h_new = h
 
 
         return outputs, h_new
