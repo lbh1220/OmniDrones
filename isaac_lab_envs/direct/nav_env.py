@@ -734,12 +734,14 @@ class NavEnv(DirectRLEnv):
         """将离散动作转换为连续动作
         
         Args:
-            discrete_actions: [num_envs] 离散动作索引
+            discrete_actions: [num_envs] or [num_envs, 1] 离散动作索引
             
         Returns:
             continuous_actions: [num_envs, 2] 连续动作 (vx, vy)
         """
         # 将float32转换为整数索引（处理vec env的numpy/tensor转换）
+        if discrete_actions.ndim == 2:
+            discrete_actions = discrete_actions.squeeze(1)
         discrete_actions = discrete_actions.long()
         
         # 处理超出范围的动作索引
