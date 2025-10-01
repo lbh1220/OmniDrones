@@ -93,11 +93,11 @@ def main():
     parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
 
     # action space type
-    parser.add_argument("--action_space_type", type=str, default="gaussian", help="Action space type")
+    parser.add_argument("--action_space_type", type=str, default="beta", help="Action space type")
     parser.add_argument("--action_space_num_per_dim", type=int, default=7, help="Action space num per dim")
     parser.add_argument("--action_mode", type=str, default="velocity_components", help="Action mode")
 
-    parser.add_argument("--init_gain", type=float, default=0.1, help="Init gain")
+    parser.add_argument("--init_gain", type=float, default=0.01, help="Init gain")
 
     parser.add_argument("--use_rnn", action="store_true", default=False, help="Use RNN-based recurrent policy")
 

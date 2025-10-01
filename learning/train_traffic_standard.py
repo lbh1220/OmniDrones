@@ -289,7 +289,7 @@ def main():
         features_extractor_class=AttentionFeaturesExtractor,
         features_extractor_kwargs=dict(features_dim=128),  # concat robot_states and hidden_attn_weighted
         net_arch=dict(pi=[256, 256], vf=[256, 256]),       # Same as original actor/critic
-        activation_fn=nn.Tanh,  
+        activation_fn=nn.ReLU,  
         ortho_init=True,
     )
     

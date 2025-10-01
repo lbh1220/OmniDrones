@@ -345,8 +345,8 @@ class CustomPPO(OnPolicyAlgorithm):
                     rollout_data.hidden_states,
                     rollout_data.masks,
                 )
-                if isinstance(self.action_space, spaces.Discrete):
-                    log_prob = log_prob.unsqueeze(-1)
+                # if isinstance(self.action_space, spaces.Discrete):
+                log_prob = log_prob.unsqueeze(-1)
                 # values = values.flatten()
                 
                 # Normalize advantage
