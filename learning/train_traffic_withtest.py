@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from rl.sb3.config import ArgsConfig
 import yaml
-import glob
+
 import numpy as np
 # 导入Isaac Lab
 from omni.isaac.lab.app import AppLauncher
@@ -37,12 +37,16 @@ def create_env(cfg, args=None):
     from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvWithCurriculum
 
     # 创建环境
-    if cfg.curriculum_learning:
+    if args.course_num > 0:
         env = TrafficEnvWithCurriculum(cfg=cfg, render_mode="rgb_array" if args.video else None)
     else:
         env = TrafficEnv(cfg=cfg, render_mode="rgb_array" if args.video else None)
 
     return env
+
+from learning.test_traffic import evaluate_model, get_latest_checkpoint_models
+
+
 
 
 def main():
@@ -51,10 +55,10 @@ def main():
     # learning params, num_envs, num_mini_batch, n_steps, learning_rate
     parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
     parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
-    parser.add_argument("--n_steps", type=int, default=128, help="Number of steps")
+    parser.add_argument("--n_steps", type=int, default=50, help="Number of steps")
     parser.add_argument("--learning_rate", type=float, default=4e-5, help="Learning rate")
     # total timesteps
-    parser.add_argument("--total_timesteps", type=int, default=None, help="Total timesteps")
+    parser.add_argument("--total_timesteps", type=int, default=100000, help="Total timesteps")
 
 
     parser.add_argument("--experiment_name", type=str, default=None,
@@ -87,10 +91,10 @@ def main():
     parser.add_argument("--predict_steps", type=int, default=5, help="Predict steps")
 
     # whether reward normalize
-    parser.add_argument("--norm_reward", action="store_true", default=False, help="Reward normalize")
+    parser.add_argument("--norm_reward", action="store_true", default=True, help="Reward normalize")
     parser.add_argument("--norm_obs", action="store_true", default=False, help="Reward normalize")
 
-    parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
+    parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
     parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
 
@@ -101,8 +105,10 @@ def main():
 
     parser.add_argument("--init_gain", type=float, default=0.01, help="Init gain")
 
-    parser.add_argument("--use_rnn", action="store_true", default=False, help="Use RNN-based recurrent policy")
+    parser.add_argument("--use_rnn", action="store_true", default=True, help="Use RNN-based recurrent policy")
 
+    # 添加评估相关参数
+    parser.add_argument("--eval_after_training", action="store_true", default=True, help="Evaluate models after training")
 
     # video recording
     parser.add_argument("--video", action="store_true", default=False, help="Record video")
@@ -136,6 +142,7 @@ def main():
 
 
 
+    # 导入环境配置（必须在AppLauncher之后）
     # 导入环境配置（必须在AppLauncher之后）
     from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg, TrafficEnvWithCurriculumCfg
     
@@ -279,7 +286,8 @@ def main():
     with open(os.path.join(save_dir, "training_args.yaml"), 'w') as f:
         yaml.dump(serializable_args, f, default_flow_style=False, indent=2)
     # create env
-    env = create_env(cfg, args=args)
+    base_env = create_env(cfg, args=args)
+    env = base_env
 
     if args.video:
         video_kwargs = {
@@ -398,8 +406,7 @@ def main():
     model.save(model_path)
     model.get_vec_normalize_env().save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
     print(f"Model saved to: {model_path}")
-    env.close()
-    simulation_app.close()
+
     # 完成wandb run
     if args.use_wandb and WANDB_AVAILABLE:
         # 记录最终模型路径
@@ -407,6 +414,96 @@ def main():
         wandb.finish()
         print("Wandb run completed and synced")
 
+
+
+    # ===============================
+    # 训练完成后进行模型评估
+    # ===============================
+    if args.eval_after_training:
+        model.logger.info("="*50)
+        model.logger.info("Starting post-training evaluation...")
+        model.logger.info("="*50)
+        
+        # 准备要评估的模型列表
+        models_to_evaluate = []
+        
+        # 1. 添加final_model
+        final_model_path = os.path.join(save_dir, "final_model.zip")
+        final_vecnorm_path = os.path.join(save_dir, "final_model_vecnormalize.pkl")
+        if os.path.exists(final_model_path):
+            models_to_evaluate.append(("final_model", final_model_path, final_vecnorm_path))
+        
+        # 2. 添加最新的两个checkpoint模型
+        checkpoints_dir = os.path.join(save_dir, 'checkpoints')
+        latest_checkpoints = get_latest_checkpoint_models(checkpoints_dir, num_models=2)
+        for checkpoint_path in latest_checkpoints:
+            checkpoint_name = os.path.basename(checkpoint_path).replace('.zip', '')
+            vecnorm_path = checkpoint_path.replace('.zip', '_vecnormalize.pkl')
+            models_to_evaluate.append((checkpoint_name, checkpoint_path, vecnorm_path))
+        
+        if not models_to_evaluate:
+            model.logger.warning("No models found for evaluation!")
+        else:
+            
+            # 创建测试环境
+            test_env = base_env
+            
+            # 为每个模型进行评估
+            evaluation_results = {}
+            for model_name, model_file, vecnorm_file in models_to_evaluate:
+                model.logger.info("-"*30)
+                model.logger.info(f"Evaluating {model_name}...")
+                model.logger.info(f"Model path: {model_file}")
+                
+                try:
+                    # 创建测试环境的副本
+                    current_test_env = test_env
+                    if args.video:
+                        video_kwargs = {
+                            "video_folder": os.path.join(save_dir, "test_videos", model_name),
+                            "step_trigger": lambda step: step % args.video_interval == 0,
+                            "video_length": args.video_length,
+                            "disable_logger": True,
+                        }
+                        current_test_env = gym.wrappers.RecordVideo(current_test_env, **video_kwargs)
+                    from omni.isaac.lab_tasks.utils.wrappers.sb3 import Sb3VecEnvWrapper
+                    current_test_env = Sb3VecEnvWrapper(current_test_env)
+                    # 如果存在vecnormalize文件，应用归一化
+                    if os.path.exists(vecnorm_file):
+                        model.logger.info(f"Loading VecNormalize: {vecnorm_file}")
+                        current_test_env = VecNormalize.load(vecnorm_file, current_test_env)
+                        # 测试时不更新归一化统计
+                        current_test_env.training = False
+                        current_test_env.norm_reward = False
+                    current_test_env.seed(seed=algo_args.seed)
+                    # 加载模型
+                    eval_model = CustomPPO.load(model_file, env=current_test_env, args=algo_args)
+                    
+                    # 进行评估
+                    eval_envs = args.num_envs
+                    eval_episodes = max(eval_envs*5, 100)
+                    evaluate_results = evaluate_model(
+                        eval_model, current_test_env, eval_envs, eval_episodes, model.logger
+                    )
+                    
+                    # 记录结果
+                    evaluation_results[model_name] = evaluate_results.copy()
+                                        
+                except Exception as e:
+                    model.logger.error(f"Error evaluating {model_name}: {str(e)}")
+                    evaluation_results[model_name] = {}
+            
+            
+            # 保存评估结果到文件
+            import json
+            eval_results_file = os.path.join(save_dir, "evaluation_results.json")
+            with open(eval_results_file, 'w') as f:
+                json.dump(evaluation_results, f, indent=2)
+            model.logger.info(f"Evaluation results saved to: {eval_results_file}")
+
+
+    env.close()
+    simulation_app.close()
 
 if __name__ == "__main__":
     main()

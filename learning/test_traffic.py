@@ -9,11 +9,14 @@ import os
 import time
 import numpy as np
 from dataclasses import replace
+
+from tensordict import base
 from rl.sb3.config import ArgsConfig
 import torch
 from stable_baselines3.common.logger import configure
 from rl.sb3.custom_ppo import CustomPPO
 from rl.sb3.vec_normalize import VecNormalize
+from dataclasses import dataclass, field
 # 移除evaluation导入，Isaac Lab SB3包装器不支持evaluate_policy
 
 # 导入Isaac Lab
@@ -38,22 +41,93 @@ def create_test_env(cfg, args=None):
     return env
 
 
+def get_latest_checkpoint_models(checkpoints_dir, num_models=2):
+    """获取最新的checkpoint模型文件"""
+    import glob
+    if not os.path.exists(checkpoints_dir):
+        return []
+    
+    # 查找所有.zip文件
+    model_files = glob.glob(os.path.join(checkpoints_dir, "*.zip"))
+    if not model_files:
+        return []
+    
+    # 按修改时间排序，取最新的num_models个
+    model_files.sort(key=os.path.getmtime, reverse=True)
+    return model_files[:num_models]
+
+
+def evaluate_model(model, env, num_envs, num_episodes, new_logger):
+
+    obs = env.reset()
+    states = None
+    episode_starts = np.ones((num_envs,), dtype=bool)
+    episode_count = 0
+    success_count = 0
+    collision_count = 0
+    episode_rewards = []
+    episode_lengths = []
+    base_env = model.get_env().unwrapped
+
+    step_count = 0
+    while episode_count < num_episodes:
+        action, states = model.predict(obs, state=states, episode_start=episode_starts, deterministic=True)
+        obs, reward, done, info = env.step(action)
+        step_count += 1
+        if done.any():
+            for i, done_ in enumerate(done):
+                if done_:
+                    episode_count += 1
+                    ep_length = info[i]['episode']['l']
+                    ep_reward = info[i]['episode']['r']
+                    episode_rewards.append(ep_reward)
+                    episode_lengths.append(ep_length)
+                    if info[i]['goal_reached']:
+                        success_count += 1
+                        new_logger.info(f'Episode {episode_count} Success in {ep_length} steps, reward={ep_reward:.4f}')
+                    elif info[i]['collision']:
+                        collision_count += 1
+                        new_logger.info(f'Episode {episode_count} Collision in {ep_length} steps, reward={ep_reward:.4f}')
+
+
+        episode_starts = done
+
+    success_rate = success_count / num_episodes
+    collision_rate = collision_count / num_episodes
+    episode_length = np.mean(episode_lengths)
+    episode_reward = np.mean(episode_rewards)
+    new_logger.info(f"Success rate: {success_rate:.4f}")
+    new_logger.info(f"Collision rate: {collision_rate:.4f}")
+    new_logger.info(f"Episode length: {episode_length:.4f} +/- {np.std(episode_lengths):.4f}")
+    new_logger.info(f"Episode reward: {episode_reward:.4f} +/- {np.std(episode_rewards):.4f}")
+
+
+    evaluate_results = {
+        "success_rate": success_rate,
+        "collision_rate": collision_rate,
+        "episode_length": {"mean": episode_length, "std": np.std(episode_lengths)},
+        "episode_reward": {"mean": episode_reward, "std": np.std(episode_rewards)}
+    }   
+    return evaluate_results
+
+
 def main():
     """主函数"""
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
-    parser.add_argument("--num_envs", type=int, default=10, help="Number of environments")
+    parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/action/u10/gaussian/sd/ap--0.0_0927_063717",
+                        default="runs/traffic/action/e1/gaussian/vc/f--0.0_1002_173018",
                        help="Path to the trained model directory")
-    parser.add_argument("--model_name", type=str, default="final_model.zip", help="Model name")
-    parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes for evaluation")
+    parser.add_argument("--model_name", type=str, default="SR_44826624_steps.zip", help="Model name")
+    parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
     
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
-    parser.add_argument("--drones_num", type=int, default=10, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
-    parser.add_argument("--use_global_path", action="store_true", default=False, help="Use global path")
+    parser.add_argument("--drones_num", type=int, default=0, help="Number of drones")
+    parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
+    parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
+    parser.add_argument("--use_rnn", action="store_true", default=True, help="Use RNN-based recurrent policy")
     parser.add_argument("--video", action="store_true", default=True, help="Record video")
     parser.add_argument("--video_interval", type=int, default=1000, help="Video interval")
     parser.add_argument("--video_length", type=int, default=500, help="Video length")
@@ -62,7 +136,7 @@ def main():
     args = parser.parse_args()
     
     # 设置为非headless模式以便可视化
-    args.headless = False
+    args.headless = True
     if args.video:
         args.enable_cameras = True
     else:
@@ -76,6 +150,7 @@ def main():
 
     algo_args = ArgsConfig()
     algo_args.num_processes = args.num_envs
+    algo_args.use_rnn = args.use_rnn
     
 
         # 导入环境配置（必须在AppLauncher之后）
@@ -118,16 +193,6 @@ def main():
     cfg.traffic_sim.num_evtols = args.evtols_num
     cfg.use_global_path = args.use_global_path
 
-    # from dataclasses import field
-    # course_list = [
-    #             field(default_factory=lambda: TrafficCurriculumCfg(drones_num=2, evtol_num=0)),
-    #             field(default_factory=lambda: TrafficCurriculumCfg(drones_num=2, evtol_num=0)),
-    #         ]
-    # args.course_num = len(course_list)
-    # cfg.curriculum_list = course_list
-    # cfg.curriculum_learning = False
-    # cfg.traffic_sim.num_drones = course_list[-1].drones_num
-    # cfg.traffic_sim.num_evtols = course_list[-1].evtol_num
 
 
     cfg.use_global_path = True
@@ -152,11 +217,12 @@ def main():
         lookat=(0., 0., 1.)
     )
     print(f"创建测试环境...")
-    output_dir = os.path.join(args.model_dir, 'test_results', args.model_name.replace(".zip", "_") + time.strftime("%m%d_%H%M%S"))
+    output_dir = os.path.join(args.model_dir, 'test_results', args.model_name.replace(".zip", "_") + f"{args.num_episodes}episodes" + time.strftime("%m%d_%H%M%S"))
     os.makedirs(output_dir, exist_ok=True)
     
     # 创建测试环境
-    env = create_test_env(cfg, args=args)
+    base_env = create_test_env(cfg, args=args)
+    env = base_env
     if args.video:
         video_kwargs = {
             "video_folder": os.path.join(output_dir, "videos"),
@@ -189,45 +255,15 @@ def main():
     new_logger = configure(output_dir, ["stdout", "log"])
     model.set_logger(new_logger)
     new_logger.info(f"Starting evaluation for {args.num_episodes} episodes")
-    episode_count = 0
-
-    obs = env.reset()
-    states = None
-    episode_starts = np.ones((args.num_envs,), dtype=bool)
-    episode_count = 0
-    success_count = 0
-    collision_count = 0
-    episode_rewards = []
-    episode_lengths = []
-    base_env = model.get_env().unwrapped
-
-    step_count = 0
-    while episode_count < args.num_episodes:
-        action, states = model.predict(obs, state=states, episode_start=episode_starts, deterministic=True)
-        obs, reward, done, info = env.step(action)
-        step_count += 1
-        if done.any():
-            for i, done_ in enumerate(done):
-                if done_:
-                    episode_count += 1
-                    ep_length = info[i]['episode']['l']
-                    ep_reward = info[i]['episode']['r']
-                    episode_rewards.append(ep_reward)
-                    episode_lengths.append(ep_length)
-                    if info[i]['goal_reached']:
-                        success_count += 1
-                        new_logger.info(f'Episode {episode_count} Success in {ep_length} steps, reward={ep_reward:.4f}')
-                    elif info[i]['collision']:
-                        collision_count += 1
-                        new_logger.info(f'Episode {episode_count} Collision in {ep_length} steps, reward={ep_reward:.4f}')
 
 
-        episode_starts = done
+    env.seed(seed=algo_args.seed)
 
-    new_logger.info(f"Success rate: {success_count / args.num_episodes:.4f}")
-    new_logger.info(f"Collision rate: {collision_count / args.num_episodes:.4f}")
-    new_logger.info(f"Episode length: {np.mean(episode_lengths):.4f} +/- {np.std(episode_lengths):.4f}")
-    new_logger.info(f"Episode reward: {np.mean(episode_rewards):.4f} +/- {np.std(episode_rewards):.4f}")
+    
+    evaluate_model(model, env, args.num_envs, args.num_episodes, new_logger)
+
+
+
 
     env.close()
 
