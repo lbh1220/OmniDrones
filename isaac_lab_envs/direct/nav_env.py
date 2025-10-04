@@ -77,7 +77,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     seed = None
     
     # environment settings
-    episode_length_s = 200.0
+    episode_length_s = 300.0
     decimation = 10  # env step every 1 sim steps
     num_actions = 2  # 只输出vx,vy
     num_observations = 7  # robot_node(5) + temporal_edges(2) = 7
@@ -133,10 +133,10 @@ class NavEnvCfg(DirectRLEnvCfg):
     arrival_threshold: float = 2.0
     max_speed: float = 1.0
     area_bounds: AreaBoundsCfg = field(default_factory=lambda: AreaBoundsCfg(
-        xmin=-40.0,
-        xmax=40.0,
-        ymin=-40.0,
-        ymax=40.0
+        xmin=-80.0,
+        xmax=80.0,
+        ymin=-80.0,
+        ymax=80.0
     ))
     
     # action space config

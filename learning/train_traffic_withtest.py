@@ -420,9 +420,9 @@ def main():
     # 训练完成后进行模型评估
     # ===============================
     if args.eval_after_training:
-        model.logger.info("="*50)
-        model.logger.info("Starting post-training evaluation...")
-        model.logger.info("="*50)
+        new_logger.info("="*50)
+        new_logger.info("Starting post-training evaluation...")
+        new_logger.info("="*50)
         
         # 准备要评估的模型列表
         models_to_evaluate = []
@@ -442,7 +442,7 @@ def main():
             models_to_evaluate.append((checkpoint_name, checkpoint_path, vecnorm_path))
         
         if not models_to_evaluate:
-            model.logger.warning("No models found for evaluation!")
+            new_logger.warning("No models found for evaluation!")
         else:
             
             # 创建测试环境
@@ -451,9 +451,9 @@ def main():
             # 为每个模型进行评估
             evaluation_results = {}
             for model_name, model_file, vecnorm_file in models_to_evaluate:
-                model.logger.info("-"*30)
-                model.logger.info(f"Evaluating {model_name}...")
-                model.logger.info(f"Model path: {model_file}")
+                new_logger.info("-"*30)
+                new_logger.info(f"Evaluating {model_name}...")
+                new_logger.info(f"Model path: {model_file}")
                 
                 try:
                     # 创建测试环境的副本
@@ -470,27 +470,27 @@ def main():
                     current_test_env = Sb3VecEnvWrapper(current_test_env)
                     # 如果存在vecnormalize文件，应用归一化
                     if os.path.exists(vecnorm_file):
-                        model.logger.info(f"Loading VecNormalize: {vecnorm_file}")
+                        new_logger.info(f"Loading VecNormalize: {vecnorm_file}")
                         current_test_env = VecNormalize.load(vecnorm_file, current_test_env)
                         # 测试时不更新归一化统计
                         current_test_env.training = False
                         current_test_env.norm_reward = False
                     current_test_env.seed(seed=algo_args.seed)
                     # 加载模型
-                    eval_model = CustomPPO.load(model_file, env=current_test_env, args=algo_args)
+                    model = CustomPPO.load(model_file, env=current_test_env, args=algo_args)
                     
                     # 进行评估
                     eval_envs = args.num_envs
                     eval_episodes = max(eval_envs*5, 100)
                     evaluate_results = evaluate_model(
-                        eval_model, current_test_env, eval_envs, eval_episodes, model.logger
+                        model, current_test_env, eval_envs, eval_episodes, new_logger
                     )
                     
                     # 记录结果
                     evaluation_results[model_name] = evaluate_results.copy()
                                         
                 except Exception as e:
-                    model.logger.error(f"Error evaluating {model_name}: {str(e)}")
+                    new_logger.error(f"Error evaluating {model_name}: {str(e)}")
                     evaluation_results[model_name] = {}
             
             
@@ -499,7 +499,7 @@ def main():
             eval_results_file = os.path.join(save_dir, "evaluation_results.json")
             with open(eval_results_file, 'w') as f:
                 json.dump(evaluation_results, f, indent=2)
-            model.logger.info(f"Evaluation results saved to: {eval_results_file}")
+            new_logger.info(f"Evaluation results saved to: {eval_results_file}")
 
 
     env.close()
