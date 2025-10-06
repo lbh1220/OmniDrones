@@ -44,7 +44,8 @@ def create_env(cfg, args=None):
 
     return env
 
-from learning.test_traffic import evaluate_model, get_latest_checkpoint_models
+from learning.test_traffic import  get_latest_checkpoint_models
+from learning.rl.sb3.evaluate_policy import evaluate_policy
 
 
 
@@ -77,7 +78,7 @@ def main():
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
     parser.add_argument("--drones_num", type=int, default=10, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
+    parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
     parser.add_argument("--evtol_radius", type=float, default=10.0, help="Evtol radius")    
     parser.add_argument("--drone_future_penalty", type=float, default=0.0, help="Drone future penalty")
     parser.add_argument("--evtol_future_penalty", type=float, default=0.0, help="Evtol future penalty")
@@ -482,7 +483,7 @@ def main():
                     # 进行评估
                     eval_envs = args.num_envs
                     eval_episodes = max(eval_envs*5, 100)
-                    evaluate_results = evaluate_model(
+                    evaluate_results = evaluate_policy(
                         model, current_test_env, eval_envs, eval_episodes, new_logger
                     )
                     

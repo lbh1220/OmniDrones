@@ -183,8 +183,8 @@ class SucessRateCallback(BaseCallback):
                     self.episode_results.append('collision')
                 else:
                     self.episode_results.append('timeout')
-                if 'eposide_cross_error' in self.locals['infos'][i]:
-                    self.episode_cross_track_errors.append(self.locals['infos'][i]['eposide_cross_error'].item())
+                if 'episode_cross_error' in self.locals['infos'][i]:
+                    self.episode_cross_track_errors.append(self.locals['infos'][i]['episode_cross_error'].item())
                 else:
                     self.episode_cross_track_errors.append(0)
                 if 'episode_acceleration' in self.locals['infos'][i]:

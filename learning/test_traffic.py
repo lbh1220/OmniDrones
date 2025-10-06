@@ -32,10 +32,7 @@ def create_test_env(cfg, args=None):
     from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvWithCurriculum
 
     # 创建环境
-    if cfg.curriculum_learning:
-        env = TrafficEnvWithCurriculum(cfg=cfg, render_mode="rgb_array" if args.video else None)
-    else:
-        env = TrafficEnv(cfg=cfg, render_mode="rgb_array" if args.video else None)
+    env = TrafficEnv(cfg=cfg, render_mode="rgb_array" if args.video else None)
 
     
     return env
@@ -56,59 +53,7 @@ def get_latest_checkpoint_models(checkpoints_dir, num_models=2):
     model_files.sort(key=os.path.getmtime, reverse=True)
     return model_files[:num_models]
 
-
-def evaluate_model(model, env, num_envs, num_episodes, new_logger):
-
-    obs = env.reset()
-    states = None
-    episode_starts = np.ones((num_envs,), dtype=bool)
-    episode_count = 0
-    success_count = 0
-    collision_count = 0
-    episode_rewards = []
-    episode_lengths = []
-    base_env = model.get_env().unwrapped
-
-    step_count = 0
-    while episode_count < num_episodes:
-        action, states = model.predict(obs, state=states, episode_start=episode_starts, deterministic=True)
-        obs, reward, done, info = env.step(action)
-        step_count += 1
-        if done.any():
-            for i, done_ in enumerate(done):
-                if done_:
-                    episode_count += 1
-                    ep_length = info[i]['episode']['l']
-                    ep_reward = info[i]['episode']['r']
-                    episode_rewards.append(ep_reward)
-                    episode_lengths.append(ep_length)
-                    if info[i]['goal_reached']:
-                        success_count += 1
-                        new_logger.info(f'Episode {episode_count} Success in {ep_length} steps, reward={ep_reward:.4f}')
-                    elif info[i]['collision']:
-                        collision_count += 1
-                        new_logger.info(f'Episode {episode_count} Collision in {ep_length} steps, reward={ep_reward:.4f}')
-
-
-        episode_starts = done
-
-    success_rate = success_count / num_episodes
-    collision_rate = collision_count / num_episodes
-    episode_length = np.mean(episode_lengths)
-    episode_reward = np.mean(episode_rewards)
-    new_logger.info(f"Success rate: {success_rate:.4f}")
-    new_logger.info(f"Collision rate: {collision_rate:.4f}")
-    new_logger.info(f"Episode length: {episode_length:.4f} +/- {np.std(episode_lengths):.4f}")
-    new_logger.info(f"Episode reward: {episode_reward:.4f} +/- {np.std(episode_rewards):.4f}")
-
-
-    evaluate_results = {
-        "success_rate": success_rate,
-        "collision_rate": collision_rate,
-        "episode_length": {"mean": episode_length, "std": np.std(episode_lengths)},
-        "episode_reward": {"mean": episode_reward, "std": np.std(episode_rewards)}
-    }   
-    return evaluate_results
+from rl.sb3.evaluate_policy import evaluate_policy
 
 
 def main():
@@ -117,14 +62,14 @@ def main():
     parser = argparse.ArgumentParser(description="Test trained SB3 model")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/action/e1/gaussian/vc/f--0.0_1002_173018",
+                        default="runs/traffic/action/e1/gaussian/vc/f--0.0_1003_171715",
                        help="Path to the trained model directory")
-    parser.add_argument("--model_name", type=str, default="SR_44826624_steps.zip", help="Model name")
+    parser.add_argument("--model_name", type=str, default="SR_46268416_steps.zip", help="Model name")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
     
 
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
-    parser.add_argument("--drones_num", type=int, default=0, help="Number of drones")
+    parser.add_argument("--drones_num", type=int, default=10, help="Number of drones")
     parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
     parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
     parser.add_argument("--use_rnn", action="store_true", default=True, help="Use RNN-based recurrent policy")
@@ -260,7 +205,7 @@ def main():
     env.seed(seed=algo_args.seed)
 
     
-    evaluate_model(model, env, args.num_envs, args.num_episodes, new_logger)
+    evaluate_policy(model, env, args.num_envs, args.num_episodes, new_logger)
 
 
 

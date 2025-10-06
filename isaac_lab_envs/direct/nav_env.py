@@ -217,7 +217,7 @@ class NavEnv(DirectRLEnv):
         }
         if self.cfg.use_global_path:
             self.extras["cross_track_error_avg"] = torch.zeros(self.num_envs, device=self.device)
-            self.extras["eposide_cross_error"] = torch.zeros(self.num_envs, device=self.device)
+            self.extras["episode_cross_error"] = torch.zeros(self.num_envs, device=self.device)
             
         # 加速度统计
         self.extras["acceleration_avg"] = torch.zeros(self.num_envs, device=self.device)
@@ -574,7 +574,7 @@ class NavEnv(DirectRLEnv):
         
         # 重置cross_track_error累积平均值
         if self.cfg.use_global_path:
-            self.extras["eposide_cross_error"][env_ids] = self.extras["cross_track_error_avg"][env_ids].clone()
+            self.extras["episode_cross_error"][env_ids] = self.extras["cross_track_error_avg"][env_ids].clone()
             self.extras["cross_track_error_avg"][env_ids] = 0.0
             
         # 重置acceleration累积平均值

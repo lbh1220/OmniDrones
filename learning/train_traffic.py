@@ -37,7 +37,7 @@ def create_env(cfg, args=None):
     from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvWithCurriculum
 
     # 创建环境
-    if cfg.curriculum_learning:
+    if args.course_num > 0:
         env = TrafficEnvWithCurriculum(cfg=cfg, render_mode="rgb_array" if args.video else None)
     else:
         env = TrafficEnv(cfg=cfg, render_mode="rgb_array" if args.video else None)
