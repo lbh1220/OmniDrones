@@ -288,7 +288,8 @@ class TrafficEnv(NavEnv):
             #    我们使用 .expand() 方法，这比 .repeat() 更高效，因为它不会复制数据。
             #    同时，确保新的张量与 positions 在同一个设备上（CPU或GPU）。
             scale_shape = torch.tensor([1.0, 1.0, 0.5], device=positions.device, dtype=positions.dtype)
-            scales = scale_shape.expand(num_agents, -1) # -1 表示保持维度大小不变
+            scales = scale_shape.expand(num_agents, -1) # -1 表示保持维度大小不变 (num_agents, 3)
+            scales = scales * self.state.traffic.traffic_safety_radius.unsqueeze(1)
 
             # 4. 调用 visualize 方法，同时传入 translations 和 scales
             self.traffic_visualizer.visualize(translations=positions, scales=scales)

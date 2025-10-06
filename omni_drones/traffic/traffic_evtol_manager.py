@@ -116,7 +116,8 @@ class TrafficEVTOLManager:
             smooth_waypoints = self.all_smooth_waypoints[course_idx]
             initial_positions.append((smooth_waypoints[0].x, smooth_waypoints[0].y, smooth_waypoints[0].z))
             prim_paths.append(f"{self.traffic_prim_path}/traffic_evtol_{i}")
-            scales.append((self.config.evtol.safety_radius, self.config.evtol.safety_radius, 1.0))  # EVTOL通常比较大
+            # scales.append((self.config.evtol.safety_radius, self.config.evtol.safety_radius, 1.0))  # EVTOL通常比较大
+            scales.append((6.0, 6.0, 1.0))
         
         # 创建primitives - traffic 内部不碰撞
         created_prims = self.evtol.spawn(
@@ -189,7 +190,7 @@ class TrafficEVTOLManager:
         self.logger.info(f"Initialized {self.num_evtols} EVTOLs")
     
     
-    def _update_initial_states(self):
+    def _update_initial_states(self, from_start_waypoint: bool = False):
         """更新初始状态"""
         if not self.evtol or not self.evtol.is_valid:
             return
@@ -197,7 +198,11 @@ class TrafficEVTOLManager:
             course_idx = torch.randint(0, len(self.all_smooth_waypoints), (1,), device=self.device).item()
 
             smooth_waypoints = self.all_smooth_waypoints[course_idx]
-            start_idx = torch.randint(0, len(smooth_waypoints), (1,), device=self.device).item()
+            if from_start_waypoint:
+                start_idx = 0
+            else:
+                start_idx = torch.randint(0, len(smooth_waypoints), (1,), device=self.device).item()
+
             self.state.positions[i] = torch.tensor([smooth_waypoints[start_idx].x, smooth_waypoints[start_idx].y, smooth_waypoints[start_idx].z], device=self.device)
             self.state.rotations[i] = torch.tensor([smooth_waypoints[start_idx].qw, smooth_waypoints[start_idx].qx, smooth_waypoints[start_idx].qy, smooth_waypoints[start_idx].qz], device=self.device)
             self.state.velocities[i] = torch.tensor([smooth_waypoints[start_idx].vx, smooth_waypoints[start_idx].vy, smooth_waypoints[start_idx].vz], device=self.device)
@@ -418,6 +423,8 @@ class TrafficEVTOLManager:
         safety_radius = [self.config.evtol.safety_radius] * self.num_evtols  # EVTOL通常比较大
         max_speed = [self.max_speed] * self.num_evtols
         self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, self.device)
+
+        self.random_attributes(self.config.evtol.random_speed, self.config.evtol.random_safety_radius)
         
         # 为每个EVTOL在state中设置对应的平滑后轨迹
         for i in range(self.num_evtols):
@@ -432,7 +439,7 @@ class TrafficEVTOLManager:
             self.state.set_waypoints_for_aircraft(i, course_waypoints)
         
         # 设置初始状态
-        self._update_initial_states()
+        self._update_initial_states(from_start_waypoint=True)
         
         self.is_initialized = True
         

@@ -18,6 +18,8 @@ class TrafficDroneCfg:
     max_speed: float = 1.0
     arrival_threshold: float = 1.0
     target_num: int = 8
+    random_safety_radius: bool = True
+    random_speed: bool = False
 
 @configclass
 class TrafficEvtolCfg:
@@ -28,7 +30,7 @@ class TrafficEvtolCfg:
     turn_radius: float = 10.0
     course_num: int = 8
     random_speed: bool = False
-    random_safety_radius: bool = False
+    random_safety_radius: bool = True
 @configclass
 class OrcaCfg:
     enable: bool = True

@@ -118,6 +118,8 @@ class TrafficDroneManager:
         max_speed = [self.max_speed] * self.num_drones
         self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, self.device)
 
+        self.random_attributes(self.config.drone.random_speed, self.config.drone.random_safety_radius)
+
         self.reset_kinematics()
 
         self.is_initialized = True
@@ -125,12 +127,26 @@ class TrafficDroneManager:
 
         if getattr(self.config, 'orca', None) is not None and self.config.orca.enable:
             self.policy = ORCA(self.config)
-    
+
+    def random_attributes(self, random_speed, random_safety_radius):
+        """随机生成EVTOL的属性"""
+        if random_speed:
+            # 为速度添加 ±0.1 范围内的随机扰动
+            speed_perturbation = torch.empty_like(self.state.max_speed).uniform_(-0.1, 0.1)
+            self.state.max_speed = self.state.max_speed + speed_perturbation
+            
+        if random_safety_radius:
+            # 为安全半径添加向下的扰动，扰动值为当前半径的0.4
+            radius_perturbation = torch.empty_like(self.state.safety_radius).uniform_(-0.2, 0.5)
+            self.state.safety_radius = self.state.safety_radius + radius_perturbation
+            self.state.safety_radius = torch.clamp(self.state.safety_radius, min=0.0, max=10.0)
+
     def _generate_random_position(self) -> torch.Tensor:
         """
         Generate a random position within the area bounds.
         For now, this function is only used to generate initial positions for the drones.
         Targets are set by the target generator in the traffic simulator.
+        This fucntion is only used during reset.
         """
         bounds = self.config.area_bounds
         x_range = bounds.xmax - bounds.xmin
@@ -227,9 +243,11 @@ class TrafficDroneManager:
             normalized_valid_dirs = valid_directions / valid_distances.unsqueeze(-1)
             
             # Calculate speeds with gradual slowdown
+            # Get max speeds for valid moving drones
+            valid_max_speeds = self.state.max_speed[valid_movement]
             speeds = torch.clamp(
                 torch.minimum(
-                    torch.tensor(self.max_speed, device=self.device),
+                    valid_max_speeds,
                     valid_distances * 0.5
                 ),
                 min=0.1
@@ -315,9 +333,11 @@ class TrafficDroneManager:
             normalized_valid_dirs = valid_directions / valid_distances.unsqueeze(-1)
             
             # Calculate speeds with gradual slowdown
+            # Get max speeds for valid moving drones
+            valid_max_speeds = self.state.max_speed[valid_movement]
             speeds = torch.clamp(
                 torch.minimum(
-                    torch.tensor(self.max_speed, device=self.device),
+                    valid_max_speeds,
                     valid_distances * 0.5
                 ),
                 min=0.1
@@ -510,6 +530,12 @@ class TrafficDroneManager:
             positions_batch = torch.stack(new_positions)  # Shape [N, 3]
             self.reset_positions(positions_batch)
         
+        self.reset_kinematics()
+        safety_radius = [self.safety_radius] * self.num_drones
+        max_speed = [self.max_speed] * self.num_drones
+        self.state.max_speed = torch.tensor(max_speed, device=self.device)
+        self.state.safety_radius = torch.tensor(safety_radius, device=self.device)
+        self.random_attributes(self.config.drone.random_speed, self.config.drone.random_safety_radius)
         # Assign new targets using internal target generator
         self.set_initial_targets()
         
