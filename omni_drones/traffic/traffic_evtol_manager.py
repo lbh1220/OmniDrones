@@ -73,6 +73,8 @@ class TrafficEVTOLManager:
         
         # EVTOL参数
         self.max_speed = config.evtol.max_speed
+        self.min_speed = config.evtol.min_speed
+        self.v_pref = config.evtol.v_pref
         self.arrival_threshold = config.evtol.arrival_threshold
         self.turn_radius = config.evtol.turn_radius
         
@@ -165,7 +167,9 @@ class TrafficEVTOLManager:
         aircraft_types = ["evtol"] * self.num_evtols
         safety_radius = [self.config.evtol.safety_radius] * self.num_evtols  # EVTOL通常比较大
         max_speed = [self.max_speed] * self.num_evtols
-        self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, self.device)
+        min_speed = [self.min_speed] * self.num_evtols
+        v_pref = [self.v_pref] * self.num_evtols
+        self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, min_speed, v_pref, self.device)
         
         # 随机生成EVTOL的属性
         # 这个暂时没办法用，因为simulator很少reset
@@ -248,9 +252,8 @@ class TrafficEVTOLManager:
         current_pos = self.state.positions[evtol_idx].cpu().numpy()
         current_waypoint_idx = self.state.current_waypoint_indices[evtol_idx].item()
         
-        # 计算这一步要前进的距离
-        # move_distance = self.max_speed * dt
-        move_distance = self.state.max_speed[evtol_idx].item() * dt
+        # 计算这一步要前进的距离 - 使用preferred speed
+        move_distance = self.state.v_pref[evtol_idx].item() * dt
         
         # 如果当前航路点索引超出范围，需要重新设置航路
         if current_waypoint_idx >= len(smooth_waypoints):
@@ -402,15 +405,17 @@ class TrafficEVTOLManager:
     def random_attributes(self, random_speed, random_safety_radius):
         """随机生成EVTOL的属性"""
         if random_speed:
-            # 为速度添加 ±0.1 范围内的随机扰动
-            speed_perturbation = torch.empty_like(self.state.max_speed).uniform_(-0.1, 0.1)
-            self.state.max_speed = self.state.max_speed + speed_perturbation
+            # 为v_pref添加 ±20% 范围内的随机扰动
+            speed_perturbation = torch.empty_like(self.state.v_pref).uniform_(-0.2, 0.2)
+            self.state.v_pref = self.state.v_pref * (1.0 + speed_perturbation)
+            # 确保v_pref在min_speed和max_speed之间
+            self.state.v_pref = torch.clamp(self.state.v_pref, min=self.state.min_speed, max=self.state.max_speed)
             
         if random_safety_radius:
-            # 为安全半径添加向下的扰动，扰动值为当前半径的0.4
+            # 为安全半径添加 ±40% 范围内的随机扰动
             radius_perturbation = torch.empty_like(self.state.safety_radius).uniform_(-0.4, 0.4)
-            self.state.safety_radius = self.state.safety_radius + radius_perturbation
-            self.state.safety_radius = torch.clamp(self.state.safety_radius, min=0.0, max=10.0)
+            self.state.safety_radius = self.state.safety_radius * (1.0 + radius_perturbation)
+            self.state.safety_radius = torch.clamp(self.state.safety_radius, min=5.0, max=10.0)
 
     def reset(self):
         """重置所有EVTOL"""
@@ -424,7 +429,9 @@ class TrafficEVTOLManager:
         aircraft_types = ["evtol"] * self.num_evtols
         safety_radius = [self.config.evtol.safety_radius] * self.num_evtols  # EVTOL通常比较大
         max_speed = [self.max_speed] * self.num_evtols
-        self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, self.device)
+        min_speed = [self.min_speed] * self.num_evtols
+        v_pref = [self.v_pref] * self.num_evtols
+        self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, min_speed, v_pref, self.device)
 
         self.random_attributes(self.config.evtol.random_speed, self.config.evtol.random_safety_radius)
 

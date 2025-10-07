@@ -47,7 +47,7 @@ class NavObservationProcessor:
         
         # 机器人参数
         robot_radius = torch.full((drone_state.shape[0], 1, 1), self.cfg.safety_radius, device=self.device)
-        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.max_speed, device=self.device)
+        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.v_pref, device=self.device)
         
         # 构建robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw]
         robot_node = torch.cat([
@@ -111,7 +111,7 @@ class NavObservationProcessorWithPath(NavObservationProcessor):
         
         # 机器人参数
         robot_radius = torch.full((drone_state.shape[0], 1, 1), self.cfg.safety_radius, device=self.device)
-        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.max_speed, device=self.device)
+        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.v_pref, device=self.device)
         
         # 构建扩展的robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw, rel_local_goal_x, rel_local_goal_y, rel_proj_x, rel_proj_y]
         robot_node = torch.cat([
@@ -242,7 +242,7 @@ class TrafficObservationProcessor:
         
         # 机器人参数
         robot_radius = torch.full((num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
-        robot_v_pref = torch.full((num_envs, 1, 1), self.cfg.max_speed, device=self.device)
+        robot_v_pref = torch.full((num_envs, 1, 1), self.cfg.v_pref, device=self.device)
         
         # 构建robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw]
         robot_node = torch.cat([
@@ -402,7 +402,7 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
         
         # 机器人参数
         robot_radius = torch.full((num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
-        robot_v_pref = torch.full((num_envs, 1, 1), self.cfg.max_speed, device=self.device)
+        robot_v_pref = torch.full((num_envs, 1, 1), self.cfg.v_pref, device=self.device)
         
         # 构建扩展的robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw, rel_local_goal_x, rel_local_goal_y, rel_proj_x, rel_proj_y]
         robot_node = torch.cat([

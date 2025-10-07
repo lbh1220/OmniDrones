@@ -175,7 +175,6 @@ def main():
         cfg.traffic_sim.num_evtols = args.evtols_num
         cfg.traffic_sim.evtol.safety_radius = args.evtol_radius
 
-    cfg.traffic_sim.evtol.random_safety_radius = True
     if args.rew_success is not None:
         cfg.rew_success = args.rew_success
     if args.rew_collision is not None:

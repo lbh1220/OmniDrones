@@ -39,6 +39,9 @@ class TrafficState:
         self.safety_radius = torch.empty(0, device=device)  # [N] 安全半径
         self.time_stamps = torch.empty(0, device=device)  # [N] 时间戳
         self.max_speed = torch.empty(0, device=device)  # [N] 最大速度
+
+        self.min_speed = torch.empty(0, device=device)  # [N] 最小速度
+        self.v_pref = torch.empty(0, device=device)  # [N] 期望速度
         
         # 运动状态 - 对应AircraftState中的运动信息
         self.positions = torch.empty(0, 3, device=device)  # [N, 3]
@@ -66,7 +69,8 @@ class TrafficState:
         self.waypoint_lengths = torch.empty(0, dtype=torch.long, device=device)  # [N] 每个飞机实际航路点数量
     
     def initialize_aircraft(self, names: List[str], aircraft_types: List[str], 
-                           safety_radius: List[float], max_speed: List[float], device: str = None):
+                           safety_radius: List[float], max_speed: List[float], 
+                           min_speed: List[float], v_pref: List[float], device: str = None):
         """初始化飞机列表"""
         if device is None:
             device = self.device
@@ -77,6 +81,8 @@ class TrafficState:
         self.safety_radius = torch.tensor(safety_radius, device=device)
         self.time_stamps = torch.zeros(self.num_aircraft, device=device)
         self.max_speed = torch.tensor(max_speed, device=device)
+        self.min_speed = torch.tensor(min_speed, device=device)
+        self.v_pref = torch.tensor(v_pref, device=device)
         # 初始化运动状态
         self.positions = torch.zeros(self.num_aircraft, 3, device=device)
         self.velocities = torch.zeros(self.num_aircraft, 3, device=device)

@@ -16,21 +16,25 @@ class TrafficDroneCfg:
     model: str = "firefly"
     safety_radius: float = 1.0
     max_speed: float = 1.0
+    min_speed: float = 0.0
+    v_pref: float = 1.0 # preferred speed
     arrival_threshold: float = 1.0
     target_num: int = 8
-    random_safety_radius: bool = True
-    random_speed: bool = False
+    random_safety_radius: bool = False
+    random_speed: bool = True
 
 @configclass
 class TrafficEvtolCfg:
     model: str = "iris"
     safety_radius: float = 10.0
     max_speed: float = 2.0
+    min_speed: float = 1.0
+    v_pref: float = 2.0 # preferred speed
     arrival_threshold: float = 2.0
     turn_radius: float = 10.0
     course_num: int = 3
-    random_speed: bool = False
-    random_safety_radius: bool = True
+    random_speed: bool = True
+    random_safety_radius: bool = False
 @configclass
 class OrcaCfg:
     enable: bool = True
@@ -52,7 +56,7 @@ class TrafficCfg:
     evtol: TrafficEvtolCfg = field(default_factory=TrafficEvtolCfg)
     orca: OrcaCfg = field(default_factory=OrcaCfg)
 
-    reset_interval: int = 500
+    reset_interval: int = 1024
 
 # --- 如何在您的主环境配置中使用 ---
 # @configclass

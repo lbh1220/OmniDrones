@@ -44,6 +44,8 @@ class TrafficDroneManager:
         
         # Navigation parameters
         self.max_speed = config.drone.max_speed
+        self.min_speed = config.drone.min_speed
+        self.v_pref = config.drone.v_pref
         self.arrival_threshold = config.drone.arrival_threshold
         self.safety_radius = config.drone.safety_radius
         
@@ -116,7 +118,9 @@ class TrafficDroneManager:
         aircraft_types = ["drone"] * self.num_drones
         safety_radius = [self.safety_radius] * self.num_drones
         max_speed = [self.max_speed] * self.num_drones
-        self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, self.device)
+        min_speed = [self.min_speed] * self.num_drones
+        v_pref = [self.v_pref] * self.num_drones
+        self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, min_speed, v_pref, self.device)
 
         self.random_attributes(self.config.drone.random_speed, self.config.drone.random_safety_radius)
 
@@ -129,16 +133,18 @@ class TrafficDroneManager:
             self.policy = ORCA(self.config)
 
     def random_attributes(self, random_speed, random_safety_radius):
-        """随机生成EVTOL的属性"""
+        """随机生成drone的属性"""
         if random_speed:
-            # 为速度添加 ±0.1 范围内的随机扰动
-            speed_perturbation = torch.empty_like(self.state.max_speed).uniform_(-0.1, 0.1)
-            self.state.max_speed = self.state.max_speed + speed_perturbation
+            # 为v_pref添加 ±20% 范围内的随机扰动
+            speed_perturbation = torch.empty_like(self.state.v_pref).uniform_(-0.2, 0.2)
+            self.state.v_pref = self.state.v_pref * (1.0 + speed_perturbation)
+            # 确保v_pref在min_speed和max_speed之间
+            self.state.v_pref = torch.clamp(self.state.v_pref, min=self.state.min_speed, max=self.state.max_speed)
             
         if random_safety_radius:
             # 为安全半径添加向下的扰动，扰动值为当前半径的0.4
             radius_perturbation = torch.empty_like(self.state.safety_radius).uniform_(-0.2, 0.5)
-            self.state.safety_radius = self.state.safety_radius + radius_perturbation
+            self.state.safety_radius = self.state.safety_radius * (1.0 + radius_perturbation)
             self.state.safety_radius = torch.clamp(self.state.safety_radius, min=0.0, max=10.0)
 
     def _generate_random_position(self) -> torch.Tensor:
@@ -243,11 +249,11 @@ class TrafficDroneManager:
             normalized_valid_dirs = valid_directions / valid_distances.unsqueeze(-1)
             
             # Calculate speeds with gradual slowdown
-            # Get max speeds for valid moving drones
-            valid_max_speeds = self.state.max_speed[valid_movement]
+            # Get preferred speeds for valid moving drones
+            valid_v_pref = self.state.v_pref[valid_movement]
             speeds = torch.clamp(
                 torch.minimum(
-                    valid_max_speeds,
+                    valid_v_pref,
                     valid_distances * 0.5
                 ),
                 min=0.1
@@ -333,11 +339,11 @@ class TrafficDroneManager:
             normalized_valid_dirs = valid_directions / valid_distances.unsqueeze(-1)
             
             # Calculate speeds with gradual slowdown
-            # Get max speeds for valid moving drones
-            valid_max_speeds = self.state.max_speed[valid_movement]
+            # Get preferred speeds for valid moving drones
+            valid_v_pref = self.state.v_pref[valid_movement]
             speeds = torch.clamp(
                 torch.minimum(
-                    valid_max_speeds,
+                    valid_v_pref,
                     valid_distances * 0.5
                 ),
                 min=0.1
@@ -531,9 +537,14 @@ class TrafficDroneManager:
             self.reset_positions(positions_batch)
         
         self.reset_kinematics()
+        # 重置速度参数为配置值
         safety_radius = [self.safety_radius] * self.num_drones
         max_speed = [self.max_speed] * self.num_drones
+        min_speed = [self.min_speed] * self.num_drones
+        v_pref = [self.v_pref] * self.num_drones
         self.state.max_speed = torch.tensor(max_speed, device=self.device)
+        self.state.min_speed = torch.tensor(min_speed, device=self.device)
+        self.state.v_pref = torch.tensor(v_pref, device=self.device)
         self.state.safety_radius = torch.tensor(safety_radius, device=self.device)
         self.random_attributes(self.config.drone.random_speed, self.config.drone.random_safety_radius)
         # Assign new targets using internal target generator

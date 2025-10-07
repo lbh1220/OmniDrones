@@ -174,7 +174,7 @@ class EVTOLTargetGenerator:
         self.courses = []
         
         # EVTOL飞行参数
-        self.max_speed = config.evtol.max_speed
+        self.v_pref = config.evtol.v_pref
         self.turn_radius = config.evtol.turn_radius
         self.arrival_threshold = config.evtol.arrival_threshold
         self.grid_size = config.area_bounds.grid_size
@@ -230,7 +230,7 @@ class EVTOLTargetGenerator:
         self.waypoints: List[Waypoint] = []
         
         # 添加起点
-        self.waypoints.append(Waypoint(course['start'][0], course['start'][1], self.flight_height, self.max_speed))
+        self.waypoints.append(Waypoint(course['start'][0], course['start'][1], self.flight_height, self.v_pref))
         
         if len(waypoints) >= 2:
             # 使用向量夹角判断是否为关键点
@@ -249,15 +249,15 @@ class EVTOLTargetGenerator:
                     cos_angle = np.dot(v1, v2)
                     # 如果夹角足够大（余弦值小于阈值），认为是关键点
                     if cos_angle < 0.99 and cos_angle > -0.707:  # 约5.7度的阈值
-                        self.waypoints.append(Waypoint(waypoints[i][0], waypoints[i][1], self.flight_height, self.max_speed))
+                        self.waypoints.append(Waypoint(waypoints[i][0], waypoints[i][1], self.flight_height, self.v_pref))
             
             # 添加最后一个点
             last_idx = len(waypoints) - 1
-            self.waypoints.append(Waypoint(waypoints[last_idx][0], waypoints[last_idx][1], self.flight_height, self.max_speed))
+            self.waypoints.append(Waypoint(waypoints[last_idx][0], waypoints[last_idx][1], self.flight_height, self.v_pref))
         
         # 判断end是否距离最后一个点足够远
         if np.linalg.norm(np.array([course['end'][0], course['end'][1]]) - np.array([self.waypoints[-1].x, self.waypoints[-1].y])) > self.grid_size:
-            self.waypoints.append(Waypoint(course['end'][0], course['end'][1], self.flight_height, self.max_speed))
+            self.waypoints.append(Waypoint(course['end'][0], course['end'][1], self.flight_height, self.v_pref))
         
         # 生成平滑轨迹
         if len(self.waypoints) >= 2:
@@ -355,7 +355,7 @@ class EVTOLTargetGenerator:
             qw, qx, qy, qz = self.rotation_matrix_to_quaternion(R)
             
             # 计算速度
-            vel = np.array([self.max_speed, 0, 0])  # 机体坐标系中的速度
+            vel = np.array([self.v_pref, 0, 0])  # 机体坐标系中的速度
             world_vel = R @ vel  # 世界坐标系中的速度
             
             # 创建包含姿态和速度的路径点
@@ -447,7 +447,7 @@ class EVTOLTargetGenerator:
         # convert euler to R
         qw, qx, qy, qz = self.euler_to_quaternion(roll, pitch, yaw)
         R_matrix = self.quaternion_to_rotation_matrix(qw, qx, qy, qz)
-        vel = np.array([self.max_speed, 0, 0])
+        vel = np.array([self.v_pref, 0, 0])
         world_vel = R_matrix @ vel
         wp = Waypoint_ex(
             x=self.waypoints[0].x, y=self.waypoints[0].y, z=self.waypoints[0].z,
@@ -521,7 +521,7 @@ class EVTOLTargetGenerator:
         roll = 0.0
         qw, qx, qy, qz = self.euler_to_quaternion(roll, pitch, yaw)
         R_matrix = self.quaternion_to_rotation_matrix(qw, qx, qy, qz)
-        vel = np.array([self.max_speed, 0, 0])
+        vel = np.array([self.v_pref, 0, 0])
         world_vel = R_matrix @ vel
 
         if v1_norm < 1.0:
@@ -564,7 +564,7 @@ class EVTOLTargetGenerator:
         dist_arc = np.abs(turn_radius * delta_yaw)
         pitch = -np.arctan2(delta_height, dist_arc)
 
-        roll = np.arctan2(self.max_speed*self.max_speed, 9.81*turn_radius)
+        roll = np.arctan2(self.v_pref*self.v_pref, 9.81*turn_radius)
         if end_point[2] < -1.0:
             # NED frame
             roll = is_turn_left * roll
@@ -573,7 +573,7 @@ class EVTOLTargetGenerator:
             roll = - is_turn_left * roll
 
 
-        vel = np.array([self.max_speed, 0, 0])
+        vel = np.array([self.v_pref, 0, 0])
         yaw = theta_1
         qw, qx, qy, qz = self.euler_to_quaternion(roll, pitch, yaw)
         R_matrix = self.quaternion_to_rotation_matrix(qw, qx, qy, qz)

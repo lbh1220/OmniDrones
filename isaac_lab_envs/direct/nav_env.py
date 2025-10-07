@@ -132,11 +132,13 @@ class NavEnvCfg(DirectRLEnvCfg):
     safety_radius: float = 1.0
     arrival_threshold: float = 2.0
     max_speed: float = 1.0
+    min_speed: float = 0.0
+    v_pref: float = 1.0 # preferred speed
     area_bounds: AreaBoundsCfg = field(default_factory=lambda: AreaBoundsCfg(
-        xmin=-80.0,
-        xmax=80.0,
-        ymin=-80.0,
-        ymax=80.0
+        xmin=-50.0,
+        xmax=50.0,
+        ymin=-50.0,
+        ymax=50.0
     ))
     
     # action space config
@@ -367,12 +369,30 @@ class NavEnv(DirectRLEnv):
         
         # 确保速度在合理范围内 - 按模长缩放而非简单裁切
         speed_magnitude = torch.norm(self.command_vel_xy, dim=-1, keepdim=True)
-        # 如果模长超过max_speed，则按比例缩放到max_speed
+        
+        # 计算缩放因子：
+        # 1. 如果速度 > max_speed，缩放到 max_speed
+        # 2. 如果 0 < 速度 < min_speed，放大到 min_speed
+        # 3. 如果速度接近0（< 1e-3），保持不变（允许停止）
+        eps = 1e-3  # 接近零的阈值
+        scale_factor = torch.ones_like(speed_magnitude)
+        
+        # 速度过大：缩放到max_speed
+        too_fast = speed_magnitude > self.cfg.max_speed
         scale_factor = torch.where(
-            speed_magnitude > self.cfg.max_speed,
+            too_fast,
             self.cfg.max_speed / speed_magnitude,
-            torch.ones_like(speed_magnitude)
+            scale_factor
         )
+        
+        # 速度过小但不为零：放大到min_speed
+        too_slow = (speed_magnitude > eps) & (speed_magnitude < self.cfg.min_speed)
+        scale_factor = torch.where(
+            too_slow,
+            self.cfg.min_speed / speed_magnitude,
+            scale_factor
+        )
+        
         self.command_vel_xy = self.command_vel_xy * scale_factor
         self.command_vel_xy = self.command_vel_xy.unsqueeze(1)
         self.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
@@ -382,7 +402,7 @@ class NavEnv(DirectRLEnv):
         if self.cfg.action_space_type == "beta":
             # Beta分布输出[0,1]，需要映射到[-1,1]然后乘以max_speed
             actions_scaled = (actions * 2.0) - 1.0  # [0,1] -> [-1,1]
-            command_vel_xy = actions_scaled * self.cfg.max_speed
+            command_vel_xy = actions_scaled * self.cfg.max_speed 
         else:
             # 高斯分布输出[-1,1]，直接乘以max_speed
             command_vel_xy = actions * self.cfg.max_speed
@@ -393,14 +413,15 @@ class NavEnv(DirectRLEnv):
         """处理速度大小+方向模式的动作"""
         if self.cfg.action_space_type == "beta":
             # Beta分布输出[0,1]
-            # 第一个维度：速度大小，直接乘以max_speed
-            speed = actions[:, 0] * self.cfg.max_speed
+            # 第一个维度：速度大小，映射到[min_speed, max_speed]
+            speed = actions[:, 0] * (self.cfg.max_speed - self.cfg.min_speed) + self.cfg.min_speed
             # 第二个维度：方向，映射到[0, 2π]
             direction = actions[:, 1] * 2.0 * math.pi
         else:
             # 高斯分布输出[-1,1]
-            # 第一个维度：速度大小，从[-1,1]映射到[0,1]再乘以max_speed
-            speed = ((actions[:, 0] + 1.0) / 2.0) * self.cfg.max_speed
+            # 第一个维度：速度大小，从[-1,1]映射到[0,1]再映射到[min_speed, max_speed]
+            normalized_speed = (actions[:, 0] + 1.0) / 2.0  # [-1,1] -> [0,1]
+            speed = normalized_speed * (self.cfg.max_speed - self.cfg.min_speed) + self.cfg.min_speed
             # 第二个维度：方向，从[-1,1]映射到[0, 2π]
             direction = (actions[:, 1] + 1.0) / 2.0 * 2.0 * math.pi
         

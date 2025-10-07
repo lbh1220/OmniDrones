@@ -25,7 +25,6 @@ class PolicyConfig:
     """Simple config class for model-based policies"""
     def __init__(self, **kwargs):
         # Default values
-        self.max_speed = 5.0
         self.arrival_threshold = 1.0
         self.repulsion_gain = 2.0
         self.attraction_gain = 1.0
@@ -76,16 +75,15 @@ def main():
     # Environment parameters
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
-    parser.add_argument("--drones_num", type=int, default=10, help="Number of traffic drones")
+    parser.add_argument("--drones_num", type=int, default=0, help="Number of traffic drones")
     parser.add_argument("--evtols_num", type=int, default=1, help="Number of traffic evtols")
     
     # Policy parameters
     parser.add_argument("--policy_type", type=str, 
                        choices=["pure_pursuit", "orca"],
-                       default="orca", help="Policy type to test")
+                       default="pure_pursuit", help="Policy type to test")
     
     # Policy hyperparameters
-    parser.add_argument("--max_speed", type=float, default=5.0, help="Maximum speed")
     parser.add_argument("--repulsion_gain", type=float, default=2.0, help="Repulsion gain for potential field")
     parser.add_argument("--attraction_gain", type=float, default=1.0, help="Attraction gain for potential field")
     parser.add_argument("--obstacle_threshold", type=float, default=15.0, help="Obstacle detection threshold")
@@ -95,11 +93,13 @@ def main():
     parser.add_argument("--time_horizon", type=float, default=11.0, help="ORCA time horizon")
     parser.add_argument("--neighbor_dist", type=float, default=100.0, help="ORCA neighbor distance")
     parser.add_argument("--max_neighbors", type=int, default=10, help="ORCA max neighbors")
+
+    parser.add_argument("--seed", type=int, default=425, help="Seed")
     
     # Output parameters
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory for results")
     parser.add_argument("--video", action="store_true", default=True, help="Record video")
-    parser.add_argument("--video_interval", type=int, default=1000, help="Video recording interval")
+    parser.add_argument("--video_interval", type=int, default=10000, help="Video recording interval")
     parser.add_argument("--video_length", type=int, default=500, help="Video length")
     
     # Isaac Lab parameters
@@ -126,12 +126,15 @@ def main():
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
+
+    cfg.traffic_sim.evtol.safety_radius = 8.0
+
     cfg.use_global_path = True
     cfg.debug_vis = True
     cfg.action_space_type = "gaussian"
     cfg.action_mode = "velocity_components"
     cfg.predict_steps = 5
-    
+    cfg.seed = args.seed
     # Setup viewer
     from omni.isaac.lab.envs.common import ViewerCfg
     cfg.viewer = ViewerCfg(
@@ -146,6 +149,8 @@ def main():
         args.output_dir = f"runs/model_based_test/{args.policy_type}_{timestamp}"
     os.makedirs(args.output_dir, exist_ok=True)
     
+    from omni.isaac.lab.utils.io import dump_yaml
+    dump_yaml(os.path.join(args.output_dir, "env.yaml"), cfg)
     # Create test environment
     print(f"Creating test environment with {args.policy_type} policy...")
     base_env = create_test_env(cfg, args)
@@ -168,7 +173,6 @@ def main():
     
     # Create policy configuration
     policy_config = PolicyConfig(
-        max_speed=args.max_speed,
         repulsion_gain=args.repulsion_gain,
         attraction_gain=args.attraction_gain,
         obstacle_threshold=args.obstacle_threshold,
@@ -189,7 +193,8 @@ def main():
     logger.info(f"Environment: {args.drones_num} drones, {args.evtols_num} evtols")
     
     # Set random seed
-    env.seed(seed=425)
+    env.seed(seed=args.seed)
+    
     
     # Run evaluation
     results = evaluate_policy(policy, env, args.num_envs, args.num_episodes, logger)

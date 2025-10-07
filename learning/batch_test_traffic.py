@@ -106,7 +106,7 @@ def main():
     parser = argparse.ArgumentParser(description="Batch test multiple trained SB3 models")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/ablation/u10e1/fu-2.0fe-4.0_1006_064358",
+                        default="runs/traffic/ablation/u10e1/fu-2.0fe-2.0_1005_201144",
                        help="Path to the trained model directory")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
     
@@ -183,7 +183,7 @@ def main():
 
     # 从保存的配置中加载关键参数
     if os.path.exists(cfg_yaml):
-        loaded_keys = ["action_space_type", "action_space_num_per_dim", "action_mode"]
+        loaded_keys = ["action_space_type", "action_space_num_per_dim", "action_mode", "predict_steps"]
         for key in loaded_keys:
             if hasattr(yaml_cfg, key):
                 setattr(cfg, key, getattr(yaml_cfg, key))

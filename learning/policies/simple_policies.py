@@ -18,7 +18,9 @@ class PurePursuitPolicy(ModelBasedPolicy):
     
     def __init__(self, policy_cfg, env_cfg, name: str = "PurePursuit"):
         super().__init__(policy_cfg, env_cfg, name)
-        self.max_speed = getattr(policy_cfg, 'max_speed', 5.0)
+        self.max_speed = getattr(env_cfg, 'max_speed', 5.0)
+        self.min_speed = getattr(env_cfg, 'min_speed', 0.0)
+        self.v_pref = getattr(env_cfg, 'v_pref', 1.0)
 
     def predict(self, observation: Dict[str, torch.Tensor], state: Optional[Any] = None, episode_start: Optional[Any] = None,
                 deterministic: bool = True) -> tuple[torch.Tensor, Optional[Any]]:
@@ -50,13 +52,27 @@ class PurePursuitPolicy(ModelBasedPolicy):
         
         # Calculate normalized direction toward local goal
         pursuit_distance = torch.norm(local_goal_relative_pos, dim=1, keepdim=True)
-        desired_velocity = local_goal_relative_pos / (pursuit_distance + 1e-8)  # [num_envs, 2]
-        
+        desired_velocity = local_goal_relative_pos / (pursuit_distance + 1e-8) * self.v_pref # [num_envs, 2]
+
+        desired_velocity = desired_velocity / self.max_speed
+
         return desired_velocity, None
 
 
 class ORCAPolicy(ModelBasedPolicy):
-    """ORCA (Optimal Reciprocal Collision Avoidance) policy with obstacle avoidance"""
+    """
+    ORCA (Optimal Reciprocal Collision Avoidance) policy with obstacle avoidance
+        RVOSimulator(float timeStep, float neighborDist, size_t maxNeighbors,
+                     float timeHorizon, float timeHorizonObst, float radius,
+                     float maxSpeed, const Vector2 & velocity)
+        RVOSimulator set the default param for all agents, but could be set for each agent using addAgent()
+        size_t addAgent(const Vector2 & position)
+        size_t addAgent(const Vector2 & position, float neighborDist,
+                        size_t maxNeighbors, float timeHorizon,
+                        float timeHorizonObst, float radius, float maxSpeed,
+                        const Vector2 & velocity)
+
+    """
     
     def __init__(self, policy_cfg, env_cfg, name: str = "ORCA"):
         super().__init__(policy_cfg, env_cfg, name)
@@ -65,7 +81,11 @@ class ORCAPolicy(ModelBasedPolicy):
             raise ImportError("rvo2 is required for ORCAPolicy. Please install it using: pip install rvo2")
         
         # ORCA parameters
+        
         self.time_step = getattr(env_cfg, 'time_step', 0.5)
+        self.max_speed = getattr(env_cfg, 'max_speed', 5.0)
+        self.min_speed = getattr(env_cfg, 'min_speed', 0.0)
+        self.v_pref = getattr(env_cfg, 'v_pref', 1.0)
         self.predict_timestep = getattr(env_cfg, 'pred_timestep', 2.0)
         self.neighbor_dist = getattr(policy_cfg, 'neighbor_dist', 100.0)
         self.max_neighbors = getattr(policy_cfg, 'max_neighbors', 10)
@@ -123,7 +143,7 @@ class ORCAPolicy(ModelBasedPolicy):
                 self.time_horizon,
                 self.time_horizon_obst,
                 robot_radius_np[env_idx] + self.safety_space,
-                robot_v_pref_np[env_idx]
+                self.max_speed
             )
             
             # Add ego agent
@@ -137,11 +157,9 @@ class ORCAPolicy(ModelBasedPolicy):
                 self.time_horizon,
                 self.time_horizon_obst,
                 robot_radius_np[env_idx] + self.safety_space,
-                robot_v_pref_np[env_idx],
+                self.max_speed,
                 ego_vel
             )
-            
-            # Calculate preferred velocity (toward local goal)
             goal_distance = np.linalg.norm(local_goal_np[env_idx]) + 1e-8
             pref_vel = (local_goal_np[env_idx] / goal_distance) * robot_v_pref_np[env_idx]
             sim.setAgentPrefVelocity(agent_id, tuple(pref_vel))
@@ -191,8 +209,7 @@ class ORCAPolicy(ModelBasedPolicy):
             computed_vel = sim.getAgentVelocity(agent_id)
             
             # Normalize to unit direction (environment will scale by max_speed)
-            vel_magnitude = robot_v_pref_np[env_idx] + 1e-8
-            actions[env_idx] = np.array(computed_vel) / vel_magnitude
+            actions[env_idx] = np.array(computed_vel) / self.max_speed
         
         # Convert back to torch tensor
         action = torch.from_numpy(actions).to(self.device)

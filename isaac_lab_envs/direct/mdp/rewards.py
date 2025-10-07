@@ -108,6 +108,8 @@ class TrafficRewardCalculator:
         self.action_penalty = cfg.rew_action_penalty  # 动作惩罚
         self.action_penalty = -abs(cfg.rew_action_penalty)
 
+        # self.speed_penalty = cfg.rew_speed_penalty
+
 
         # self.future_penalty = cfg.rew_evtol_future_penalty  # 未来碰撞惩罚
         self.discomfort_dist = 0.2  # 不适距离
