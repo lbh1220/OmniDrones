@@ -366,9 +366,9 @@ class TrafficEVTOLManager:
         self.state.target_positions[evtol_idx] = torch.tensor([last_smooth_wp.x, last_smooth_wp.y, last_smooth_wp.z], device=self.device)
         
         # 更新state中的waypoints（用于兼容性）
-        waypoints = []
-        for wp in smooth_waypoints:
-            waypoints.append(Waypoint(wp.x, wp.y, wp.z, self.max_speed))
+        waypoints = self.all_courses[new_course_idx]
+        # for wp in smooth_waypoints:
+        #     waypoints.append(Waypoint(wp.x, wp.y, wp.z, self.max_speed))
         self.state.set_waypoints_for_aircraft(evtol_idx, waypoints)
         
         # self.logger.debug(f"Reassigned course {new_course_idx} for EVTOL {evtol_idx}")
@@ -416,7 +416,9 @@ class TrafficEVTOLManager:
         """重置所有EVTOL"""
         if not self.is_initialized:
             return
-        
+
+
+
         # 初始化状态管理器
         names = [f"traffic_evtol_{i}" for i in range(self.num_evtols)]
         aircraft_types = ["evtol"] * self.num_evtols
@@ -425,10 +427,15 @@ class TrafficEVTOLManager:
         self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, self.device)
 
         self.random_attributes(self.config.evtol.random_speed, self.config.evtol.random_safety_radius)
-        
+
+
+        # 重新生成course
+        self._pregenerate_all_courses(self.config.evtol.course_num)
         # 为每个EVTOL在state中设置对应的平滑后轨迹
         for i in range(self.num_evtols):
-            course_idx = self.evtol_course_assignments[i]
+            course_idx = torch.randint(0, len(self.all_courses), (1,), device=self.device).item()
+            
+            self.evtol_course_assignments[i] = course_idx
             course_waypoints = self.all_courses[course_idx]
             
             # 转换smooth waypoints为新格式
