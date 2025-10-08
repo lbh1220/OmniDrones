@@ -119,6 +119,7 @@ class SucessRateCallback(BaseCallback):
         self.episode_rewards = deque(maxlen=queue_size)
         self.episode_cross_track_errors = deque(maxlen=queue_size)
         self.episode_accelerations = deque(maxlen=queue_size)
+        self.episode_near_collision_ratio = deque(maxlen=queue_size)
         
     def _checkpoint_path(self, checkpoint_type: str = "", extension: str = "") -> str:
         """
@@ -150,6 +151,8 @@ class SucessRateCallback(BaseCallback):
                 self.logger.record("val/timeout_rate", timeout_rate)
                 self.logger.record("val/mean_recent_reward", mean_recent_reward)
                 self.logger.record("val/mean_recent_cross_track_error", mean_recent_cross_track_error)
+                mean_recent_near_collision_ratio = np.mean(self.episode_near_collision_ratio)
+                self.logger.record("val/mean_recent_near_collision_ratio", mean_recent_near_collision_ratio)
                 if success_rate >= self.best_success_rate:
                     self.best_success_rate = success_rate
                     model_path = self._checkpoint_path(extension="zip")
@@ -159,6 +162,7 @@ class SucessRateCallback(BaseCallback):
                         # Save the VecNormalize statistics
                         vec_normalize_path = self._checkpoint_path("_vecnormalize", extension="pkl")
                         self.model.get_vec_normalize_env().save(vec_normalize_path)
+                        
                 if len(self.episode_accelerations) > 0:
                     mean_recent_acceleration = np.mean(self.episode_accelerations)
                     self.logger.record("val/mean_recent_acceleration", mean_recent_acceleration)
@@ -172,6 +176,7 @@ class SucessRateCallback(BaseCallback):
                 self.logger.record("val/mean_recent_reward", 0)
                 self.logger.record("val/mean_recent_cross_track_error", 0)
                 self.logger.record("val/mean_recent_acceleration", 0)
+                self.logger.record("val/mean_recent_near_collision_ratio", 0)
     def _on_step(self) -> bool:
         # 获取当前环境的reward和info
         for i, done in enumerate(self.locals['dones']):
@@ -191,6 +196,10 @@ class SucessRateCallback(BaseCallback):
                     self.episode_accelerations.append(self.locals['infos'][i]['episode_acceleration'].item())
                 else:
                     self.episode_accelerations.append(0)
+                if 'episode_near_collision_ratio' in self.locals['infos'][i]:
+                    self.episode_near_collision_ratio.append(self.locals['infos'][i]['episode_near_collision_ratio'].item())
+                else:
+                    self.episode_near_collision_ratio.append(0)
                 info = self.locals['infos'][i]
                 if 'episode' in info:
                     self.episode_rewards.append(info['episode']['r'])

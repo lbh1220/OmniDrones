@@ -151,6 +151,12 @@ class TrafficEnv(NavEnv):
         # 父类初始化 - 这会调用 _setup_scene()
         super().__init__(cfg, render_mode, **kwargs)
         
+        # 初始化 near-collision 相关统计
+        # - 累积：extras["near_collision_ratio_avg"] -> 当前 episode 的近似碰撞比例（布尔的平均值）
+        # - 终局：extras["episode_near_collision_ratio"] -> episode 结束时的近似碰撞比例
+        self.extras["near_collision_ratio_avg"] = torch.zeros(self.num_envs, device=self.device)
+        self.extras["episode_near_collision_ratio"] = torch.zeros(self.num_envs, device=self.device)
+        
         # 初始化traffic命名空间
         self.state.init_traffic_namespace(cfg.predict_steps, cfg.pred_timestep)
         self.traffic_sim.reset()
@@ -210,6 +216,8 @@ class TrafficEnv(NavEnv):
         super()._post_physics_step(env_ids)
 
         self._update_traffic_obs_processor()
+        # 更新近似碰撞的统计（基于最新的 traffic 状态与自车位置）
+        self._update_near_collision_ratio_avg()
         
     def _reset_idx(self, env_ids: torch.Tensor | None = None):
         """重置指定环境的状态"""
@@ -218,6 +226,12 @@ class TrafficEnv(NavEnv):
         super()._reset_idx(env_ids)
         if self.reward_calculator is not None:
             self.reward_calculator.reset_potential(self.state, env_ids)
+
+        # 重置 near-collision 的累积平均值，并将当前 episode 的比例写入 episode 指标
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        self.extras["episode_near_collision_ratio"][env_ids] = self.extras["near_collision_ratio_avg"][env_ids].clone()
+        self.extras["near_collision_ratio_avg"][env_ids] = 0.0
 
     def _configure_gym_env_spaces(self):
         """Configure the action and observation spaces for the Gym environment."""
@@ -403,6 +417,61 @@ class TrafficEnv(NavEnv):
             traffic_positions, traffic_velocities, traffic_types, traffic_safety_radius
         )
         self.state.traffic.traffic_future_traj = self.obs_processor.traffic_future_traj.clone()
+
+    def _update_near_collision_ratio_avg(self):
+        """
+        更新近似碰撞(near-collision)的逐步统计与当前 episode 的比例。
+        判定规则：基于自车与所有 traffic 的距离以及类型相关阈值，
+        当任一 traffic 距离小于对应阈值时，视为 near-collision。
+        
+        说明：阈值的设定请在 _get_near_collision_thresholds 中进行定制。
+        这里实现距离计算与比例累计逻辑（布尔的递增平均）。
+        """
+        # 自车位置: [num_envs, 1, 3]
+        ego_positions = self.state.ego_drone.positions  # [E, 1, 3]
+        # traffic 数据: positions [T, 3], types [T], safety_radius [T]
+        traffic_positions = self.state.traffic.traffic_positions  # [T, 3]
+        traffic_types = self.state.traffic.traffic_types  # [T]
+        traffic_safety_radius = self.state.traffic.traffic_safety_radius  # [T]
+
+        if traffic_positions is None or traffic_positions.numel() == 0:
+            # 无 traffic 时，近似碰撞为 False，且不改变平均值
+            # self.extras["near_collision"] = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            return
+
+        # 计算 pairwise 距离: [E, T]
+        # 广播: (E, 1, 3) - (1, T, 3) -> (E, T, 3)
+        deltas = ego_positions.squeeze(1).unsqueeze(1) - traffic_positions.unsqueeze(0)
+        distances = torch.norm(deltas, dim=-1)  # [E, T]
+
+        # 获取每个 traffic 的 near-collision 阈值: [T]
+        thresholds = self._get_near_collision_thresholds(traffic_types, traffic_safety_radius)  # [T]
+        # 比较: [E, T]
+        near_matrix = distances < thresholds.unsqueeze(0)
+        near_any = near_matrix.any(dim=1)  # [E]
+
+        # 递增平均：将布尔值视作 0/1
+        current_step = self.episode_length_buf + 1  # [E]
+        old_avg = self.extras["near_collision_ratio_avg"]  # [E]
+        new_avg = (old_avg * (current_step - 1) + near_any.float()) / current_step
+        self.extras["near_collision_ratio_avg"] = new_avg
+
+    def _get_near_collision_thresholds(self, traffic_types: torch.Tensor, traffic_safety_radius: torch.Tensor) -> torch.Tensor:
+        """
+        返回每个 traffic 的 near-collision 判定阈值（形状 [T]）。
+        
+        占位实现：当前直接使用各自的安全半径作为阈值。
+        后续可根据 traffic_types（例如 drone / eVTOL）定制不同的倍数或固定值，
+        例如：
+            - drone: threshold = k1 * safety_radius
+            - eVTOL: threshold = k2 * safety_radius
+        也可以引入绝对距离阈值或二维/三维不同的度量方式。
+        """
+        # TODO(liang): 按类型定制阈值逻辑。当前占位为 safety_radius 本身。
+
+        thresholds = traffic_safety_radius + self.cfg.safety_radius
+        thresholds = thresholds*2.0
+        return thresholds
 
 
 class TrafficEnvWithCurriculum(TrafficEnv):

@@ -108,6 +108,9 @@ def main():
 
     parser.add_argument("--use_rnn", action="store_true", default=True, help="Use RNN-based recurrent policy")
 
+    # use_orca
+    parser.add_argument("--use_orca", action="store_true", default=False, help="Use ORCA")
+
     # 添加评估相关参数
     parser.add_argument("--eval_after_training", action="store_true", default=True, help="Evaluate models after training")
 
@@ -164,6 +167,8 @@ def main():
     if args.video:
         cfg.debug_vis = True
 
+
+    cfg.orca.enable = args.use_orca
     if args.course_num > 0:
         from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
         course_list = [
