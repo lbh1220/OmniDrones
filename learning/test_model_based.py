@@ -17,8 +17,8 @@ from stable_baselines3.common.logger import configure
 import gymnasium as gym
 
 # Policy imports
-from learning.policies.base_policy import ModelBasedPolicy
-from learning.policies.simple_policies import PurePursuitPolicy, ORCAPolicy
+from isaac_lab_envs.direct.policies.base_policy import ModelBasedPolicy
+from isaac_lab_envs.direct.policies.simple_policies import PurePursuitPolicy, ORCAPolicy
 
 
 class PolicyConfig:
@@ -75,13 +75,13 @@ def main():
     # Environment parameters
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
-    parser.add_argument("--drones_num", type=int, default=0, help="Number of traffic drones")
+    parser.add_argument("--drones_num", type=int, default=10, help="Number of traffic drones")
     parser.add_argument("--evtols_num", type=int, default=1, help="Number of traffic evtols")
     
     # Policy parameters
     parser.add_argument("--policy_type", type=str, 
                        choices=["pure_pursuit", "orca"],
-                       default="pure_pursuit", help="Policy type to test")
+                       default="orca", help="Policy type to test")
     
     # Policy hyperparameters
     parser.add_argument("--repulsion_gain", type=float, default=2.0, help="Repulsion gain for potential field")
@@ -126,8 +126,8 @@ def main():
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
-
-    cfg.traffic_sim.evtol.safety_radius = 8.0
+    cfg.orca.enable = True
+    # cfg.traffic_sim.evtol.safety_radius = 8.0
 
     cfg.use_global_path = True
     cfg.debug_vis = True

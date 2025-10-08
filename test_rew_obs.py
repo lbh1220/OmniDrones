@@ -78,6 +78,7 @@ def check_collision(
 from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
 from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
 from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
+from isaac_lab_envs.direct.mdp.state import EnvState
 
 # 设置device
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -85,31 +86,63 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # 初始化配置和处理器
 cfg = TrafficEnvCfg()
 cfg.rew_drone_future_penalty = -2.0
-cfg.rew_evtol_future_penalty = -3.0
+cfg.rew_evtol_future_penalty = -2.0
+cfg.rew_evtols_decay_factor = 0.95
+
 obs_processor = TrafficObservationProcessor(cfg, device)
 reward_calculator = TrafficRewardCalculator(cfg, device)
 
 # 确保初始化势能缓存为None（在_compute_potential_reward中会自动初始化）
 reward_calculator.previous_potential = None
 
+# 创建并初始化环境状态对象
+num_envs = 2
+state = EnvState(device=device, num_envs=num_envs)
+state.initialize_basic_tensors(state_dim=13)
+state.init_traffic_namespace(predict_steps=cfg.predict_steps, pred_timestep=cfg.pred_timestep)
+
 # 定义traffic飞机数据
 traffic_positions = torch.tensor([[0.0, 0.0, 20.0], [15, 15, 20.0], [22, 15, 20.0]], 
                                 device=device, dtype=torch.float32)
-traffic_velocities = torch.tensor([[-1.414, -1.414, 0.0], [0.0, 1.0, 0.0], [0, 1, 0.0]], 
+traffic_velocities = torch.tensor([[-2, -0.0, 0.0], [0.0, 1.0, 0.0], [0, 1, 0.0]], 
                                  device=device, dtype=torch.float32)
-traffic_types = torch.tensor([0, 1, 0], device=device)  # 1=drone, 0=evtol
+traffic_types = torch.tensor([0, 1, 0], device=device)  # 0=evtol, 1=drone
 traffic_safety_radius = torch.tensor([10.0, 1.0, 1.0], device=device, dtype=torch.float32)
+
+# 定义ego drone状态数据 [num_envs, 1, 13]
 drone_state = torch.tensor([[[0.0, 0.0, 20.0, 1.0, 0.0, 0.0, 0.0, 0.4, 0.5, 0.0, 0.0, 0.0, 0.0]],
                             [[10.0, 0.0, 20.0, 1.0, 0.0, 0.0, 0.0, 0.4, 0.5, 0.0, 0.0, 0.0, 0.0]]], 
                             device=device, dtype=torch.float32)
 target_pos = torch.tensor([[[10.0, 10.0, 20.0]],
                            [[10.0, 10.0, 20.0]]], device=device, dtype=torch.float32)
 
-# 预计算轨迹
+# 填充state对象
+state.update_ego_drone_state(drone_state)
+state.navigation.target_positions = target_pos
+state.navigation.start_positions = drone_state[:, :, :3].clone()
+
+# 更新traffic数据到state
+state.traffic.traffic_positions = traffic_positions
+state.traffic.traffic_velocities = traffic_velocities
+state.traffic.traffic_types = traffic_types
+state.traffic.traffic_safety_radius = traffic_safety_radius
+
+# 预计算轨迹（同时更新state和obs_processor）
 obs_processor.predict_traffic_trajectory(traffic_positions, traffic_velocities, traffic_types, traffic_safety_radius)
+state.traffic.traffic_future_traj = obs_processor.traffic_future_traj.clone()
+
+# 更新导航距离
+state.update_navigation_distances()
 
 print("Traffic future trajectory shape:", obs_processor.traffic_future_traj.shape)
 print("Traffic future trajectory:\n", obs_processor.traffic_future_traj)
+
+print("\n" + "="*60)
+print("ENV STATE SUMMARY")
+print("="*60)
+state_summary = state.get_state_summary()
+for key, value in state_summary.items():
+    print(f"{key}: {value}")
 
 # 计算并打印观测数据
 print("\n" + "="*60)
@@ -117,9 +150,13 @@ print("OBSERVATION COMPUTATION CHECK")
 print("="*60)
 print(f"Drone state shape: {drone_state.shape}")
 print(f"Target pos shape: {target_pos.shape}")
+print(f"State ego drone positions shape: {state.ego_drone.positions.shape}")
+print(f"State navigation target positions shape: {state.navigation.target_positions.shape}")
+print(f"State traffic positions shape: {state.traffic.traffic_positions.shape}")
+print(f"State traffic future traj shape: {state.traffic.traffic_future_traj.shape}")
 
-# 计算观测
-observations = obs_processor.process_observation(drone_state, target_pos)
+# 计算观测（使用state对象）
+observations = obs_processor.process_observation(state)
 
 print(f"Observation keys: {list(observations.keys())}")
 print(f"Policy observation keys: {list(observations['policy'].keys())}")
@@ -166,6 +203,22 @@ print(f"Traffic positions shape: {traffic_positions.shape}")
 print(f"Traffic velocities shape: {traffic_velocities.shape}")
 print(f"Traffic types: {traffic_types.cpu().numpy()}")
 print(f"Traffic safety radius: {traffic_safety_radius.cpu().numpy()}")
+
+print("="*60)
+
+# 测试奖励计算
+print("\n" + "="*60)
+print("REWARD COMPUTATION CHECK")
+print("="*60)
+
+# 设置碰撞和到达目标的mask（用于测试）
+state.collision.collision_mask = torch.tensor([False, False], device=device)
+state.navigation.reached_target_mask = torch.tensor([False, False], device=device)
+
+# 计算奖励
+rewards = reward_calculator.compute_reward(state)
+print(f"Rewards shape: {rewards.shape}")
+print(f"Rewards: {rewards}")
 
 print("="*60)
 
@@ -242,23 +295,23 @@ def visualize_traffic_and_penalty():
     num_points = grid_points.shape[0]
     
     # 构造drone_state [num_points, 1, 13]
-    drone_state = torch.zeros(num_points, 1, 13, device=device, dtype=torch.float32)
-    drone_state[:, 0, :3] = grid_points  # 位置
-    drone_state[:, 0, 3:7] = torch.tensor([1., 0., 0., 0.], device=device)  # 四元数
-    drone_state[:, 0, 7:10] = 0.0  # 速度为0
+    grid_drone_state = torch.zeros(num_points, 1, 13, device=device, dtype=torch.float32)
+    grid_drone_state[:, 0, :3] = grid_points  # 位置
+    grid_drone_state[:, 0, 3:7] = torch.tensor([1., 0., 0., 0.], device=device)  # 四元数
+    grid_drone_state[:, 0, 7:10] = 0.0  # 速度为0
     
     # 构造target_pos（这里不影响future penalty计算，可以随意设置）
-    target_pos = torch.zeros(num_points, 1, 3, device=device, dtype=torch.float32)
-    target_pos[:, 0, :] = grid_points + 5.0  # 目标位置
+    grid_target_pos = torch.zeros(num_points, 1, 3, device=device, dtype=torch.float32)
+    grid_target_pos[:, 0, :] = grid_points + 5.0  # 目标位置
     
-    # 计算future collision penalty
+    # 计算future collision penalty（使用直接调用，因为这是批量评估）
     print("Computing future collision penalties...")
     with torch.no_grad():
         penalties = reward_calculator._compute_future_collision_penalty_refactored(
-            drone_state,
-            obs_processor.traffic_future_traj,
-            traffic_safety_radius,
-            traffic_types
+            grid_drone_state,
+            state.traffic.traffic_future_traj,
+            state.traffic.traffic_safety_radius,
+            state.traffic.traffic_types
         )
     
     # 将结果转换为numpy并reshape

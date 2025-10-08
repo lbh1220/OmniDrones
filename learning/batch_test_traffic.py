@@ -106,7 +106,7 @@ def main():
     parser = argparse.ArgumentParser(description="Batch test multiple trained SB3 models")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/ablation/u10e1/fu-2.0fe-2.0_1005_201144",
+                        default="runs/traffic/ablation/u10e1/fu-2.0fe-0.0_1005_093738",
                        help="Path to the trained model directory")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
     
@@ -149,7 +149,7 @@ def main():
         # "SR_40000000_steps.zip",
     ]
     checkpoint_dir = os.path.join(args.model_dir, 'checkpoints')
-    checkpoint_list = get_latest_checkpoint_models(checkpoint_dir, num_models=3)
+    checkpoint_list = get_latest_checkpoint_models(checkpoint_dir, num_models=0)
     for checkpoint in checkpoint_list:
         # checkpoint is runs/..../checkpoints/*.zip, should remove runs/..../checkpoints/
         checkpoint = checkpoint.replace(args.model_dir + '/checkpoints/', '')
@@ -193,6 +193,8 @@ def main():
     cfg.traffic_sim.num_evtols = args.evtols_num
     cfg.use_global_path = args.use_global_path
     cfg.debug_vis = True
+
+    cfg.orca.enable = True
 
     algo_args.action_space_type = cfg.action_space_type
     algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) + 1

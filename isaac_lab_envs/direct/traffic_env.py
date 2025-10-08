@@ -50,12 +50,21 @@ from tensordict.tensordict import TensorDict
 from torchrl.data import CompositeSpec, UnboundedContinuousTensorSpec
 
 from isaac_lab_envs.direct.nav_env import NavEnvCfg, NavEnv
-from omni_drones.traffic import TrafficSimulator, TrafficCfg, OrcaCfg, TrafficEvtolCfg, TrafficDroneCfg, AreaBoundsCfg
+from omni_drones.traffic import TrafficSimulator, TrafficCfg, TrafficEvtolCfg, TrafficDroneCfg, AreaBoundsCfg
+from omni_drones.traffic.cfg.config import OrcaCfg
 
 ##
 # Pre-defined configs
 ##
 from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
+
+# Import ORCA policy for collision avoidance
+try:
+    from isaac_lab_envs.direct.policies.simple_policies import ORCAPolicy
+    ORCA_AVAILABLE = True
+except ImportError:
+    ORCA_AVAILABLE = False
+    print("Warning: ORCA policy not available. Install rvo2 for ORCA support.")
 
 @configclass
 class TrafficCurriculumCfg:
@@ -97,6 +106,9 @@ class TrafficEnvCfg(NavEnvCfg):
     observation_radius: float = 100.0
     observation_norm_scale: float = 10.0
 
+    # ORCA collision avoidance config
+    orca: OrcaCfg = field(default_factory=lambda: OrcaCfg(enable=False))
+
     # reward config
     rew_success = 15.0
     rew_collision = -16.0
@@ -126,6 +138,15 @@ class TrafficEnv(NavEnv):
     def __init__(self, cfg: TrafficEnvCfg, render_mode: str | None = None, **kwargs):
         # 保存配置参数（在父类初始化之前）
         self.traffic_sim = None
+        
+        # 初始化ORCA policy（如果启用）
+        self.orca_policy = None
+        if cfg.orca.enable and ORCA_AVAILABLE:
+            # 直接使用配置中的ORCA设置
+            self.orca_policy = ORCAPolicy(cfg.orca, cfg, name="TrafficORCA")
+            print(f"ORCA collision avoidance enabled with safety_space={cfg.orca.safety_space}")
+        elif cfg.orca.enable and not ORCA_AVAILABLE:
+            print("Warning: ORCA requested but not available. Proceeding without ORCA.")
     
         # 父类初始化 - 这会调用 _setup_scene()
         super().__init__(cfg, render_mode, **kwargs)
@@ -168,7 +189,15 @@ class TrafficEnv(NavEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         dt_for_evtol = self.cfg.sim.dt * self.cfg.decimation
         self.traffic_sim._pre_physics_step(dt=dt_for_evtol)
+        
+        # 调用父类的_pre_physics_step，这会生成velocity_commands
         super()._pre_physics_step(actions)
+        
+        # 如果启用ORCA，则对velocity_commands进行修正
+        if self.orca_policy is not None:
+            corrected_velocity = self.orca_policy.compute_corrected_velocity(self.state)
+            self.state.navigation.velocity_commands = corrected_velocity
+            self.command_vel_xy[:, :, :2] = corrected_velocity[:, :, :2]
 
     def _apply_action(self):
         """Actions are applied in _pre_physics_step."""
