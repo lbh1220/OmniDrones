@@ -95,6 +95,8 @@ def main():
     parser.add_argument("--norm_reward", action="store_true", default=True, help="Reward normalize")
     parser.add_argument("--norm_obs", action="store_true", default=False, help="Reward normalize")
 
+    parser.add_argument("--use_angle_distance_obs", action="store_true", default=False, help="Use angle distance obs")
+
     parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
     parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
@@ -169,6 +171,8 @@ def main():
 
 
     cfg.orca.enable = args.use_orca
+    cfg.total_timesteps = args.total_timesteps
+
     if args.course_num > 0:
         from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
         course_list = [
@@ -215,8 +219,7 @@ def main():
     
     cfg.predict_steps = args.predict_steps
 
-    algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) 
-    algo_args.human_human_edge_input_size = algo_args.human_human_edge_input_size + 1
+    cfg.use_angle_distance_obs = args.use_angle_distance_obs
 
     cfg.action_space_type = args.action_space_type
     cfg.action_mode = args.action_mode
@@ -324,6 +327,8 @@ def main():
 
     # change robot_node_input_size
     algo_args.robot_node_input_size = env.observation_space['robot_node'].shape[1] + env.observation_space['temporal_edges'].shape[1]
+
+    algo_args.human_human_edge_input_size = env.observation_space['spatial_edges'].shape[1] 
     policy_kwargs = dict(
         net_arch=dict(pi=[64, 64], vf=[64, 64]),
         ortho_init=True,

@@ -140,6 +140,8 @@ class TrafficObservationProcessor:
         self.predict_steps = cfg.predict_steps
         self.pred_timestep = cfg.pred_timestep
         self.observation_norm_scale = cfg.observation_norm_scale
+        # 是否使用角度+距离编码: (sin(theta), cos(theta), 1/(d+1))
+        self.use_angle_distance_obs = getattr(cfg, 'use_angle_distance_obs', False)
         # Traffic aircraft数量
         # self.total_traffic_num = cfg.traffic_sim.num_drones + getattr(cfg.traffic_sim, 'num_evtols', 0)
         self.drone_num = cfg.traffic_sim.num_drones
@@ -148,7 +150,16 @@ class TrafficObservationProcessor:
         
         # 传感器感知范围（使用NavEnv的observation_radius）
         self.sensor_range = cfg.observation_radius
-        self.spatial_dim = 2 * (self.predict_steps + 1) + 1 
+        # 单步空间特征维度：旧模式为2，新模式为3
+        self.spatial_point_dim = 3 if self.use_angle_distance_obs else 2
+        self.spatial_dim = self.spatial_point_dim * (self.predict_steps + 1) + 1 
+
+        self.robot_node_dim = 5
+        if self.use_angle_distance_obs:
+            self.robot_node_dim += 1
+        
+        self.temporal_edges_dim = 2
+        
         # 用于归一化的参数  
         if hasattr(cfg.traffic_sim.area_bounds, 'xmax'):
             self.area_size = max(
@@ -169,6 +180,29 @@ class TrafficObservationProcessor:
         self.traffic_velocities = None
         self.traffic_types = None
         self.traffic_safety_radius = None
+
+    def _encode_relative_xy(self, relative_xy: torch.Tensor) -> torch.Tensor:
+        """将相对位置编码为所需表示。
+        
+        - 旧模式: 直接对 (dx, dy) 做归一化
+        - 新模式: 输出 (sin(theta), cos(theta), 1/(d+1))
+        
+        Args:
+            relative_xy: [..., 2]
+        Returns:
+            编码后的张量: [..., 2] 或 [..., 3]
+        """
+        if not self.use_angle_distance_obs:
+            return relative_xy / (2 * self.circle_radius) * self.observation_norm_scale
+        # 新模式
+        dx = relative_xy[..., 0]
+        dy = relative_xy[..., 1]
+        theta = torch.atan2(dy, dx)
+        sin_theta = torch.sin(theta)
+        cos_theta = torch.cos(theta)
+        dist = torch.norm(relative_xy, dim=-1)
+        inv_dist = 1.0 / (dist + 1.0)
+        return torch.stack([sin_theta, cos_theta, inv_dist], dim=-1)
 
     def predict_traffic_trajectory(self, traffic_positions: torch.Tensor, traffic_velocities: torch.Tensor, traffic_types: torch.Tensor, traffic_safety_radius: torch.Tensor):
         """预计算traffic轨迹预测，供后续观测和奖励计算使用
@@ -206,8 +240,9 @@ class TrafficObservationProcessor:
         
         # 1. 创建内层字典 "policy" 的内容
         policy_space_dict = {
-            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 5), dtype=np.float32),
-            'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 2), dtype=np.float32),
+            # robot_node维度: 相对目标(2或3) + 安全半径1 + v_pref 1 + yaw 1
+            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.robot_node_dim), dtype=np.float32),
+            'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.temporal_edges_dim), dtype=np.float32),
             'spatial_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(total_traffic_num, self.spatial_dim), dtype=np.float32),
             'detected_human_num': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
         }
@@ -232,10 +267,10 @@ class TrafficObservationProcessor:
         robot_vel = drone_state[:, :, 7:9]  # [num_envs, 1, 2] (vx, vy)
         # norm_robot_vel = robot_vel
         
-        # 计算相对目标位置
+        # 计算相对目标位置并编码
         goal_pos = target_pos[:, :, :2]  # [num_envs, 1, 2] 只取x,y
         relative_goal_pos = goal_pos - robot_pos  # [num_envs, 1, 2]
-        relative_goal_pos = relative_goal_pos / (2*self.circle_radius) * self.observation_norm_scale
+        encoded_goal = self._encode_relative_xy(relative_goal_pos)
         
         # 计算速度方向yaw
         robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
@@ -244,13 +279,13 @@ class TrafficObservationProcessor:
         robot_radius = torch.full((num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
         robot_v_pref = torch.full((num_envs, 1, 1), self.cfg.v_pref, device=self.device)
         
-        # 构建robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw]
+        # 构建robot_node: [rel_goal(2/3), robot_radius, robot_v_pref, robot_yaw]
         robot_node = torch.cat([
-            relative_goal_pos,  # [num_envs, 1, 2]
+            encoded_goal,       # [num_envs, 1, 2/3]
             robot_radius,       # [num_envs, 1, 1]  
             robot_v_pref,       # [num_envs, 1, 1]
             robot_yaw.unsqueeze(-1)  # [num_envs, 1, 1]
-        ], dim=-1)  # [num_envs, 1, 5]
+        ], dim=-1)
         
         # 计算空间边观测（使用预计算的轨迹）
         spatial_edges, detected_counts = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
@@ -277,13 +312,12 @@ class TrafficObservationProcessor:
             spatial_edges: [num_envs, total_traffic_num, spatial_dim]
         """
         num_envs = robot_pos.shape[0]
-        spatial_dim = 2 * (self.predict_steps + 1)
-        # self.spatial_dim = spatial_dim + 1
+        spatial_dim_xy = 2 * (self.predict_steps + 1)
+        spatial_dim_encoded = self.spatial_point_dim * (self.predict_steps + 1)
         
         if self.traffic_future_traj is None or self.traffic_future_traj.numel() == 0:
-            spatial_edges = torch.full(
-            (num_envs, self.total_traffic_num, self.spatial_dim),
-            self.observation_norm_scale, device=self.device
+            spatial_edges = torch.zeros(
+                (num_envs, self.total_traffic_num, self.spatial_dim), device=self.device
             )
             detected_counts = torch.zeros((num_envs, 1), device=self.device)
             return spatial_edges, detected_counts
@@ -299,8 +333,13 @@ class TrafficObservationProcessor:
         in_range_mask = current_distances <= self.sensor_range
         
         # 展平预测位置为spatial edges格式
-        predicted_flat = relative_pos.view(num_envs, -1, spatial_dim)  # [num_envs, total_traffic, spatial_dim]
-        predicted_flat = predicted_flat / (2*self.circle_radius) * self.observation_norm_scale
+        if self.use_angle_distance_obs:
+            # 编码为 (sin, cos, 1/(d+1)) 并展平
+            encoded = self._encode_relative_xy(relative_pos)  # [num_envs, total_traffic, predict_steps+1, 3]
+            predicted_flat = encoded.reshape(num_envs, -1, spatial_dim_encoded)
+        else:
+            predicted_flat = relative_pos.reshape(num_envs, -1, spatial_dim_xy)
+            predicted_flat = predicted_flat / (2 * self.circle_radius) * self.observation_norm_scale
 
         # 添加safety radius
         radius_with_feature_dim = self.traffic_safety_radius.unsqueeze(-1) #  [total_traffic, 1]
@@ -323,14 +362,14 @@ class TrafficObservationProcessor:
         #    - 如果掩码为 True (在范围内)，则保留 base_spatial_edges 的值。
         #    - 如果掩码为 False (不在范围内)，则赋值为您指定的大数值，例如 10.0。
         spatial_edges = torch.where(
-            mask_expanded, 
-            base_spatial_edges, 
-            self.observation_norm_scale
+            mask_expanded,
+            base_spatial_edges,
+            torch.zeros_like(base_spatial_edges)
         )
         # spatial_edges的维度是 [num_envs, current_traffic_num, spatial_dim+1]
         # 但是可能小于total_traffic_num，所以需要cat
         if spatial_edges.shape[1] < self.total_traffic_num:
-            fill_spatial_edges = torch.full((num_envs, self.total_traffic_num - spatial_edges.shape[1], self.spatial_dim), self.observation_norm_scale, device=self.device)
+            fill_spatial_edges = torch.zeros((num_envs, self.total_traffic_num - spatial_edges.shape[1], self.spatial_dim), device=self.device)
             spatial_edges = torch.cat([spatial_edges, fill_spatial_edges], dim=1)
 
         detected_counts = torch.sum(in_range_mask, dim=1, dtype=torch.int32)  # [num_envs]
@@ -347,20 +386,13 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
     
     def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
         super().__init__(cfg, device)
-        
-    def generate_policy_obs_dict(self):
-        """生成观测空间字典 - 增加local goal和projection point维度"""
-        # 计算traffic数量配置
-        total_traffic_num = self.total_traffic_num
-        
-        # 1. 创建内层字典 "policy" 的内容
-        policy_space_dict = {
-            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 9), dtype=np.float32),  # 5+2+2=9
-            'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 2), dtype=np.float32),
-            'spatial_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(total_traffic_num, self.spatial_dim), dtype=np.float32),
-            'detected_human_num': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
-        }
-        return policy_space_dict
+        # self.robot_node_dim = 3 if self.use_angle_distance_obs else 2 + 3 + (3 if self.use_angle_distance_obs else 2) + (3 if self.use_angle_distance_obs else 2)
+        self.robot_node_dim = 9
+        if self.use_angle_distance_obs:
+            self.robot_node_dim += 3
+        self.temporal_edges_dim = 2
+
+
 
     def process_observation(self, state: EnvState) -> dict:
         """处理包含局部目标的观测数据（使用预计算的轨迹）
@@ -382,20 +414,20 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
         robot_pos = drone_state[:, :, :2]  # [num_envs, 1, 2] (x, y)
         robot_vel = drone_state[:, :, 7:9]  # [num_envs, 1, 2] (vx, vy)
         
-        # 计算相对目标位置
+        # 计算相对目标位置并编码
         goal_pos = target_pos[:, :, :2]  # [num_envs, 1, 2] 只取x,y
         relative_goal_pos = goal_pos - robot_pos  # [num_envs, 1, 2]
-        relative_goal_pos = relative_goal_pos / (2*self.circle_radius) * self.observation_norm_scale
+        encoded_goal = self._encode_relative_xy(relative_goal_pos)
         
-        # 计算相对局部目标位置
+        # 计算相对局部目标位置并编码
         local_goal_pos = local_goals[:, :, :2] if local_goals is not None else goal_pos  # [num_envs, 1, 2]
         relative_local_goal_pos = local_goal_pos - robot_pos  # [num_envs, 1, 2]
-        relative_local_goal_pos = relative_local_goal_pos / (2*self.circle_radius) * self.observation_norm_scale
+        encoded_local_goal = self._encode_relative_xy(relative_local_goal_pos)
         
-        # 计算相对投影点位置
+        # 计算相对投影点位置并编码
         projection_pos = projection_points[:, :, :2] if projection_points is not None else robot_pos  # [num_envs, 1, 2]
         relative_projection_pos = projection_pos - robot_pos  # [num_envs, 1, 2]
-        relative_projection_pos = relative_projection_pos / (2*self.circle_radius) * self.observation_norm_scale
+        encoded_projection = self._encode_relative_xy(relative_projection_pos)
         
         # 计算速度方向yaw
         robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
@@ -404,14 +436,14 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
         robot_radius = torch.full((num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
         robot_v_pref = torch.full((num_envs, 1, 1), self.cfg.v_pref, device=self.device)
         
-        # 构建扩展的robot_node: [rel_goal_x, rel_goal_y, robot_radius, robot_v_pref, robot_yaw, rel_local_goal_x, rel_local_goal_y, rel_proj_x, rel_proj_y]
+        # 构建扩展的robot_node: [goal(2/3), radius, v_pref, yaw, local_goal(2/3), proj(2/3)]
         robot_node = torch.cat([
-            relative_goal_pos,           # [num_envs, 1, 2]
+            encoded_goal,                # [num_envs, 1, 2/3]
             robot_radius,                # [num_envs, 1, 1]  
             robot_v_pref,                # [num_envs, 1, 1]
             robot_yaw.unsqueeze(-1),     # [num_envs, 1, 1]
-            relative_local_goal_pos,     # [num_envs, 1, 2]
-            relative_projection_pos,     # [num_envs, 1, 2]
+            encoded_local_goal,          # [num_envs, 1, 2/3]
+            encoded_projection,          # [num_envs, 1, 2/3]
         ], dim=-1)  # [num_envs, 1, 9]
         
         # 计算空间边观测（使用预计算的轨迹）

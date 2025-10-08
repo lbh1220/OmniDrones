@@ -86,6 +86,8 @@ class NavEnvCfg(DirectRLEnvCfg):
     debug_vis_num_envs = 10  # only visualize the first 5 environments
     is_training = True
 
+    total_timesteps = 10000000
+
     ui_window_class_type = NavEnvWindow
     viewer: ViewerCfg = field(default_factory=lambda: ViewerCfg(
         resolution=(960, 720),

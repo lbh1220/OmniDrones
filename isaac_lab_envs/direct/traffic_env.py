@@ -105,6 +105,8 @@ class TrafficEnvCfg(NavEnvCfg):
     pred_timestep: float = 2.0
     observation_radius: float = 100.0
     observation_norm_scale: float = 10.0
+    use_angle_distance_obs: bool = False
+
 
     # ORCA collision avoidance config
     orca: OrcaCfg = field(default_factory=lambda: OrcaCfg(enable=False))
