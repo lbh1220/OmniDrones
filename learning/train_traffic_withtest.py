@@ -176,10 +176,10 @@ def main():
     if args.course_num > 0:
         from isaac_lab_envs.direct.traffic_env import TrafficCurriculumCfg
         course_list = [
-                    TrafficCurriculumCfg(drones_num=6, evtol_num=1, evtol_radius=2.0),
-                    TrafficCurriculumCfg(drones_num=6, evtol_num=1, evtol_radius=4.0),
-                    TrafficCurriculumCfg(drones_num=6, evtol_num=1, evtol_radius=6.0),
-                    TrafficCurriculumCfg(drones_num=6, evtol_num=1, evtol_radius=8.0),
+                    TrafficCurriculumCfg(drones_num=10, evtol_num=1, evtol_radius=2.0),
+                    TrafficCurriculumCfg(drones_num=10, evtol_num=1, evtol_radius=4.0),
+                    TrafficCurriculumCfg(drones_num=10, evtol_num=1, evtol_radius=6.0),
+                    TrafficCurriculumCfg(drones_num=10, evtol_num=1, evtol_radius=8.0),
                 ]
         args.course_num = len(course_list)
         cfg.curriculum_list = course_list
@@ -347,7 +347,7 @@ def main():
         SR_check_callback = CourseWithSuccessRateCallback(check_freq=getattr(algo_args, 'log_interval', 10),
                                                             save_path=os.path.join(save_dir, 'checkpoints'),
                                                             queue_size=args.num_envs,
-                                                            success_rate_threshold=1.1,
+                                                            success_rate_threshold=0.8,
                                                             min_episodes_for_curriculum=50,
                                                             initial_lr=algo_args.lr,
                                                             min_lr=algo_args.min_lr,

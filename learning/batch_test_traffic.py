@@ -106,7 +106,7 @@ def main():
     parser = argparse.ArgumentParser(description="Batch test multiple trained SB3 models")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/ablation/u10e1/fu-2.0fe-0.0_1005_093738",
+                        default="runs/traffic/ablation/u10e1/newobs/fu-2.0fe-1.0_1009_003104",
                        help="Path to the trained model directory")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
     
@@ -183,7 +183,7 @@ def main():
 
     # 从保存的配置中加载关键参数
     if os.path.exists(cfg_yaml):
-        loaded_keys = ["action_space_type", "action_space_num_per_dim", "action_mode", "predict_steps"]
+        loaded_keys = ["action_space_type", "action_space_num_per_dim", "action_mode", "predict_steps", "use_angle_distance_obs"]
         for key in loaded_keys:
             if hasattr(yaml_cfg, key):
                 setattr(cfg, key, getattr(yaml_cfg, key))
@@ -194,10 +194,10 @@ def main():
     cfg.use_global_path = args.use_global_path
     cfg.debug_vis = True
 
-    cfg.orca.enable = True
+    cfg.orca.enable = False
 
     algo_args.action_space_type = cfg.action_space_type
-    algo_args.human_human_edge_input_size = int(2*(cfg.predict_steps+1)) + 1
+
 
     from omni.isaac.lab.envs.common import ViewerCfg
     cfg.viewer = ViewerCfg(
@@ -237,6 +237,10 @@ def main():
     base_env = create_test_env(cfg, args=args)
     main_logger.info("Base environment created successfully.")
 
+
+    algo_args.robot_node_input_size = base_env.observation_space['robot_node'].shape[-1] + base_env.observation_space['temporal_edges'].shape[-1]
+
+    algo_args.human_human_edge_input_size = base_env.observation_space['spatial_edges'].shape[-1] 
     # 开始批量测试
     all_results = {}
     
@@ -268,11 +272,6 @@ def main():
             
             # 为当前模型包装环境（重用base_env）
             current_test_env = wrap_env_for_model(base_env, algo_args, vecnorm_file, video_kwargs)
-
-            # 计算观测空间大小（只需要计算一次）
-            if i == 0:
-                algo_args.robot_node_input_size = (current_test_env.observation_space['robot_node'].shape[1] + 
-                                                 current_test_env.observation_space['temporal_edges'].shape[1])
             
             # 加载模型
             model = CustomPPO.load(model_file, env=current_test_env, args=algo_args)

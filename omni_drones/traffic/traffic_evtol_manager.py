@@ -119,7 +119,7 @@ class TrafficEVTOLManager:
             initial_positions.append((smooth_waypoints[0].x, smooth_waypoints[0].y, smooth_waypoints[0].z))
             prim_paths.append(f"{self.traffic_prim_path}/traffic_evtol_{i}")
             # scales.append((self.config.evtol.safety_radius, self.config.evtol.safety_radius, 1.0))  # EVTOL通常比较大
-            scales.append((6.0, 6.0, 1.0))
+            scales.append((2.0, 2.0, 1.0))
         
         # 创建primitives - traffic 内部不碰撞
         created_prims = self.evtol.spawn(
@@ -415,7 +415,7 @@ class TrafficEVTOLManager:
             # 为安全半径添加 ±40% 范围内的随机扰动
             radius_perturbation = torch.empty_like(self.state.safety_radius).uniform_(-0.4, 0.4)
             self.state.safety_radius = self.state.safety_radius * (1.0 + radius_perturbation)
-            self.state.safety_radius = torch.clamp(self.state.safety_radius, min=5.0, max=10.0)
+            self.state.safety_radius = torch.clamp(self.state.safety_radius, min=2.0, max=10.0)
 
     def reset(self):
         """重置所有EVTOL"""

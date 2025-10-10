@@ -130,7 +130,7 @@ class TrafficEnvCfg(NavEnvCfg):
 class TrafficEnvWithCurriculumCfg(TrafficEnvCfg):
     # curriculum learning
     curriculum_learning: bool = False
-    curriculum_list: List[TrafficCurriculumCfg] = field(default_factory=lambda: [TrafficCurriculumCfg()])
+    curriculum_list: List[TrafficCurriculumCfg] = None
 
 class TrafficEnv(NavEnv):
     """Nav navigation environment for drones using Direct RL workflow."""
@@ -490,17 +490,18 @@ class TrafficEnvWithCurriculum(TrafficEnv):
 
 
 
-    def set_course(self, course_idx: int):
+    def set_curriculum(self, course_idx: int):
         """Switch to next course"""
         self.current_course = course_idx
         if self.current_course >= self.course_num:
             self.current_course = self.course_num - 1
         self.active_drones_num = self.cfg.curriculum_list[self.current_course].drones_num
         self.active_evtols_num = self.cfg.curriculum_list[self.current_course].evtol_num
-        previous_evtol_radius = self.traffic_sim.evtol_manager.state.safety_radius
-        new_evtol_radius = torch.ones(previous_evtol_radius.shape, device=self.device) * self.cfg.curriculum_list[self.current_course].evtol_radius
-        self.traffic_sim.evtol_manager.state.safety_radius = new_evtol_radius
-        self.traffic_sim.evtol_manager.random_attributes(self.cfg.traffic_sim.evtol.random_speed, self.cfg.traffic_sim.evtol.random_safety_radius)
+        # previous_evtol_radius = self.traffic_sim.evtol_manager.state.safety_radius
+        # new_evtol_radius = torch.ones(previous_evtol_radius.shape, device=self.device) * self.cfg.curriculum_list[self.current_course].evtol_radius
+        # self.traffic_sim.evtol_manager.state.safety_radius = new_evtol_radius
+        # self.traffic_sim.evtol_manager.random_attributes(self.cfg.traffic_sim.evtol.random_speed, self.cfg.traffic_sim.evtol.random_safety_radius)
+        self.traffic_sim.evtol_manager.config.evtol.safety_radius = self.cfg.curriculum_list[self.current_course].evtol_radius
         
     def _detect_collisions(self) -> torch.Tensor:
         """检测与traffic aircraft的碰撞"""

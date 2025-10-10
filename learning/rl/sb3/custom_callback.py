@@ -286,6 +286,7 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
                 return True
         steps_in_current_course = self.num_timesteps - self.curriculum_start_timesteps
         if steps_in_current_course > self.total_timesteps_per_course:
+            self._switch_to_next_course()
             return True
         return False
     
@@ -303,7 +304,7 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
         # #     base_env.state.evtol_num = self.course_list[self.current_course]['evtol_num']
         # # Clear episode results for new course
         base_env = self.model.get_env().unwrapped
-        base_env.set_course(self.current_course)
+        base_env.set_curriculum(self.current_course)
         self.episode_results.clear()
         self.episode_rewards.clear()
         self.episode_cross_track_errors.clear()
