@@ -85,9 +85,10 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # 初始化配置和处理器
 cfg = TrafficEnvCfg()
-cfg.rew_drone_future_penalty = -2.0
-cfg.rew_evtol_future_penalty = -2.0
-cfg.rew_evtols_decay_factor = 0.95
+cfg.rew_drone_future_penalty = -1.0
+cfg.rew_evtol_future_penalty = -1.0
+cfg.rew_evtols_decay_factor = 1.0
+cfg.rew_evtols_threshold_factor = 1.5
 
 obs_processor = TrafficObservationProcessor(cfg, device)
 reward_calculator = TrafficRewardCalculator(cfg, device)

@@ -121,6 +121,18 @@ class TrafficRewardCalculator:
         # 势能缓存
         self.previous_potential = None
 
+        # TTC-based reward parameters (reasonable defaults; can be overridden by cfg)
+        # R_risk = -alpha * exp(-TTC / beta), for TTC < threshold
+        self.ttc_threshold = getattr(cfg, 'rew_ttc_threshold', 10.0)
+        self.ttc_alpha = getattr(cfg, 'rew_ttc_alpha', 1.0)
+        self.ttc_beta = getattr(cfg, 'rew_ttc_beta', 5.0)
+        # Contextual potential: (1 - risk_factor) * R_potential - risk_factor * delta
+        self.ttc_idle_penalty = getattr(cfg, 'rew_ttc_idle_penalty', 0.01)
+        # Optional patience reward coefficient (omega). 0 disables this term.
+        self.patience_coeff = getattr(cfg, 'rew_patience_coeff', 0.0)
+        # Memory for patience reward (per-env). Initialized lazily on first use.
+        self.previous_min_d_cpa = None
+
 
         # future reward param
         self.drones_threshold_factor = cfg.rew_drones_threshold_factor
@@ -166,9 +178,6 @@ class TrafficRewardCalculator:
         # 对于既没有碰撞也没有到达目标的环境，计算其他奖励
         # continue_mask = ~(collision_mask | reached_target_mask)
 
-        potential_reward = self._compute_potential_reward(state)
-        reward += potential_reward
-
         # 3. 不适距离惩罚（与traffic的距离过近）
         # discomfort_penalty = self._compute_discomfort_penalty(
         #     drone_state[continue_mask],
@@ -189,7 +198,60 @@ class TrafficRewardCalculator:
             traffic_types
         )
         reward += future_penalty
-        
+
+        # 6. 基础势能奖励（与TTC联动前的原始项）
+        base_potential_reward = self._compute_potential_reward(state)
+
+        # 7. 计算TTC/CPA指标（基于当前 traffic 的位置和速度）
+        robot_vel_2d = state.ego_drone.velocities[:, :, :2]
+        # Filter eVTOLs on the fly using traffic_types == 0
+        use_positions = None
+        if (state.traffic is not None and
+            state.traffic.traffic_positions is not None and state.traffic.traffic_positions.numel() > 0 and
+            state.traffic.traffic_velocities is not None and state.traffic.traffic_velocities.numel() > 0 and
+            state.traffic.traffic_safety_radius is not None and state.traffic.traffic_safety_radius.numel() > 0 and
+            state.traffic.traffic_types is not None and state.traffic.traffic_types.numel() > 0):
+            evtol_mask = (state.traffic.traffic_types == 0)
+            if evtol_mask.any():
+                use_positions = state.traffic.traffic_positions[evtol_mask]
+                use_velocities = state.traffic.traffic_velocities[evtol_mask]
+                use_safety_radius = state.traffic.traffic_safety_radius[evtol_mask]
+
+        if use_positions is not None:
+            min_ttc, min_d_cpa = self._compute_ttc_metrics(
+                drone_state,
+                robot_vel_2d,
+                use_positions,
+                use_velocities,
+                use_safety_radius
+            )
+        else:
+            # No traffic: TTC=+inf leads to no risk; CPA uses current distance surrogate
+            num_envs = drone_state.shape[0]
+            min_ttc = torch.full((num_envs,), float('inf'), device=self.device)
+            # use zeros for d_cpa so patience reward contributes 0
+            min_d_cpa = torch.zeros((num_envs,), device=self.device)
+
+        # 8. TTC风险惩罚 R_risk
+        ttc_risk_penalty = self._compute_ttc_risk_penalty(min_ttc)
+        reward += ttc_risk_penalty
+
+        # 9. 上下文势能奖励：用 contextual potential 替换原始 potential
+        contextual_potential_reward = self._compute_contextual_potential_from_base(base_potential_reward, min_ttc)
+
+        # 和原逻辑保持一致：若存在强 future penalty，则屏蔽势能奖励
+        # future_penalty_mask = future_penalty < -1e-6
+        # contextual_potential_reward = torch.where(
+        #     future_penalty_mask, torch.zeros_like(contextual_potential_reward), contextual_potential_reward
+        # )
+        reward += contextual_potential_reward
+
+        # 10. 可选耐心奖励：仅在存在碰撞风险时鼓励增大与威胁的最近距离
+        if self.patience_coeff != 0.0:
+            patience_reward = self._compute_patience_reward(min_d_cpa, min_ttc)
+            reward += patience_reward
+
+
         # 6. 时间惩罚（所有环境都有）
         dt = self.cfg.sim.dt * self.cfg.decimation
         reward += self.time_penalty * dt
@@ -264,7 +326,18 @@ class TrafficRewardCalculator:
             # 第一次调用，初始化previous_potential
             self.previous_potential = current_potential.clone()
         else:
-            self.previous_potential[env_ids] = current_potential.clone()    
+            self.previous_potential[env_ids] = current_potential.clone()
+
+        # Reset patience memory for the specified envs
+        if self.previous_min_d_cpa is not None:
+            if self.previous_min_d_cpa.shape[0] < state.ego_drone.drone_state.shape[0]:
+                # Expand to full size if needed
+                full = torch.zeros(state.ego_drone.drone_state.shape[0], device=self.device)
+                full[: self.previous_min_d_cpa.shape[0]] = self.previous_min_d_cpa
+                self.previous_min_d_cpa = full
+            # Use NaN sentinel to indicate re-initialization is needed on next step,
+            # avoiding misleading delta due to using 0 (which implies collision distance).
+            self.previous_min_d_cpa[env_ids] = torch.nan
 
     def _compute_discomfort_penalty(self, drone_state: torch.Tensor, 
                                   traffic_positions: torch.Tensor,
@@ -404,6 +477,132 @@ class TrafficRewardCalculator:
         return torch.min(future_penalty, torch.zeros_like(future_penalty))
     
 
+    def _compute_ttc_metrics(
+        self,
+        drone_state: torch.Tensor,
+        robot_vel_2d: torch.Tensor,
+        traffic_positions: torch.Tensor,
+        traffic_velocities: torch.Tensor,
+        traffic_safety_radius: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute vectorized TTC and CPA metrics against all traffic.
+
+        Returns:
+            min_ttc: [num_envs] minimum TTC per env (inf if no collision predicted)
+            min_d_cpa: [num_envs] minimum CPA distance per env
+        """
+        EPS = 1e-6
+
+        # Ego state (2D)
+        robot_pos = drone_state[:, :, :2]  # [N, 1, 2]
+        robot_vel = robot_vel_2d  # [N, 1, 2]
+
+        # Traffic state (2D)
+        traffic_pos_2d = traffic_positions[:, :2]  # [T, 2]
+        traffic_vel_2d = traffic_velocities[:, :2]  # [T, 2]
+
+        # Relative position/velocity: broadcast to [N, T, 2]
+        p_rel = traffic_pos_2d.unsqueeze(0) - robot_pos  # [N, T, 2]
+        v_rel = traffic_vel_2d.unsqueeze(0) - robot_vel  # [N, T, 2]
+
+        v_rel_sq = torch.sum(v_rel * v_rel, dim=-1)  # [N, T]
+        p_dot_v = torch.sum(p_rel * v_rel, dim=-1)  # [N, T]
+
+        # Time to CPA
+        t_cpa = -p_dot_v / (v_rel_sq + EPS)  # [N, T]
+        p_cpa = p_rel + v_rel * t_cpa.unsqueeze(-1)  # [N, T, 2]
+        d_cpa_sq = torch.sum(p_cpa * p_cpa, dim=-1)  # [N, T]
+        current_dist_sq = torch.sum(p_rel * p_rel, dim=-1)  # [N, T]
+        is_future = t_cpa > 0
+        d_cpa_sq = torch.where(is_future, d_cpa_sq, current_dist_sq)
+        d_cpa = torch.sqrt(d_cpa_sq + EPS)  # [N, T]
+
+        # Time-to-collision via quadratic solution
+        robot_radius = self.cfg.safety_radius
+        total_radii = robot_radius + traffic_safety_radius  # [T]
+        a = v_rel_sq  # [N, T]
+        b = 2.0 * p_dot_v  # [N, T]
+        c = current_dist_sq - (total_radii.view(1, -1)) ** 2  # [N, T]
+        delta = b * b - 4.0 * a * c  # [N, T]
+
+        ttc = torch.full_like(delta, float('inf'))  # [N, T]
+        mask = (delta >= 0.0) & (b < 0.0)
+        if mask.any():
+            sqrt_delta = torch.sqrt(torch.clamp(delta[mask], min=0.0))
+            t1 = (-b[mask] - sqrt_delta) / (2.0 * a[mask] + EPS)
+            # Small positive times only
+            t1 = torch.where(t1 > 0.0, t1, torch.full_like(t1, float('inf')))
+            ttc[mask] = t1
+
+        # Reduce over traffic dimension
+        min_ttc, _ = torch.min(ttc, dim=1)  # [N]
+        min_d_cpa, _ = torch.min(d_cpa, dim=1)  # [N]
+
+        return min_ttc, min_d_cpa
+
+    
+
+    def _compute_ttc_risk_penalty(self, min_ttc: torch.Tensor) -> torch.Tensor:
+        """Compute R_risk based on min TTC per env.
+
+        R_risk = -alpha * exp(-TTC / beta) when TTC < threshold, else 0.
+        """
+        if self.ttc_alpha == 0.0:
+            return torch.zeros_like(min_ttc)
+
+        risk_zone = min_ttc < self.ttc_threshold
+        # 这里的min_ttc中可能有inf, 但是inf是不会小于self.ttc_threshold的, 不会参与计算
+        penalty = torch.zeros_like(min_ttc)
+        if risk_zone.any():
+            penalty[risk_zone] = -self.ttc_alpha * torch.exp(-min_ttc[risk_zone] / (self.ttc_beta + 1e-6))
+        return penalty
+
+    def _compute_contextual_potential_from_base(
+        self, base_potential_reward: torch.Tensor, min_ttc: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute contextual potential reward from base potential and TTC.
+
+        risk_factor = clamp(1 - TTC / threshold, 0, 1)
+        R_potential_contextual = (1 - risk_factor) * base_potential - risk_factor * delta
+        """
+        # Broadcast to match base_potential shape [N]
+        risk_factor = torch.clamp(1.0 - (min_ttc / (self.ttc_threshold + 1e-6)), 0.0, 1.0)
+        contextual = (1.0 - risk_factor) * base_potential_reward - risk_factor * self.ttc_idle_penalty
+        return contextual
+
+    def _compute_patience_reward(self, min_d_cpa: torch.Tensor, min_ttc: torch.Tensor) -> torch.Tensor:
+        """Optional patience reward encouraging increasing minimum CPA distance.
+
+        R_patience = omega * (d_cpa_min^t - d_cpa_min^{t-1})
+        Stores per-env previous values and updates them.
+        """
+        if self.patience_coeff == 0.0:
+            return torch.zeros_like(min_d_cpa)
+
+        num_envs = min_d_cpa.shape[0]
+        if self.previous_min_d_cpa is None or self.previous_min_d_cpa.shape[0] != num_envs:
+            # Initialize memory on first use or if env count changed
+            self.previous_min_d_cpa = min_d_cpa.clone()
+            return torch.zeros_like(min_d_cpa)
+
+        # Only apply when there is risk: min_ttc < threshold
+        risk_mask = min_ttc < (self.ttc_threshold)
+
+        # Compute delta only for risky envs; otherwise set delta=0 and refresh memory to current to avoid drift
+        patience = torch.zeros_like(min_d_cpa)
+        if risk_mask.any():
+            # Guard against NaN sentinel: if previous is NaN, skip reward this step
+            prev_vals = self.previous_min_d_cpa[risk_mask]
+            curr_vals = min_d_cpa[risk_mask]
+            valid_prev_mask = ~torch.isnan(prev_vals)
+            if valid_prev_mask.any():
+                delta = curr_vals[valid_prev_mask] - prev_vals[valid_prev_mask]
+                patience[risk_mask.nonzero(as_tuple=False).squeeze(1)[valid_prev_mask]] = self.patience_coeff * delta
+
+        # Refresh memory for all envs to current min_d_cpa so that when risk appears later,
+        # delta is computed from the latest baseline, avoiding accumulation across safe periods.
+        self.previous_min_d_cpa = min_d_cpa.clone()
+        return patience
 
 
 class TrafficRewardCalculatorWithPath(TrafficRewardCalculator):

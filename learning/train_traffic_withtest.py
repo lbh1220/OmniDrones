@@ -91,6 +91,12 @@ def main():
     
     parser.add_argument("--predict_steps", type=int, default=5, help="Predict steps")
 
+    # TTC-based reward args
+    parser.add_argument("--rew_ttc_threshold", type=float, default=None, help="TTC risk threshold")
+    parser.add_argument("--rew_ttc_alpha", type=float, default=None, help="TTC risk alpha")
+    parser.add_argument("--rew_ttc_beta", type=float, default=None, help="TTC risk beta")
+    parser.add_argument("--rew_ttc_idle_penalty", type=float, default=None, help="TTC idle penalty")
+    parser.add_argument("--rew_patience_coeff", type=float, default=None, help="Patience coeff")
     # whether reward normalize
     parser.add_argument("--norm_reward", action="store_true", default=True, help="Reward normalize")
     parser.add_argument("--norm_obs", action="store_true", default=False, help="Reward normalize")
@@ -119,7 +125,7 @@ def main():
     # video recording
     parser.add_argument("--video", action="store_true", default=False, help="Record video")
     parser.add_argument("--video_interval", type=int, default=1000, help="Video interval")
-    parser.add_argument("--video_length", type=int, default=250, help="Video length")
+    parser.add_argument("--video_length", type=int, default=500, help="Video length")
 
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)
@@ -203,6 +209,18 @@ def main():
     # future reward 
     cfg.rew_drone_future_penalty = -abs(args.drone_future_penalty)
     cfg.rew_evtol_future_penalty = -abs(args.evtol_future_penalty)
+
+    # TTC-based reward override from args if provided
+    if args.rew_ttc_threshold is not None:
+        cfg.rew_ttc_threshold = args.rew_ttc_threshold
+    if args.rew_ttc_alpha is not None:
+        cfg.rew_ttc_alpha = args.rew_ttc_alpha
+    if args.rew_ttc_beta is not None:
+        cfg.rew_ttc_beta = args.rew_ttc_beta
+    if args.rew_ttc_idle_penalty is not None:
+        cfg.rew_ttc_idle_penalty = args.rew_ttc_idle_penalty
+    if args.rew_patience_coeff is not None:
+        cfg.rew_patience_coeff = args.rew_patience_coeff
 
     if args.drones_threshold_factor is not None:
         cfg.rew_drones_threshold_factor = args.drones_threshold_factor

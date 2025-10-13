@@ -147,6 +147,8 @@ class TrafficObservationProcessor:
         self.drone_num = cfg.traffic_sim.num_drones
         self.evtol_num = getattr(cfg.traffic_sim, 'num_evtols', 0)
         self.total_traffic_num = max(self.drone_num+self.evtol_num, 20)
+        if (self.drone_num == 0):
+            self.total_traffic_num = self.drone_num + self.evtol_num
         
         # 传感器感知范围（使用NavEnv的observation_radius）
         self.sensor_range = cfg.observation_radius

@@ -125,6 +125,12 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_evtols_decay_factor = 0.9
     ## drones in previous, 2.0, 0.667; evtols in previous, 1.5, 0.9
     rew_cross_track_coeff = 0.0
+
+    rew_ttc_threshold = 10.0
+    rew_ttc_alpha = 1.0
+    rew_ttc_beta = 5.0
+    rew_ttc_idle_penalty = 0.0
+    rew_patience_coeff = 0.0
     
 
 class TrafficEnvWithCurriculumCfg(TrafficEnvCfg):
@@ -419,6 +425,8 @@ class TrafficEnv(NavEnv):
             traffic_positions, traffic_velocities, traffic_types, traffic_safety_radius
         )
         self.state.traffic.traffic_future_traj = self.obs_processor.traffic_future_traj.clone()
+
+        # 不再在state中维护eVTOL专用视图，使用时按类型筛选
 
     def _update_near_collision_ratio_avg(self):
         """
