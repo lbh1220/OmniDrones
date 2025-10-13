@@ -10,37 +10,18 @@ class SpatialEdgeSelfAttn(nn.Module):
     def __init__(self, args):
         super(SpatialEdgeSelfAttn, self).__init__()
         self.args = args
-
-        # Store required sizes
-        # todo: hard-coded for now
-        # with human displacement: + 2
-        # pred 4 steps + disp: 12
-        # pred 4 steps + no disp: 10
-        # pred 5 steps + no disp: 12
-        # pred 5 steps + no disp + probR: 17
-        # Gaussian pred 5 steps + no disp: 27
-        # pred 8 steps + no disp: 18
-        if args.env_name in ['CrowdSimPred-v0', 
-                             'CrowdSimPredRealGST-v0', 
-                             'AirspaceSimPred-v0', 
-                             'AirspaceSimPredReward-v0', 
-                             'AirspaceSimCourse-v0',
-                             'AirspaceSimLarge-v0',
-                             'AirspaceSimCity-v0',
-                             'AirspaceSimCityDRLVO-v0']:
-            self.input_size = self.args.human_human_edge_input_size
-        elif args.env_name == 'CrowdSimVarNum-v0':
-            self.input_size = 2 # 4
-        else:
-            raise NotImplementedError
+        self.input_size = getattr(self.args, 'human_human_edge_input_size', 2)
         self.num_attn_heads=8
         self.attn_size=512
 
 
-        # Linear layer to embed input
-        self.embedding_layer = nn.Sequential(nn.Linear(self.input_size, 128), nn.ReLU(),
-                                             nn.Linear(128, self.attn_size), nn.ReLU()
-                                             )
+        # Per-type encoders: evtol(0) and drone(1)
+        self.drone_embedding_layer = nn.Sequential(
+            nn.Linear(self.input_size, self.attn_size), nn.ReLU()
+        )
+        self.evtol_embedding_layer = nn.Sequential(
+            nn.Linear(self.input_size, self.attn_size), nn.ReLU()
+        )
 
         self.q_linear = nn.Linear(self.attn_size, self.attn_size)
         self.v_linear = nn.Linear(self.attn_size, self.attn_size)
@@ -67,7 +48,7 @@ class SpatialEdgeSelfAttn(nn.Module):
         return mask
 
     
-    def forward(self, inp, each_seq_len):
+    def forward(self, inp, each_seq_len, spatial_types=None):
         '''
         Forward pass for the model
         params:
@@ -77,7 +58,7 @@ class SpatialEdgeSelfAttn(nn.Module):
         else, it is the mask itself
         spatial_attn_out=self.spatial_attn(spatial_edges, detected_human_num).view(seq_length, nenv, self.human_num, -1)
         '''
-        # inp is padded sequence [seq_len, nenv, max_human_num, 2]
+        # inp is padded sequence [seq_len, nenv, max_human_num, D]
         seq_len, nenv, max_human_num, _ = inp.size()
         if self.args.sort_humans:
             attn_mask = self.create_attn_mask(each_seq_len, seq_len, nenv, max_human_num)  # [seq_len*nenv, 1, max_human_num]
@@ -86,8 +67,19 @@ class SpatialEdgeSelfAttn(nn.Module):
             # combine the first two dimensions
             attn_mask = each_seq_len.reshape(seq_len*nenv, max_human_num)
 
-
-        input_emb=self.embedding_layer(inp).view(seq_len*nenv, max_human_num, -1)
+        # Encode with per-type encoders
+        flat_inp = inp.view(seq_len*nenv, max_human_num, -1)
+        if spatial_types is not None:
+            flat_types = spatial_types.view(seq_len*nenv, max_human_num)
+            drone_mask = (flat_types == 1).unsqueeze(-1).float()
+            evtol_mask = (flat_types == 0).unsqueeze(-1).float()
+            emb_drone = self.drone_embedding_layer(flat_inp)
+            emb_evtol = self.evtol_embedding_layer(flat_inp)
+            input_emb = emb_drone * drone_mask + emb_evtol * evtol_mask
+        else:
+            # Fallback: treat all as one type (evtols encoder)
+            input_emb = self.evtol_embedding_layer(flat_inp)
+        input_emb = input_emb.view(seq_len*nenv, max_human_num, -1)
         input_emb=torch.transpose(input_emb, dim0=0, dim1=1) # if we use pytorch builtin function, v1.7.0 has no batch first option
         # 这个torch.transpose, 和np.transpose的用法不同, 表示交换两个通道, 变成(max_human_num, seq_len*nenv, 512)
         q=self.q_linear(input_emb)
@@ -320,7 +312,7 @@ class selfAttn_merge_SRNN(nn.Module):
         self.is_recurrent = True
         self.args=args
         
-        # 不对劲, 这里定义了num的话,是不是说明后面用的时候,有用dummy补齐呢
+        # 使用观测空间里的 traffic slots 数（包含两类混合后的最大数）
         self.human_num = obs_space_dict['spatial_edges'].shape[0]
 
         self.seq_length = args.seq_length
@@ -413,8 +405,8 @@ class selfAttn_merge_SRNN(nn.Module):
             detected_human_num = inputs['detected_human_num'].squeeze(-1).cpu().int()
         else:
             human_masks = reshapeT(inputs['visible_masks'], seq_length, nenv).float() # [seq_len, nenv, max_human_num]
-            # if no human is detected (human_masks are all False, set the first human to True)
             human_masks[human_masks.sum(dim=-1)==0] = self.dummy_human_mask
+        spatial_types = reshapeT(inputs['spatial_types'], seq_length, nenv).long() # [seq_len, nenv, max_human_num]
 
 
         hidden_states_node_RNNs = reshapeT(rnn_hxs['human_node_rnn'], 1, nenv)
@@ -436,8 +428,7 @@ class selfAttn_merge_SRNN(nn.Module):
         if self.args.sort_humans:
             # human-human attention
             if self.args.use_self_attn:
-                spatial_attn_out=self.spatial_attn(spatial_edges, detected_human_num).view(seq_length, nenv, self.human_num, -1)
-                # view是为了使其保持和spatial_edges类似的维度
+                spatial_attn_out=self.spatial_attn(spatial_edges, detected_human_num, spatial_types=spatial_types).view(seq_length, nenv, self.human_num, -1)
             else:
                 spatial_attn_out = spatial_edges
             output_spatial = self.spatial_linear(spatial_attn_out)
@@ -447,7 +438,7 @@ class selfAttn_merge_SRNN(nn.Module):
         else:
             # human-human attention
             if self.args.use_self_attn:
-                spatial_attn_out = self.spatial_attn(spatial_edges, human_masks).view(seq_length, nenv, self.human_num, -1)
+                spatial_attn_out = self.spatial_attn(spatial_edges, human_masks, spatial_types=spatial_types).view(seq_length, nenv, self.human_num, -1)
             else:
                 spatial_attn_out = spatial_edges
             output_spatial = self.spatial_linear(spatial_attn_out)
