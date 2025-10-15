@@ -60,25 +60,21 @@ class SpatialEdgeSelfAttn(nn.Module):
         '''
         # inp is padded sequence [seq_len, nenv, max_human_num, D]
         seq_len, nenv, max_human_num, _ = inp.size()
-        if self.args.sort_humans:
-            attn_mask = self.create_attn_mask(each_seq_len, seq_len, nenv, max_human_num)  # [seq_len*nenv, 1, max_human_num]
-            attn_mask = attn_mask.squeeze(1)  # if we use pytorch builtin function
-        else:
-            # combine the first two dimensions
-            attn_mask = each_seq_len.reshape(seq_len*nenv, max_human_num)
+        # Always use non-sort mask input
+        attn_mask = each_seq_len.reshape(seq_len*nenv, max_human_num)
 
         # Encode with per-type encoders
         flat_inp = inp.view(seq_len*nenv, max_human_num, -1)
         if spatial_types is not None:
             flat_types = spatial_types.view(seq_len*nenv, max_human_num)
             drone_mask = (flat_types == 1).unsqueeze(-1).float()
-            evtol_mask = (flat_types == 0).unsqueeze(-1).float()
+            evtol_mask = (flat_types == 2).unsqueeze(-1).float()
             emb_drone = self.drone_embedding_layer(flat_inp)
             emb_evtol = self.evtol_embedding_layer(flat_inp)
             input_emb = emb_drone * drone_mask + emb_evtol * evtol_mask
         else:
-            # Fallback: treat all as one type (evtols encoder)
-            input_emb = self.evtol_embedding_layer(flat_inp)
+            # Fallback: treat all as drone type
+            input_emb = self.drone_embedding_layer(flat_inp)
         input_emb = input_emb.view(seq_len*nenv, max_human_num, -1)
         input_emb=torch.transpose(input_emb, dim0=0, dim1=1) # if we use pytorch builtin function, v1.7.0 has no batch first option
         # 这个torch.transpose, 和np.transpose的用法不同, 表示交换两个通道, 变成(max_human_num, seq_len*nenv, 512)
@@ -327,14 +323,18 @@ class selfAttn_merge_SRNN(nn.Module):
         # Initialize the Node and Edge RNNs
         self.humanNodeRNN = EndRNN(args)
 
-        # Initialize attention module
-        self.attn = EdgeAttention_M(args)
+        # Initialize attention modules (type-split)
+        self.attn_drone = EdgeAttention_M(args)
+        self.attn_evtol = EdgeAttention_M(args)
+        # fuse two streams back to 256 using a linear projection
 
 
         init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.
                                constant_(x, 0), np.sqrt(2))
 
         num_inputs = hidden_size = self.output_size
+        self.type_fuse = nn.Sequential(
+            init_(nn.Linear(self.human_human_edge_rnn_size * 2, self.human_human_edge_rnn_size)), nn.ReLU())
 
         self.actor = nn.Sequential(
             init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
@@ -360,12 +360,9 @@ class selfAttn_merge_SRNN(nn.Module):
         self.robot_linear = nn.Sequential(init_(nn.Linear(robot_size, 256)), nn.ReLU()) # todo: check dim
         self.human_node_final_linear=init_(nn.Linear(self.output_size,2))
 
-        if self.args.use_self_attn:
-            self.spatial_attn = SpatialEdgeSelfAttn(args)
-            self.spatial_linear = nn.Sequential(init_(nn.Linear(512, 256)), nn.ReLU())
-        else:
-            self.spatial_linear = nn.Sequential(init_(nn.Linear(obs_space_dict['spatial_edges'].shape[1], 128)), nn.ReLU(),
-                                                init_(nn.Linear(128, 256)), nn.ReLU())
+        # Always use self attention path
+        self.spatial_attn = SpatialEdgeSelfAttn(args)
+        self.spatial_linear = nn.Sequential(init_(nn.Linear(512, 256)), nn.ReLU())
 
 
         self.temporal_edges = [0]
@@ -379,6 +376,22 @@ class selfAttn_merge_SRNN(nn.Module):
             self.dummy_human_mask = Variable(torch.Tensor([dummy_human_mask]).cuda())
 
 
+
+    def create_attn_mask(self, each_seq_len, seq_len, nenv, max_human_num):
+        """
+        Convert detected counts (lengths) to visibility masks.
+        Returns mask of shape [seq_len, nenv, max_human_num] with 1 for visible and 0 for padding.
+        """
+        if self.args.no_cuda:
+            mask = torch.zeros(seq_len * nenv, max_human_num + 1).cpu()
+        else:
+            mask = torch.zeros(seq_len * nenv, max_human_num + 1).cuda()
+        idx = each_seq_len.view(-1).long()
+        mask[torch.arange(seq_len * nenv), idx] = 1.0
+        mask = torch.logical_not(mask.cumsum(dim=1))
+        mask = mask[:, :-1]  # remove sentinel
+        mask = mask.view(seq_len, nenv, max_human_num).float()
+        return mask
 
     def forward(self, inputs, rnn_hxs, masks, infer=False):
         if infer:
@@ -398,14 +411,16 @@ class selfAttn_merge_SRNN(nn.Module):
         temporal_edges = reshapeT(inputs['temporal_edges'], seq_length, nenv)
         spatial_edges = reshapeT(inputs['spatial_edges'], seq_length, nenv)
 
-        # to prevent errors in old models that does not have sort_humans argument
-        if not hasattr(self.args, 'sort_humans'):
-            self.args.sort_humans = True
-        if self.args.sort_humans:
-            detected_human_num = inputs['detected_human_num'].squeeze(-1).cpu().int()
-        else:
+        # Prefer visible_masks; fallback to detected_human_num -> mask
+        if 'visible_masks' in inputs:
             human_masks = reshapeT(inputs['visible_masks'], seq_length, nenv).float() # [seq_len, nenv, max_human_num]
-            human_masks[human_masks.sum(dim=-1)==0] = self.dummy_human_mask
+        elif 'detected_human_num' in inputs:
+            lengths = inputs['detected_human_num'].squeeze(-1)
+            human_masks = self.create_attn_mask(lengths, seq_length, nenv, self.human_num)
+        else:
+            raise ValueError("No visible_masks or detected_human_num found in inputs")
+        # ensure at least one visible per (seq, env)
+        human_masks[human_masks.sum(dim=-1)==0] = self.dummy_human_mask
         spatial_types = reshapeT(inputs['spatial_types'], seq_length, nenv).long() # [seq_len, nenv, max_human_num]
 
 
@@ -424,27 +439,35 @@ class selfAttn_merge_SRNN(nn.Module):
         robot_states = self.robot_linear(robot_states)
 
 
-        # attention modules
-        if self.args.sort_humans:
-            # human-human attention
-            if self.args.use_self_attn:
-                spatial_attn_out=self.spatial_attn(spatial_edges, detected_human_num, spatial_types=spatial_types).view(seq_length, nenv, self.human_num, -1)
-            else:
-                spatial_attn_out = spatial_edges
-            output_spatial = self.spatial_linear(spatial_attn_out)
-
-            # robot-human attention
-            hidden_attn_weighted, _ = self.attn(robot_states, output_spatial, detected_human_num)
+        # human-human attention (always self-attn + mask)
+        use_type_split = getattr(self.args, 'use_type_split_attn', True)
+        if use_type_split:
+            spatial_attn_out = self.spatial_attn(spatial_edges, human_masks, spatial_types=spatial_types).view(seq_length, nenv, self.human_num, -1)
         else:
-            # human-human attention
-            if self.args.use_self_attn:
-                spatial_attn_out = self.spatial_attn(spatial_edges, human_masks, spatial_types=spatial_types).view(seq_length, nenv, self.human_num, -1)
-            else:
-                spatial_attn_out = spatial_edges
-            output_spatial = self.spatial_linear(spatial_attn_out)
+            spatial_attn_out = self.spatial_attn(spatial_edges, human_masks, spatial_types=None).view(seq_length, nenv, self.human_num, -1)
+        output_spatial = self.spatial_linear(spatial_attn_out)
 
-            # robot-human attention
-            hidden_attn_weighted, _ = self.attn(robot_states, output_spatial, human_masks)
+        # type masks (1=drone, 2=evtol; 0=dummy)
+        type_mask_drone = (spatial_types == 1).float()
+        type_mask_evtol = (spatial_types == 2).float()
+
+        # Decide single-stream vs dual-stream attention
+        use_type_split = getattr(self.args, 'use_type_split_attn', True)
+        if use_type_split:
+            mask_drone = human_masks * type_mask_drone
+            mask_evtol = human_masks * type_mask_evtol
+
+            hidden_drone, _ = self.attn_drone(robot_states, output_spatial, mask_drone)
+            hidden_evtol, _ = self.attn_evtol(robot_states, output_spatial, mask_evtol)
+
+            # fuse streams: [seq_len, nenv, 1, 256] concat -> [seq_len, nenv, 1, 512] -> project 256
+            hidden_attn_weighted = torch.cat([hidden_drone, hidden_evtol], dim=-1)
+            hidden_attn_weighted = self.type_fuse(hidden_attn_weighted)
+        else:
+            # single stream (no type split): reuse attn_drone with full mask
+            hidden_attn_weighted, _ = self.attn_drone(robot_states, output_spatial, human_masks)
+
+        # hidden_attn_weighted computed above based on use_type_split
 
 
         # Do a forward pass through GRU

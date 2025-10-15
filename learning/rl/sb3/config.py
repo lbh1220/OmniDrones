@@ -51,11 +51,12 @@ class ArgsConfig:
         self.use_self_attn = True
         self.use_hr_attn = True
         self.env_name = 'AirspaceSimCity-v0'
-        self.sort_humans = True
+        self.sort_humans = False
         self.cuda = True
         self.action_space_type = "beta" # discrete or beta or Gaussian
         self.init_gain = 0.1
         self.use_rnn = True
+        self.use_type_split_attn = True
 
 
 class Config(object):

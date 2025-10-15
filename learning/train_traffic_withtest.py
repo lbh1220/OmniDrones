@@ -102,6 +102,7 @@ def main():
     parser.add_argument("--norm_obs", action="store_true", default=False, help="Reward normalize")
 
     parser.add_argument("--use_angle_distance_obs", action="store_true", default=False, help="Use angle distance obs")
+    parser.add_argument("--use_type_split_attn", action="store_true", default=False, help="Use type split attn")
 
     parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
@@ -149,6 +150,7 @@ def main():
     algo_args.lr = args.learning_rate
     algo_args.seq_length = args.n_steps
     algo_args.use_rnn = args.use_rnn
+    algo_args.use_type_split_attn = args.use_type_split_attn
     if args.total_timesteps is not None:
         algo_args.num_env_steps = args.total_timesteps
 
