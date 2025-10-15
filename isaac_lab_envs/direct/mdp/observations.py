@@ -212,7 +212,7 @@ class TrafficObservationProcessor:
         Args:
             traffic_positions: [total_traffic, 3] traffic位置
             traffic_velocities: [total_traffic, 3] traffic速度
-            traffic_types: [total_traffic] traffic类型（0=evtol, 1=drone）
+            traffic_types: [total_traffic] traffic类型（1=drone, 2=evtol；0=dummy）
         """
         self.traffic_positions = traffic_positions
         self.traffic_velocities = traffic_velocities
@@ -246,8 +246,8 @@ class TrafficObservationProcessor:
             'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.robot_node_dim), dtype=np.float32),
             'temporal_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.temporal_edges_dim), dtype=np.float32),
             'spatial_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(total_traffic_num, self.spatial_dim), dtype=np.float32),
-            'detected_human_num': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
-            'spatial_types': gym.spaces.Box(low=0, high=1, shape=(total_traffic_num,), dtype=np.float32),
+            'visible_masks': gym.spaces.Box(low=0.0, high=1.0, shape=(total_traffic_num,), dtype=np.float32),
+            'spatial_types': gym.spaces.Box(low=0, high=2, shape=(total_traffic_num,), dtype=np.int64),
         }
         return policy_space_dict
 
@@ -291,7 +291,7 @@ class TrafficObservationProcessor:
         ], dim=-1)
         
         # 计算空间边观测（使用预计算的轨迹）
-        spatial_edges, detected_counts, spatial_types = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
+        spatial_edges, visible_masks, spatial_types = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
         
         
         # 构建观测字典
@@ -299,7 +299,7 @@ class TrafficObservationProcessor:
             'robot_node': robot_node,
             'temporal_edges': robot_vel,  # [num_envs, 1, 2]
             'spatial_edges': spatial_edges,
-            'detected_human_num': detected_counts,
+            'visible_masks': visible_masks,
             'spatial_types': spatial_types,
         }
         
@@ -314,8 +314,8 @@ class TrafficObservationProcessor:
             
         Returns:
             spatial_edges: [num_envs, total_traffic_num, spatial_dim]
-            detected_counts: [num_envs, 1]
-            spatial_types: [num_envs, total_traffic_num] (0=evtol, 1=drone)
+            visible_masks: [num_envs, total_traffic_num]
+            spatial_types: [num_envs, total_traffic_num] (1=drone, 2=evtol；0=dummy)
         """
         num_envs = robot_pos.shape[0]
         spatial_dim_xy = 2 * (self.predict_steps + 1)
@@ -325,9 +325,9 @@ class TrafficObservationProcessor:
             spatial_edges = torch.zeros(
                 (num_envs, self.total_traffic_num, self.spatial_dim), device=self.device
             )
-            detected_counts = torch.ones((num_envs, 1), device=self.device)
+            visible_masks = torch.zeros((num_envs, self.total_traffic_num), device=self.device)
             spatial_types = torch.zeros((num_envs, self.total_traffic_num), dtype=torch.long, device=self.device)
-            return spatial_edges, detected_counts, spatial_types
+            return spatial_edges, visible_masks, spatial_types
         
         # 计算相对位置 [num_envs, total_traffic, predict_steps+1, 2]
         traffic_pos_2d = self.traffic_future_traj[:, :, :2]  # [total_traffic, predict_steps+1, 2]
@@ -337,8 +337,9 @@ class TrafficObservationProcessor:
         
         # 计算距离用于感知范围过滤
         current_distances = torch.norm(relative_pos[:, :, 0], dim=-1)  # [num_envs, total_traffic]
+        self.sensor_range = 1000
         in_range_mask = current_distances <= self.sensor_range
-        
+        # 假设都能看到        
         # 展平预测位置为spatial edges格式
         if self.use_angle_distance_obs:
             # 编码为 (sin, cos, 1/(d+1)) 并展平
@@ -376,25 +377,25 @@ class TrafficObservationProcessor:
             fill_spatial_edges = torch.zeros((num_envs, pad_count, self.spatial_dim), device=self.device)
             spatial_edges = torch.cat([spatial_edges, fill_spatial_edges], dim=1)
 
-        # 生成spatial_types并pad（0=evtol, 1=drone）
+        # 生成spatial_types并pad（1=drone, 2=evtol；0=dummy）
         base_types = self.traffic_types  # [total_traffic]
         if base_types is None or base_types.numel() == 0:
-            spatial_types = torch.ones((num_envs, self.total_traffic_num), dtype=torch.long, device=self.device)
+            spatial_types = torch.zeros((num_envs, self.total_traffic_num), dtype=torch.long, device=self.device)
         else:
             expanded_types = base_types.view(1, -1).expand(num_envs, -1).to(device=self.device)
-            # default type is drone, so we need to set the type to 1
             if pad_count > 0:
-                fill_types = torch.ones((num_envs, pad_count), dtype=torch.long, device=self.device)
+                fill_types = torch.zeros((num_envs, pad_count), dtype=torch.long, device=self.device)
                 spatial_types = torch.cat([expanded_types, fill_types], dim=1)
             else:
                 spatial_types = expanded_types
         
-        # 生成detected_human_num（每个env的在范围内数量，至少为1）
-        detected_counts = torch.sum(in_range_mask, dim=1, dtype=torch.int32)  # [num_envs]
-        detected_counts = torch.maximum(detected_counts, torch.ones_like(detected_counts))
-        detected_counts = detected_counts.unsqueeze(-1) # [num_envs, 1]
+        # 生成visible_masks并pad
+        visible_masks = in_range_mask
+        if pad_count > 0:
+            fill_masks = torch.zeros((num_envs, pad_count), dtype=visible_masks.dtype, device=self.device)
+            visible_masks = torch.cat([visible_masks, fill_masks], dim=1)
 
-        return spatial_edges, detected_counts, spatial_types.long()
+        return spatial_edges, visible_masks.float(), spatial_types.long()
     
 
 
@@ -466,7 +467,7 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
         ], dim=-1)  # [num_envs, 1, 9]
         
         # 计算空间边观测（使用预计算的轨迹）
-        spatial_edges, detected_counts, spatial_types = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
+        spatial_edges, visible_masks, spatial_types = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
         
         
         # 构建观测字典
@@ -474,7 +475,7 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
             'robot_node': robot_node,
             'temporal_edges': robot_vel,  # [num_envs, 1, 2]
             'spatial_edges': spatial_edges,
-            'detected_human_num': detected_counts,
+            'visible_masks': visible_masks,
             'spatial_types': spatial_types,
         }
         

@@ -73,7 +73,7 @@ class TrafficNamespace:
     # 交通飞机状态
     traffic_positions: torch.Tensor = None     # [total_traffic, 3]
     traffic_velocities: torch.Tensor = None    # [total_traffic, 3]
-    traffic_types: torch.Tensor = None         # [total_traffic] 类型索引, 0=evtol, 1=drone
+    traffic_types: torch.Tensor = None         # [total_traffic] 类型索引, 0=dummy, 1=drone, 2=evtol
     traffic_safety_radius: torch.Tensor = None # [total_traffic]
     traffic_future_traj: torch.Tensor = None   # [total_traffic, predict_steps+1, 3]
     

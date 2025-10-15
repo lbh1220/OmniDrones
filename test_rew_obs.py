@@ -107,7 +107,7 @@ traffic_positions = torch.tensor([[0.0, 0.0, 20.0], [15, 15, 20.0], [22, 15, 20.
                                 device=device, dtype=torch.float32)
 traffic_velocities = torch.tensor([[-2, -0.0, 0.0], [0.0, 1.0, 0.0], [0, 1, 0.0]], 
                                  device=device, dtype=torch.float32)
-traffic_types = torch.tensor([0, 1, 0], device=device)  # 0=evtol, 1=drone
+traffic_types = torch.tensor([2, 1, 2], device=device, dtype=torch.long)  # 0=dummy, 1=drone, 2=evtol
 traffic_safety_radius = torch.tensor([10.0, 1.0, 1.0], device=device, dtype=torch.float32)
 
 # 定义ego drone状态数据 [num_envs, 1, 13]

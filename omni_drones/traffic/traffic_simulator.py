@@ -239,24 +239,25 @@ class TrafficSimulator:
         """
         Get types of all traffic aircraft.
         drone: 1
-        evtol: 0
+        evtol: 2
+        (dummy padding will be handled downstream as 0 if needed)
         """
         types = []
         if self.drone_manager is not None:
-            drone_types = torch.ones(self.config.num_drones, device=self.device)
+            drone_types = torch.ones(self.config.num_drones, device=self.device, dtype=torch.long)
             if activate_drones_num is not None:
                 if activate_drones_num >= 0 and activate_drones_num < drone_types.shape[0]:
                     drone_types = drone_types[:activate_drones_num]
             types.append(drone_types)
         if self.evtol_manager is not None:
-            evtol_types = torch.zeros(self.config.num_evtols, device=self.device)
+            evtol_types = torch.full((self.config.num_evtols,), 2, device=self.device, dtype=torch.long)
             if activate_evtols_num is not None:
                 if activate_evtols_num >= 0 and activate_evtols_num < evtol_types.shape[0]:
                     evtol_types = evtol_types[:activate_evtols_num]
             types.append(evtol_types)
         if len(types) == 0:
-            return torch.empty(0, device=self.device)
-        return torch.cat(types, dim=0)
+            return torch.empty(0, device=self.device, dtype=torch.long)
+        return torch.cat(types, dim=0).to(dtype=torch.long)
 
     def get_aircraft_velocities(self, 
                                 activate_drones_num: int = None, 

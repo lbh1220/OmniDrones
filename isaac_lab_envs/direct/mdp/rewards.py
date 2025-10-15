@@ -204,14 +204,14 @@ class TrafficRewardCalculator:
 
         # 7. 计算TTC/CPA指标（基于当前 traffic 的位置和速度）
         robot_vel_2d = state.ego_drone.velocities[:, :, :2]
-        # Filter eVTOLs on the fly using traffic_types == 0
+        # Filter eVTOLs on the fly using traffic_types == 2
         use_positions = None
         if (state.traffic is not None and
             state.traffic.traffic_positions is not None and state.traffic.traffic_positions.numel() > 0 and
             state.traffic.traffic_velocities is not None and state.traffic.traffic_velocities.numel() > 0 and
             state.traffic.traffic_safety_radius is not None and state.traffic.traffic_safety_radius.numel() > 0 and
             state.traffic.traffic_types is not None and state.traffic.traffic_types.numel() > 0):
-            evtol_mask = (state.traffic.traffic_types == 0)
+            evtol_mask = (state.traffic.traffic_types == 2)
             if evtol_mask.any():
                 use_positions = state.traffic.traffic_positions[evtol_mask]
                 use_velocities = state.traffic.traffic_velocities[evtol_mask]
@@ -428,7 +428,7 @@ class TrafficRewardCalculator:
 
         # --- 2. 根据交通类型，构建参数张量 ---
         # 创建一个 [total_traffic] 的张量，其中 evtol 为 True, drone 为 False
-        is_evtol_mask = (traffic_types == 0)
+        is_evtol_mask = (traffic_types == 2)
 
         # 使用 torch.where 根据类型选择不同的参数值
         penalty_factors = torch.where(is_evtol_mask, self.future_evtol_penalty, self.future_drone_penalty) # [total_traffic]
