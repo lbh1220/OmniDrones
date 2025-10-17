@@ -440,7 +440,7 @@ class selfAttn_merge_SRNN(nn.Module):
 
 
         # human-human attention (always self-attn + mask)
-        use_type_split = getattr(self.args, 'use_type_split_attn', True)
+        use_type_split = getattr(self.args, 'use_type_split_attn', False)
         if use_type_split:
             spatial_attn_out = self.spatial_attn(spatial_edges, human_masks, spatial_types=spatial_types).view(seq_length, nenv, self.human_num, -1)
         else:
@@ -452,7 +452,7 @@ class selfAttn_merge_SRNN(nn.Module):
         type_mask_evtol = (spatial_types == 2).float()
 
         # Decide single-stream vs dual-stream attention
-        use_type_split = getattr(self.args, 'use_type_split_attn', True)
+        use_type_split = getattr(self.args, 'use_type_split_attn', False)
         if use_type_split:
             mask_drone = human_masks * type_mask_drone
             mask_evtol = human_masks * type_mask_evtol

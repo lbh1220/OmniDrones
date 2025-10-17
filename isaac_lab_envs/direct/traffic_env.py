@@ -127,7 +127,7 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_cross_track_coeff = 0.0
 
     rew_ttc_threshold = 10.0
-    rew_ttc_alpha = 1.0
+    rew_ttc_alpha = 0.0
     rew_ttc_beta = 5.0
     rew_ttc_idle_penalty = 0.0
     rew_patience_coeff = 0.0

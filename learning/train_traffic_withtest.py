@@ -125,8 +125,8 @@ def main():
 
     # video recording
     parser.add_argument("--video", action="store_true", default=False, help="Record video")
-    parser.add_argument("--video_interval", type=int, default=1000, help="Video interval")
-    parser.add_argument("--video_length", type=int, default=500, help="Video length")
+    parser.add_argument("--video_interval", type=int, default=10000, help="Video interval")
+    parser.add_argument("--video_length", type=int, default=1000, help="Video length")
 
     # 添加AppLauncher参数
     AppLauncher.add_app_launcher_args(parser)

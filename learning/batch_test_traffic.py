@@ -106,12 +106,12 @@ def main():
     parser = argparse.ArgumentParser(description="Batch test multiple trained SB3 models")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/ablation/u10e1/newobs/fu-2.0fe-1.0_1009_003104",
+                        default="runs/traffic/ttc_sweep/u2e1/type_split_attn/r8.0_baseline_1015_231637",
                        help="Path to the trained model directory")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
     
     # 模型相关参数
-    parser.add_argument("--drones_num", type=int, default=10, help="Number of drones")
+    parser.add_argument("--drones_num", type=int, default=2, help="Number of drones")
     parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
     parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
     parser.add_argument("--use_rnn", action="store_true", default=True, help="Use RNN-based recurrent policy")
@@ -159,9 +159,16 @@ def main():
     algo_args.num_processes = args.num_envs
     algo_args.use_rnn = args.use_rnn
 
+
     # 导入环境配置（必须在AppLauncher之后）
     from omni.isaac.lab.utils.io import load_yaml
     from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg, TrafficCurriculumCfg
+
+    # load training_args.yaml
+    training_args = os.path.join(args.model_dir, "training_args.yaml")
+    training_args = load_yaml(training_args)
+    algo_args.use_angle_distance_obs = training_args["use_angle_distance_obs"]
+    algo_args.use_type_split_attn = training_args["use_type_split_attn"]
 
     # 检查模型目录
     if not os.path.exists(args.model_dir):
@@ -183,7 +190,7 @@ def main():
 
     # 从保存的配置中加载关键参数
     if os.path.exists(cfg_yaml):
-        loaded_keys = ["action_space_type", "action_space_num_per_dim", "action_mode", "predict_steps", "use_angle_distance_obs"]
+        loaded_keys = ["action_space_type", "action_space_num_per_dim", "action_mode", "predict_steps", "use_angle_distance_obs", "use_global_path"]
         for key in loaded_keys:
             if hasattr(yaml_cfg, key):
                 setattr(cfg, key, getattr(yaml_cfg, key))
@@ -191,7 +198,7 @@ def main():
     cfg.seed = algo_args.seed
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
-    cfg.use_global_path = args.use_global_path
+    cfg.traffic_sim.evtol.safety_radius = 8.0
     cfg.debug_vis = True
 
     cfg.orca.enable = False
@@ -234,6 +241,8 @@ def main():
 
     # 创建一次base_env（Isaac Sim只能实例化一个）
     main_logger.info("Creating base test environment...")
+    from omni.isaac.lab.utils.io import dump_yaml
+    dump_yaml(os.path.join(output_dir, "test_env.yaml"), cfg)
     base_env = create_test_env(cfg, args=args)
     main_logger.info("Base environment created successfully.")
 
