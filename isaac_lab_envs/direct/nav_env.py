@@ -49,6 +49,7 @@ from tensordict.tensordict import TensorDict
 
 
 from isaac_lab_envs.direct.mdp.state import EnvState
+from isaac_lab_envs.direct.mdp.metrics import MetricsManager, CrossTrackModule, AccelerationModule, FlagsModule
 
 
 ##
@@ -219,13 +220,8 @@ class NavEnv(DirectRLEnv):
             "goal_reached": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
             "collision": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         }
-        if self.cfg.use_global_path:
-            self.extras["cross_track_error_avg"] = torch.zeros(self.num_envs, device=self.device)
-            self.extras["episode_cross_error"] = torch.zeros(self.num_envs, device=self.device)
-            
-        # 加速度统计
-        self.extras["acceleration_avg"] = torch.zeros(self.num_envs, device=self.device)
-        self.extras["episode_acceleration"] = torch.zeros(self.num_envs, device=self.device)
+        self.extras["is_success"] = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
             
         # debug可视化
         if self.sim.has_gui():
@@ -237,6 +233,8 @@ class NavEnv(DirectRLEnv):
         self.circle_radius = min(self.cfg.area_bounds.xmax - self.cfg.area_bounds.xmin, 
                                 self.cfg.area_bounds.ymax - self.cfg.area_bounds.ymin)/2.0
         
+        self._init_metrics()
+
         # debug visualization
         self.set_debug_vis(self.cfg.debug_vis)
 
@@ -246,6 +244,14 @@ class NavEnv(DirectRLEnv):
         from isaac_lab_envs.direct.mdp.rewards import NavRewardCalculator
         self.obs_processor = NavObservationProcessor(cfg)
         self.reward_calculator = NavRewardCalculator(cfg)
+
+    def _init_metrics(self):
+        # 初始化 Metrics 管理器并注册模块
+        self.metrics = MetricsManager(num_envs=self.num_envs, device=self.device)
+        self.metrics.bind_env(self)
+        self.metrics.register(FlagsModule())
+        self.metrics.register(CrossTrackModule())
+        self.metrics.register(AccelerationModule())
 
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""
@@ -467,59 +473,14 @@ class NavEnv(DirectRLEnv):
         if self.cfg.use_global_path:
             # self.state.update_navigation_state_iterative(self.cfg.lookahead_distance, env_ids)
             self.state.update_navigation_state_vectorized(self.cfg.lookahead_distance, env_ids)
-            # pass
-            
-            # 更新cross_track_error的累积平均值
-            self._update_cross_track_error_avg()
-            
-        # 更新acceleration的累积平均值（使用previous和current velocity）
-        self._update_acceleration_avg()
-
-    def _update_cross_track_error_avg(self):
-        """更新cross_track_error的累积平均值"""
-        if (self.state.navigation.cross_track_errors is not None and 
-            self.cfg.use_global_path):
-            
-            # 当前episode的步数 (从1开始计数)
-            current_step = self.episode_length_buf + 1  # [num_envs]
-            
-            # 当前cross_track_error
-            current_errors = self.state.navigation.cross_track_errors  # [num_envs]
-            
-            # 递增平均值公式: new_avg = (old_avg * (n-1) + new_value) / n
-            old_avg = self.extras["cross_track_error_avg"]  # [num_envs]
-            new_avg = (old_avg * (current_step - 1) + current_errors) / current_step
-            
-            self.extras["cross_track_error_avg"] = new_avg
-
-    def _update_acceleration_avg(self):
-        """更新acceleration的累积平均值"""
-        # 当前episode的步数 (从1开始计数)
-        current_step = self.episode_length_buf + 1  # [num_envs]
-        
-        # 计算当前加速度（速度变化的模）
-        if (self.state.ego_drone.velocities is not None and 
-            self.state.ego_drone.previous_velocities is not None):
-            
-            current_velocity = self.state.ego_drone.velocities   # [num_envs, 1, 3]
-            previous_velocity = self.state.ego_drone.previous_velocities   # [num_envs, 1, 3]
-            
-            # 计算速度变化（加速度）
-            velocity_change = current_velocity - previous_velocity  # [num_envs, 1, 3]
-            
-            # 计算速度变化的模（L2范数）
-            current_acceleration = torch.norm(velocity_change.squeeze(1), dim=1)  # [num_envs]
-            
-            # 递增平均值公式: new_avg = (old_avg * (n-1) + new_value) / n
-            old_avg = self.extras["acceleration_avg"]  # [num_envs]
-            new_avg = (old_avg * (current_step - 1) + current_acceleration) / current_step
-            
-            self.extras["acceleration_avg"] = new_avg
+        # metrics modules are triggered only on_done
 
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
         # 使用观测处理器计算观测
         observations = self.obs_processor.process_observation(self.state)
+        # write to mdp state for cross-component access
+        self.state.set_observations(observations)
         
         return observations
 
@@ -527,6 +488,8 @@ class NavEnv(DirectRLEnv):
         """计算基于2D导航的奖励。"""
         # 使用奖励计算器计算奖励
         reward = self.reward_calculator.compute_reward(self.state)
+        # write to mdp state
+        self.state.set_reward(reward)
         
         return reward
 
@@ -536,8 +499,8 @@ class NavEnv(DirectRLEnv):
         
         # 从状态对象获取数据
         reached_target = self.state.navigation.reached_target_mask
-        self.extras["goal_reached"] = reached_target
-        
+        self.extras["goal_reached"] = reached_target.clone()
+        self.extras["is_success"] = reached_target.clone()
         # 3. 高度异常条件（保持在合理高度范围内）
         robot_height = self.state.ego_drone.positions.squeeze(1)[:, 2]  # [num_envs]
         height_abnormal = (
@@ -554,6 +517,10 @@ class NavEnv(DirectRLEnv):
         # 超时条件：由DirectRLEnv框架自动处理
         truncated = self.episode_length_buf >= self.max_episode_length 
         
+        # 在返回之前，通知 metrics 管理器（用于写入 episode/rolling 指标）
+        self.metrics.on_done(terminated, truncated)
+        # write to mdp state
+        self.state.set_dones(terminated, truncated)
         return terminated, truncated
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -594,15 +561,10 @@ class NavEnv(DirectRLEnv):
         
         # 重置状态对象
         self.state.reset_env_states(env_ids)
+        # # 重置 MDP 状态, 不应该重置，这会导致reward清零，但是本步本身是有上个eposide的reward的
+        # self.state.reset_mdp(env_ids)
         
-        # 重置cross_track_error累积平均值
-        if self.cfg.use_global_path:
-            self.extras["episode_cross_error"][env_ids] = self.extras["cross_track_error_avg"][env_ids].clone()
-            self.extras["cross_track_error_avg"][env_ids] = 0.0
-            
-        # 重置acceleration累积平均值
-        self.extras["episode_acceleration"][env_ids] = self.extras["acceleration_avg"][env_ids].clone()
-        self.extras["acceleration_avg"][env_ids] = 0.0
+
         
         # 更新状态信息
         self._post_physics_step(env_ids=env_ids)
@@ -611,7 +573,8 @@ class NavEnv(DirectRLEnv):
         self.reward_calculator.reset_potential(self.state, env_ids)
         
         super()._reset_idx(env_ids)
-
+        self.metrics.on_reset(env_ids)
+        
     def _set_debug_vis_impl(self, debug_vis: bool):
         """Setup debug visualization."""
         if debug_vis:

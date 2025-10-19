@@ -82,6 +82,17 @@ class TrafficNamespace:
     pred_timestep: float = 2.0
 
 
+@dataclass
+class MdpNamespace:
+    """MDP 相关状态命名空间
+    统一维护跨组件访问所需的张量：观测、奖励、终止与截断。
+    """
+    observations: dict | None = None            # 最近一次观测（可为字典 of tensors）
+    reward: torch.Tensor | None = None          # [num_envs]
+    terminated: torch.Tensor | None = None      # [num_envs] bool
+    truncated: torch.Tensor | None = None       # [num_envs] bool
+
+
 class EnvState:
     """统一的环境状态管理类，支持多个命名空间"""
     
@@ -97,6 +108,8 @@ class EnvState:
         
         # 可选命名空间
         self.traffic = None  # 只在需要时初始化
+        # MDP 命名空间
+        self.mdp = MdpNamespace()
         
         # 其他可扩展的命名空间
         self._custom_namespaces = {}
@@ -151,6 +164,11 @@ class EnvState:
         self.mission.episode_progress = torch.zeros(self.num_envs, device=self.device)
         self.mission.success_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.mission.failure_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        # MDP 状态
+        self.mdp.reward = torch.zeros(self.num_envs, device=self.device)
+        self.mdp.terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.mdp.truncated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         
     def update_ego_drone_state(self, drone_state: torch.Tensor):
         """更新自车无人机状态"""
@@ -262,6 +280,13 @@ class EnvState:
                 attr_value = getattr(self.mission, attr_name)
                 if isinstance(attr_value, torch.Tensor):
                     setattr(self.mission, attr_name, attr_value.to(device))
+        
+        # 移动mdp张量
+        for attr_name in dir(self.mdp):
+            if not attr_name.startswith('_'):
+                attr_value = getattr(self.mdp, attr_name)
+                if isinstance(attr_value, torch.Tensor):
+                    setattr(self.mdp, attr_name, attr_value.to(device))
                     
         # 移动traffic张量（如果存在）
         if self.traffic is not None:
@@ -270,6 +295,34 @@ class EnvState:
                     attr_value = getattr(self.traffic, attr_name)
                     if isinstance(attr_value, torch.Tensor):
                         setattr(self.traffic, attr_name, attr_value.to(device))
+
+    # -------------------- MDP helpers --------------------
+    def set_observations(self, observations: dict | None):
+        self.mdp.observations = observations
+
+    def set_reward(self, reward: torch.Tensor):
+        if reward is None:
+            return
+        # 保证形状为 [num_envs]
+        if reward.ndim > 1:
+            reward = reward.squeeze()
+        self.mdp.reward = reward
+
+    def set_dones(self, terminated: torch.Tensor, truncated: torch.Tensor):
+        if terminated is not None:
+            self.mdp.terminated = terminated.bool()
+        if truncated is not None:
+            self.mdp.truncated = truncated.bool()
+
+    def reset_mdp(self, env_ids: torch.Tensor):
+        if env_ids is None or len(env_ids) == 0:
+            return
+        if self.mdp.reward is not None:
+            self.mdp.reward[env_ids] = 0.0
+        if self.mdp.terminated is not None:
+            self.mdp.terminated[env_ids] = False
+        if self.mdp.truncated is not None:
+            self.mdp.truncated[env_ids] = False
     def update_navigation_state_vectorized(self, lookahead_distance: float = 10.0, env_ids: torch.Tensor | None = None):
         """
         【矢量化版】为指定环境（或全部环境）更新其导航状态。

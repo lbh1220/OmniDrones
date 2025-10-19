@@ -106,7 +106,7 @@ def main():
     parser = argparse.ArgumentParser(description="Batch test multiple trained SB3 models")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/ttc_sweep/u2e1/type_split_attn/r8.0_baseline_1015_231637",
+                        default="runs/traffic/future_penalty/u10e1_r8.0/split_attn/fu-2.0fe-2.0_1017_172912",
                        help="Path to the trained model directory")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
     

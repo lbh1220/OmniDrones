@@ -475,6 +475,10 @@ class CustomPPO(OnPolicyAlgorithm):
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                     self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                if len(self.ep_success_buffer) > 0:
+                    # success buffer is a list of bool tensors
+                    success_rate = sum(1 for success in self.ep_success_buffer if success) / len(self.ep_success_buffer)
+                    self.logger.record("rollout/success_rate", success_rate)
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")

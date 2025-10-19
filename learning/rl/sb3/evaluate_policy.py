@@ -42,21 +42,21 @@ def evaluate_policy(policy, env, num_envs, num_episodes, new_logger):
                  
                     # Extract cross-track error if available
                     cross_track_error = 0.0
-                    if 'episode_cross_error' in info[i]:  # Note: typo in original code
-                        cross_track_error = info[i]['episode_cross_error'].item()
+                    if 'metrics/episode/mean_cross_track_error' in info[i]:  # Note: typo in original code
+                        cross_track_error = info[i]['metrics/episode/mean_cross_track_error'].item()
                     
                     episode_cross_track_errors.append(cross_track_error)
 
                     near_collision_ratio = 0.0
-                    if 'episode_near_collision_ratio' in info[i]:
-                        near_collision_ratio = info[i]['episode_near_collision_ratio'].item()
+                    if 'metrics/episode/mean_near_collision_ratio' in info[i]:
+                        near_collision_ratio = info[i]['metrics/episode/mean_near_collision_ratio'].item()
                     episode_near_collision_ratio.append(near_collision_ratio)
 
                     
                     # Extract acceleration if available
                     acceleration = 0.0
-                    if 'episode_acceleration' in info[i]:
-                        acceleration = info[i]['episode_acceleration'].item()
+                    if 'metrics/episode/mean_cross_track_error' in info[i]:
+                        acceleration = info[i]['metrics/episode/mean_cross_track_error'].item()
                     episode_accelerations.append(acceleration)
                     
                     # Classify episode result

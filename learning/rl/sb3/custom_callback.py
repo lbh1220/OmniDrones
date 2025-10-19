@@ -115,11 +115,7 @@ class SucessRateCallback(BaseCallback):
         # 维护最近100次episode的结果
         if queue_size < 100:
             queue_size = 100
-        self.episode_results = deque(maxlen=queue_size)
-        self.episode_rewards = deque(maxlen=queue_size)
-        self.episode_cross_track_errors = deque(maxlen=queue_size)
-        self.episode_accelerations = deque(maxlen=queue_size)
-        self.episode_near_collision_ratio = deque(maxlen=queue_size)
+        self.current_success_rate = 0.0
         
     def _checkpoint_path(self, checkpoint_type: str = "", extension: str = "") -> str:
         """
@@ -135,76 +131,46 @@ class SucessRateCallback(BaseCallback):
     def _on_rollout_end(self):
         self.check_num += 1
         if self.check_num % self.check_freq == 0:
-            # 计算最近100次episode的成功率
-            if len(self.episode_results) > 0:
-                recent_success = sum(1 for result in self.episode_results if result == 'success')
-                recent_collision = sum(1 for result in self.episode_results if result == 'collision')
-                recent_timeout = sum(1 for result in self.episode_results if result == 'timeout')
-                total_recent = len(self.episode_results)
-                mean_recent_reward = np.mean(self.episode_rewards)
-                success_rate = recent_success / total_recent
-                collision_rate = recent_collision / total_recent
-                timeout_rate = recent_timeout / total_recent
-                mean_recent_cross_track_error = np.mean(self.episode_cross_track_errors)
-                self.logger.record("val/success_rate", success_rate)
-                self.logger.record("val/collision_rate", collision_rate)
-                self.logger.record("val/timeout_rate", timeout_rate)
-                self.logger.record("val/mean_recent_reward", mean_recent_reward)
-                self.logger.record("val/mean_recent_cross_track_error", mean_recent_cross_track_error)
-                mean_recent_near_collision_ratio = np.mean(self.episode_near_collision_ratio)
-                self.logger.record("val/mean_recent_near_collision_ratio", mean_recent_near_collision_ratio)
-                if success_rate >= self.best_success_rate:
-                    self.best_success_rate = success_rate
-                    model_path = self._checkpoint_path(extension="zip")
-                    self.model.save(model_path)
-                    self.logger.info(f"Best success rate: {self.best_success_rate}, save to {model_path}")
-                    if self.model.get_vec_normalize_env() is not None:
-                        # Save the VecNormalize statistics
-                        vec_normalize_path = self._checkpoint_path("_vecnormalize", extension="pkl")
-                        self.model.get_vec_normalize_env().save(vec_normalize_path)
-                        
-                if len(self.episode_accelerations) > 0:
-                    mean_recent_acceleration = np.mean(self.episode_accelerations)
-                    self.logger.record("val/mean_recent_acceleration", mean_recent_acceleration)
-                else:
-                    self.logger.record("val/mean_recent_acceleration", 0)
+            # 直接从第一个 info 读取 rolling 指标（所有 env 值相同）
+            infos: List[dict] = self.locals.get('infos', [])
+            if len(infos) == 0:
+                return
 
-            else:
-                self.logger.record("val/success_rate", 0)
-                self.logger.record("val/collision_rate", 0)
-                self.logger.record("val/timeout_rate", 0)
-                self.logger.record("val/mean_recent_reward", 0)
-                self.logger.record("val/mean_recent_cross_track_error", 0)
-                self.logger.record("val/mean_recent_acceleration", 0)
-                self.logger.record("val/mean_recent_near_collision_ratio", 0)
+            info0 = infos[0]
+
+            def _to_float(x):
+                try:
+                    # Prefer .item() for torch/numpy scalars or 0-d arrays
+                    if hasattr(x, 'item'):
+                        return float(x.item())
+                    return float(x)
+                except Exception:
+                    return None
+
+            # 收集 metrics/rolling/*
+            rolling_items = {k: v for k, v in info0.items() if isinstance(k, str) and k.startswith("metrics/rolling/")}
+
+            # 单独取 success_rate 作为保存依据
+            success_rate_val = rolling_items.get("metrics/rolling/success_rate")
+            success_rate = _to_float(success_rate_val) if success_rate_val is not None else None
+            self.current_success_rate = success_rate
+            # 记录所有 rolling 指标，标签沿用 extras 的键
+            for k, v in rolling_items.items():
+                val = _to_float(v)
+                if val is not None:
+                    self.logger.record(k, val)
+
+            # 保存模型依据：成功率（若存在）
+            if success_rate is not None and success_rate >= self.best_success_rate:
+                self.best_success_rate = success_rate
+                model_path = self._checkpoint_path(extension="zip")
+                self.model.save(model_path)
+                self.logger.info(f"Best success rate: {self.best_success_rate}, save to {model_path}")
+                if self.model.get_vec_normalize_env() is not None:
+                    vec_normalize_path = self._checkpoint_path("_vecnormalize", extension="pkl")
+                    self.model.get_vec_normalize_env().save(vec_normalize_path)
     def _on_step(self) -> bool:
-        # 获取当前环境的reward和info
-        for i, done in enumerate(self.locals['dones']):
-            if done:
-                # 将episode结果添加到deque中
-                if self.locals['infos'][i]['goal_reached']:
-                    self.episode_results.append('success')
-                elif self.locals['infos'][i]['collision']:
-                    self.episode_results.append('collision')
-                else:
-                    self.episode_results.append('timeout')
-                if 'episode_cross_error' in self.locals['infos'][i]:
-                    self.episode_cross_track_errors.append(self.locals['infos'][i]['episode_cross_error'].item())
-                else:
-                    self.episode_cross_track_errors.append(0)
-                if 'episode_acceleration' in self.locals['infos'][i]:
-                    self.episode_accelerations.append(self.locals['infos'][i]['episode_acceleration'].item())
-                else:
-                    self.episode_accelerations.append(0)
-                if 'episode_near_collision_ratio' in self.locals['infos'][i]:
-                    self.episode_near_collision_ratio.append(self.locals['infos'][i]['episode_near_collision_ratio'].item())
-                else:
-                    self.episode_near_collision_ratio.append(0)
-                info = self.locals['infos'][i]
-                if 'episode' in info:
-                    self.episode_rewards.append(info['episode']['r'])
-                else:
-                    self.episode_rewards.append(0)
+        # 统计逻辑移动到 _on_rollout_end
         return True
 
 
@@ -276,14 +242,9 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
             return False
         if self.current_course >= (self.course_num - 1):
             return False
-        if len(self.episode_results) >= self.min_episodes_for_curriculum:
-            recent_success = sum(1 for result in self.episode_results if result == 'success')
-            total_recent = len(self.episode_results)
-            current_success_rate = recent_success / total_recent
-            
-            if current_success_rate >= self.success_rate_threshold:
-                self._switch_to_next_course()
-                return True
+        if self.current_success_rate >= self.success_rate_threshold:
+            self._switch_to_next_course()
+            return True
         steps_in_current_course = self.num_timesteps - self.curriculum_start_timesteps
         if steps_in_current_course > self.total_timesteps_per_course:
             self._switch_to_next_course()
@@ -305,9 +266,7 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
         # # Clear episode results for new course
         base_env = self.model.get_env().unwrapped
         base_env.set_curriculum(self.current_course)
-        self.episode_results.clear()
-        self.episode_rewards.clear()
-        self.episode_cross_track_errors.clear()
+        self.current_success_rate = 0.0
         # Reset learning rate for new curriculum
         self._reset_learning_rate()
 
@@ -317,10 +276,6 @@ class CourseWithSuccessRateCallback(SucessRateCallback):
         
         # Reset episode counters for new course
         self.best_success_rate = 0.5
-        self.episode_num = 0
-        self.success_num = 0
-        self.collision_num = 0
-        self.timeout_num = 0
 
     def _reset_learning_rate(self):
         """
