@@ -13,7 +13,7 @@ import os
 
 from isaac_lab_envs.direct.nav_env import NavEnv, NavEnvCfg
 from isaac_lab_envs.direct.mdp.observations import CityNavObservationProcessor
-
+from isaac_lab_envs.utils.path_planner import GlobalPathPlanner, GlobalPathPlannerCfg
 
 @dataclass
 class NavCityEnvCfg(NavEnvCfg):
@@ -70,16 +70,22 @@ class NavCityEnvCfg(NavEnvCfg):
     grid_size: float = 1.0 # grid size for occupancy map
 
 
+    # if use global path
+    use_global_path: bool = True
+    lookahead_distance: float = 10.0
+    rew_cross_track_coeff: float = 0.0
+    rew_cross_track_alpha: float = 1.0
+    global_path_planner: GlobalPathPlannerCfg = GlobalPathPlannerCfg(
+        algorithm="astar",
+        smooth_method="shortcut"
+    )
+
 class NavCityEnv(NavEnv):
     cfg: NavCityEnvCfg
 
     def __init__(self, cfg: NavCityEnvCfg, render_mode: str | None = None, **kwargs):
         # override obs processor before parent init hooks use it
-        self.global_height_map = None
-        self.global_point_cloud_xy = None  # [N, 2] XY of sampled grid
-        self.global_point_cloud_z = None   # [N] Z hits (inf for miss)
-        self.global_pc_shape_hw = None     # (H, W) for reshaping
-        self.global_pc_bounds = None       # (xmin, xmax, ymin, ymax)
+        self.global_path_planner = None
         
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -101,7 +107,12 @@ class NavCityEnv(NavEnv):
         # 构建全局点云（一次性）
         # 应该不用担心顺序的问题，因为现在获取pc的方法是检测的world/ground这个mesh,即使有飞机也不会hit
         self._create_global_point_cloud()
+
+        if self.cfg.use_global_path:
+            self.global_path_planner = GlobalPathPlanner(self.cfg.global_path_planner)
+
         self._create_occupancy_grid()
+
 
 
     def _setup_lidar(self):
@@ -151,24 +162,21 @@ class NavCityEnv(NavEnv):
         distances = self.cfg.lidar_range - scan
         # 碰撞条件：任一射线距离 <= safety_radius
         collision_mask = (distances <= self.cfg.safety_radius).any(dim=1)
+
+        # If extended occupancy grid exists, also check collision by occupancy map
+        grid = getattr(self.state.map, "extended_occupancy_grid", None)
+        bounds = getattr(self.state.map, "grid_bounds", None)
+        grid_size = getattr(self.state.map, "grid_size", None)
+        if grid is not None and bounds is not None and grid_size is not None:
+            # Current drone positions: [num_envs, 1, 3] -> [num_envs, 3]
+            positions = self.state.ego_drone.positions
+            if positions is not None:
+                positions_3d = positions[:, 0, :]
+                safe_mask = self._are_positions_safe(positions_3d)
+                occ_collision = ~safe_mask
+                collision_mask = collision_mask | occ_collision
         return collision_mask
 
-
-    def _generate_crossing_task(self, num_env: int = 1, flight_height: float = 20.0):
-        if num_env <= 0:
-            raise ValueError("num_aircraft must be greater than 0")
-        area_center = torch.tensor([(self.cfg.area_bounds.xmin + self.cfg.area_bounds.xmax) / 2, 
-                                    (self.cfg.area_bounds.ymin + self.cfg.area_bounds.ymax) / 2, 
-                                    flight_height], device=self.device)
-        area_center = area_center.unsqueeze(0)
-        start_tensor = math_utils.sample_cylinder(self.circle_radius, (0, 0), num_env, self.device)
-        goal_tensor = start_tensor.clone()
-        goal_tensor = -goal_tensor
-        start_tensor = start_tensor + area_center
-        goal_tensor = goal_tensor + area_center
-
-        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1)
-    
     def _generate_crossing_task_with_waypoints(self, num_env: int = 1, flight_height: float = 20.0):
         if num_env <= 0:
             raise ValueError("num_aircraft must be greater than 0")
@@ -182,11 +190,58 @@ class NavCityEnv(NavEnv):
         start_tensor = start_tensor + area_center
         goal_tensor = goal_tensor + area_center
 
-        inter_points = math_utils.sample_cylinder(self.circle_radius/2.0, (0, 0), num_env, self.device)
-        inter_points = inter_points + area_center
-        waypoints = torch.cat([start_tensor.unsqueeze(1), inter_points.unsqueeze(1), goal_tensor.unsqueeze(1)], dim=1)
+        # Prepare outputs
+        max_wps = 256  # reasonable upper bound for A* path points
+        waypoints = torch.zeros(num_env, max_wps, 3, device=self.device)
+        waypoints_length = torch.zeros(num_env, dtype=torch.long, device=self.device)
 
-        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints
+        # Ensure planner ready and grid available
+        planner = self.global_path_planner if self.cfg.use_global_path else None
+        grid = getattr(self.state.map, "occupancy_grid", None)
+        bounds = getattr(self.state.map, "grid_bounds", None)
+        if planner is not None and grid is not None and bounds is not None:
+            # update grid in case re-generated
+            planner.update_grid_map(grid, self.cfg.grid_size, bounds)
+
+        # Iterate each env to plan individually
+        for i in range(num_env):
+            s = start_tensor[i, 0, :2]
+            g = goal_tensor[i, 0, :2]
+
+            # Retry sampling if path not found
+            max_retries = 10
+            path_xy = []
+            for _ in range(max_retries):
+                if planner is None:
+                    break
+                path_xy = planner.plan_path((float(s[0].item()), float(s[1].item())),
+                                             (float(g[0].item()), float(g[1].item())))
+                if len(path_xy) > 1:
+                    break
+                # resample start/goal around area_center circle if failed
+                s_new = math_utils.sample_cylinder(self.circle_radius, (0, 0), 1, self.device)[0]
+                g_new = -s_new
+                s = s_new + area_center[0]
+                g = g_new + area_center[0]
+
+            if len(path_xy) <= 1:
+                # fall back to straight-line 2-point path if planner unavailable or fail
+                path_xy = [
+                    (float(s[0].item()), float(s[1].item())),
+                    (float(g[0].item()), float(g[1].item()))
+                ]
+
+            # Write into waypoints with fixed altitude
+            altitude = float(flight_height)
+            n = min(len(path_xy), max_wps)
+            for k in range(n):
+                xk, yk = path_xy[k]
+                waypoints[i, k, 0] = xk
+                waypoints[i, k, 1] = yk
+                waypoints[i, k, 2] = altitude
+            waypoints_length[i] = n
+
+        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints, waypoints_length
 
     def _create_global_point_cloud(self):
         """
@@ -252,7 +307,7 @@ class NavCityEnv(NavEnv):
         self.state.map.pc_resolution = resolution
         # 同时保留高度图视图（便于快速阈值化）
         self.state.map.height_map = z_hits.reshape(num_y, num_x).contiguous()
-        self._save_height_map(hm=self.state.map.height_map,output_path="height_map.png")
+
         print(f"INFO: Global point cloud cached: shape(H,W)=({num_y},{num_x}), bounds=({xmin},{xmax},{ymin},{ymax})")
 
     def _create_occupancy_grid(self):
@@ -267,6 +322,64 @@ class NavCityEnv(NavEnv):
         self.state.map.occupancy_grid = self.get_occupancy_grid_at_height(bounds=bounds, height_z=height_z, grid_size=grid_size)
         self.state.map.grid_bounds = bounds
         self.state.map.grid_size = grid_size
+        from isaac_lab_envs.utils.map_utils import extend_occupancy_map
+        self.state.map.extended_occupancy_grid = extend_occupancy_map(self.state.map.occupancy_grid, self.cfg.safety_radius, grid_size)
+        
+        if self.cfg.use_global_path:
+            if self.global_path_planner is None:
+                self.global_path_planner = GlobalPathPlanner(self.cfg.global_path_planner)
+            self.global_path_planner.update_grid_map(self.state.map.occupancy_grid, 
+                                                    self.cfg.grid_size, bounds=bounds)
+
+    
+    def _are_positions_safe(self, positions: torch.Tensor) -> torch.Tensor:
+        """
+        Check whether one or a batch of world positions are safe using the extended occupancy grid.
+
+        Args:
+            positions: Tensor of shape [N, 3] or [3]. Positions are in world frame (x, y, z).
+
+        Returns:
+            Bool tensor of shape [N]: True means the position is safe (not occupied or out-of-bounds),
+            False means the position is inside an occupied cell.
+        """
+        grid = getattr(self.state.map, "extended_occupancy_grid", None)
+        bounds = getattr(self.state.map, "grid_bounds", None)
+        grid_size = getattr(self.state.map, "grid_size", None)
+        if grid is None or bounds is None or grid_size is None:
+            # No grid available -> treat as safe
+            if positions.ndim == 1:
+                return torch.ones(1, dtype=torch.bool, device=self.device)
+            return torch.ones(positions.shape[0], dtype=torch.bool, device=self.device)
+
+        if positions.ndim == 1:
+            positions = positions.unsqueeze(0)
+
+        # Ensure computations on the same device as the grid
+        device = grid.device
+        positions = positions.to(device)
+
+        # Extract XY components
+        x = positions[:, 0]
+        y = positions[:, 1]
+
+        xmin, xmax, ymin, ymax = map(float, bounds)
+        gs = float(grid_size)
+        H, W = grid.shape[-2], grid.shape[-1]
+
+        # Compute discrete indices without clamping to detect out-of-bounds
+        ix = torch.floor((x - xmin) / gs).long()
+        iy = torch.floor((y - ymin) / gs).long()
+
+        in_bounds = (ix >= 0) & (ix < W) & (iy >= 0) & (iy < H)
+        safe = torch.ones(positions.shape[0], dtype=torch.bool, device=device)
+        if torch.any(in_bounds):
+            ix_in = ix[in_bounds]
+            iy_in = iy[in_bounds]
+            occupied = grid[iy_in, ix_in]
+            safe[in_bounds] = ~occupied
+
+        return safe
     
     # 新API：从全局点云派生任意范围与分辨率的占据网格
     def get_occupancy_grid_at_height(self, bounds: tuple[float, float, float, float], height_z: float, grid_size: float) -> torch.Tensor:
@@ -343,48 +456,6 @@ class NavCityEnv(NavEnv):
 
         # 8. 执行粘贴操作，现在源和目标的尺寸保证匹配
         final_out[paste_y_start:paste_y_end, paste_x_start:paste_x_end] = out
-        self._save_height_map(hm=final_out,output_path="grid_map.png")
         # out put is [H,W]
         return final_out
 
-    def _save_height_map(self, hm, output_path: str, cmap: str = "viridis") -> None:
-        """
-        将 state.map.height_map 保存到本地：优先保存为 PNG，若缺依赖则保存为 NPY。
-        """
-        if hm is None:
-            print("WARNING: height_map is None; skip saving")
-            return
-        output_path = str(output_path)
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        arr = hm.detach().cpu().numpy()
-        # 优先使用 matplotlib 直接保存彩色图
-        try:
-            import matplotlib.pyplot as plt
-            plt.imsave(output_path, arr, cmap=cmap, origin='lower')
-            print(f"INFO: Saved height_map PNG to {output_path}")
-            return
-        except Exception as e:
-            print(f"WARNING: matplotlib save failed ({e}); fallback to PIL/NPY")
-        # 尝试 PIL 保存灰度
-        try:
-            from PIL import Image
-            import numpy as np
-            vmin = float(arr.min()) if arr.size > 0 else 0.0
-            vmax = float(arr.max()) if arr.size > 0 else 1.0
-            if vmax <= vmin:
-                norm = (arr - vmin)
-            else:
-                norm = (arr - vmin) / (vmax - vmin)
-            img = (np.clip(norm, 0.0, 1.0) * 255.0).astype("uint8")
-            Image.fromarray(img).save(output_path)
-            print(f"INFO: Saved height_map PNG (PIL) to {output_path}")
-            return
-        except Exception as e:
-            print(f"WARNING: PIL save failed ({e}); fallback to NPY")
-        # 最后退化为 NPY
-        try:
-            import numpy as np
-            np.save(output_path if output_path.endswith('.npy') else output_path + '.npy', arr)
-            print(f"INFO: Saved height_map NPY to {output_path}")
-        except Exception as e:
-            print(f"ERROR: Failed to save height_map to {output_path}: {e}")

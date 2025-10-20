@@ -75,7 +75,7 @@ class NavEnvWindow(BaseEnvWindow):
 class NavEnvCfg(DirectRLEnvCfg):
     """Configuration for the Nav navigation environment."""
 
-    seed = None
+    seed = 42
     
     # environment settings
     episode_length_s = 300.0
@@ -543,9 +543,9 @@ class NavEnv(DirectRLEnv):
         
         # 重置机器人到初始位置（完全按照原始实现）
         if self.cfg.use_global_path:
-            start, goal, waypoints = self._generate_crossing_task_with_waypoints(len(env_ids), flight_height=self.cfg.flight_height)
+            start, goal, waypoints, waypoints_length = self._generate_crossing_task_with_waypoints(len(env_ids), flight_height=self.cfg.flight_height)
             self.state.navigation.waypoints[env_ids] = waypoints
-            self.state.navigation.waypoint_lengths[env_ids] = waypoints.shape[1]
+            self.state.navigation.waypoint_lengths[env_ids] = waypoints_length
             self.state.navigation.current_waypoint_indices[env_ids] = 0
             # TODO, 应该为每个env配置他的实际waypoints长度
         else:
@@ -709,7 +709,8 @@ class NavEnv(DirectRLEnv):
         inter_points = math_utils.sample_cylinder(self.circle_radius/2.0, (0, 0), num_env, self.device)
         inter_points = inter_points + area_center
         waypoints = torch.cat([start_tensor.unsqueeze(1), inter_points.unsqueeze(1), goal_tensor.unsqueeze(1)], dim=1)
-        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints
+        waypoints_length = torch.full((num_env,), 3, device=self.device)
+        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints, waypoints_length
 
     
     def _setup_discrete_action(self):
