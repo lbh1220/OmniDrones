@@ -14,6 +14,7 @@ class NavRewardCalculator:
         # 奖励配置参数
         self.success_reward = cfg.rew_success
         self.potential_factor = cfg.rew_potential
+        self.pot_factor = cfg.rew_potential
         
         # 势能缓存
         self.previous_potential = None
@@ -87,7 +88,42 @@ class NavRewardCalculator:
         else:
             self.previous_potential[env_ids] = current_potential.clone()   
 
-
+class CityNavRewardCalculator(NavRewardCalculator):
+    """City导航环境的奖励计算器"""
+    def __init__(self, cfg, device: str = "cuda"):
+        super().__init__(cfg, device)
+        self.collision_penalty = cfg.rew_collision
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        """计算基础导航奖励
+        
+        Args:
+            state: 环境状态对象
+            
+        Returns:
+            reward: [num_envs] 奖励张量
+        """
+        # 从状态对象提取数据
+        num_envs = state.num_envs
+        current_dist_to_target = state.navigation.current_dist_to_target
+        reached_target_mask = state.navigation.reached_target_mask
+        collision_mask = state.collision.collision_mask
+        reward = torch.zeros(num_envs, device=self.device)
+        
+        # 1. 碰撞惩罚
+        reward = torch.where(collision_mask, 
+                           torch.full_like(reward, self.collision_penalty), 
+                           reward)
+        
+        # 2. 成功奖励
+        reward = torch.where(reached_target_mask,
+                           torch.full_like(reward, self.success_reward),
+                           reward)
+        
+        # 2. 潜力奖励 (距离变化)
+        potential_reward = self._compute_potential_reward(state)
+        reward += potential_reward
+        
+        return reward
 
 class TrafficRewardCalculator:
     """Traffic环境的奖励计算器，基于Isaac Lab tensor操作优化"""

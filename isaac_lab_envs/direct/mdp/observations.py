@@ -481,3 +481,65 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
         
         
         return {"policy": policy_obs}
+
+
+
+
+
+
+class CityNavObservationProcessor:
+    """Observation processor for city nav with lidar.
+
+    Outputs a policy dict with:
+    - robot_node: [1, 5]
+    - temporal_edges: [1, 2]
+    - lidar: [1, 36, 4]
+    """
+
+    def __init__(self, cfg, device: str = "cuda"):
+        self.cfg = cfg
+        self.device = device
+
+    def generate_policy_obs_dict(self):
+        policy_space_dict = {
+            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 10), dtype=np.float32),
+            'lidar': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 36, 4), dtype=np.float32),
+        }
+        return policy_space_dict
+
+    def process_observation(self, state: EnvState) -> dict:
+        drone_state = state.ego_drone.drone_state
+        target_pos = state.navigation.target_positions
+
+        robot_pos = drone_state[:, :, :2]
+        robot_vel = drone_state[:, :, 7:9]
+
+        goal_pos = target_pos[:, :, :2]
+        relative_goal_pos = goal_pos - robot_pos
+        relative_goal_pos = relative_goal_pos / self.cfg.lidar_range
+        robot_quat = drone_state[:, :, 3:7]
+
+        robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])
+
+        robot_radius = torch.full((drone_state.shape[0], 1, 1), self.cfg.safety_radius, device=self.device)
+        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.v_pref, device=self.device)
+
+        robot_node = torch.cat([
+            relative_goal_pos,
+            robot_radius,
+            robot_v_pref,
+            robot_quat,
+            robot_vel,
+        ], dim=-1) 
+
+        # lidar
+        if state.perception.lidar_scan is not None:
+            lidar_scan = state.perception.lidar_scan/self.cfg.lidar_range
+        else:
+            lidar_scan = torch.zeros(drone_state.shape[0], 1, 36, 4, device=self.device)
+
+        policy_obs = {
+            'robot_node': robot_node,
+            'lidar': lidar_scan,
+        }
+        return {"policy": policy_obs}

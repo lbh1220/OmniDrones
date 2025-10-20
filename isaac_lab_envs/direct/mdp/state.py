@@ -59,6 +59,28 @@ class CollisionNamespace:
 
 
 @dataclass
+class PerceptionNamespace:
+    """感知相关命名空间"""
+    lidar_scan: torch.Tensor = None            # [num_envs, 1, W, H] 或 [num_envs, 1, 36, 4]
+
+
+@dataclass
+class MapNamespace:
+    """地图/静态场景相关命名空间"""
+    # 全局点云/高度图（以世界坐标网格表示）
+    point_cloud_xy: torch.Tensor | None = None   # [N, 2]
+    point_cloud_z: torch.Tensor | None = None    # [N]
+    height_map: torch.Tensor | None = None       # [H, W]
+    pc_shape_hw: tuple | None = None             # (H, W)
+    pc_bounds: tuple | None = None               # (xmin, xmax, ymin, ymax)
+    pc_resolution: float | None = None           # 采样分辨率（米）
+
+    occupancy_grid: torch.Tensor | None = None   # [H, W]
+    grid_size: float | None = None              # 网格大小（米）
+    grid_bounds: tuple | None = None            # (xmin, xmax, ymin, ymax)
+
+
+@dataclass
 class MissionNamespace:
     """任务相关状态命名空间"""
     mission_type: str = "navigation"         # 任务类型
@@ -104,7 +126,9 @@ class EnvState:
         self.ego_drone = EgoDroneNamespace()
         self.navigation = NavigationNamespace() 
         self.collision = CollisionNamespace()
+        self.perception = PerceptionNamespace()
         self.mission = MissionNamespace()
+        self.map = MapNamespace()
         
         # 可选命名空间
         self.traffic = None  # 只在需要时初始化
@@ -159,6 +183,8 @@ class EnvState:
         # 碰撞状态
         self.collision.collision_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.collision.collision_objects = [None] * self.num_envs
+        # 感知
+        self.perception.lidar_scan = None
         
         # 任务状态
         self.mission.episode_progress = torch.zeros(self.num_envs, device=self.device)
@@ -169,6 +195,16 @@ class EnvState:
         self.mdp.reward = torch.zeros(self.num_envs, device=self.device)
         self.mdp.terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.mdp.truncated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # 地图命名空间：初始化为 None（延后构建）
+        self.map.point_cloud_xy = None
+        self.map.point_cloud_z = None
+        self.map.height_map = None
+        self.map.pc_shape_hw = None
+        self.map.pc_bounds = None
+        self.map.pc_resolution = None
+        self.map.occupancy_grid = None
+        self.map.grid_size = None
+        self.map.grid_bounds = None
         
     def update_ego_drone_state(self, drone_state: torch.Tensor):
         """更新自车无人机状态"""
@@ -179,6 +215,8 @@ class EnvState:
         if self.ego_drone.velocities is not None:
             self.ego_drone.previous_velocities = self.ego_drone.velocities.clone()
         self.ego_drone.velocities = drone_state[:, :, 7:10] if drone_state.shape[-1] > 10 else None
+
+        
         # 可以根据需要提取更多组件
         
     def update_navigation_distances(self):
@@ -280,6 +318,12 @@ class EnvState:
                 attr_value = getattr(self.mission, attr_name)
                 if isinstance(attr_value, torch.Tensor):
                     setattr(self.mission, attr_name, attr_value.to(device))
+        # 移动map张量
+        for attr_name in dir(self.map):
+            if not attr_name.startswith('_'):
+                attr_value = getattr(self.map, attr_name)
+                if isinstance(attr_value, torch.Tensor):
+                    setattr(self.map, attr_name, attr_value.to(device))
         
         # 移动mdp张量
         for attr_name in dir(self.mdp):

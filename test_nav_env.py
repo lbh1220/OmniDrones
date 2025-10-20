@@ -8,7 +8,8 @@
 
 import argparse
 import torch
-
+import gymnasium as gym
+import os
 # 导入Isaac Lab
 from omni.isaac.lab.app import AppLauncher
 from dataclasses import replace
@@ -20,47 +21,69 @@ def main():
     parser.add_argument("--workflow", type=str, default="direct", choices=["direct", "manager"], 
                        help="The workflow to use: 'direct' or 'manager'")
     parser.add_argument("--num_envs", type=int, default=8, help="Number of environments")
-    parser.add_argument("--traffic", type=bool, default=True, help="Whether to use traffic")
-    
+    parser.add_argument("--traffic", type=bool, default=False, help="Whether to use traffic")
+    parser.add_argument("--video", type=bool, default=True, help="Whether to use video")
+    parser.add_argument("--video_interval", type=int, default=10000, help="Video interval")
+    parser.add_argument("--video_length", type=int, default=100, help="Video length")
+
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
     args_cli = parser.parse_args()
     args_cli.headless = headless
+    args_cli.enable_cameras = True
 
     # launch omniverse app
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
 
     # 导入环境（在AppLauncher之后）
+    from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvCfg
+    from isaac_lab_envs.direct.city_nav_env import NavCityEnv, NavCityEnvCfg
+    from isaac_lab_envs.direct.nav_env import NavEnv, NavEnvCfg
     if args_cli.workflow == "direct":
         if args_cli.traffic:
-            from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvCfg
+
             cfg = TrafficEnvCfg()
             cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
             cfg.num_actions = 2
             cfg.num_observations = 7
-            cfg.traffic_sim.num_drones = 0
-            cfg.traffic_sim.num_evtols = 0
-            cfg.use_discrete_action = True
+            cfg.traffic_sim.num_drones = 10
+            cfg.traffic_sim.num_evtols = 1
+            cfg.action_space_type = 'discrete'
             print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
-            env = TrafficEnv(cfg=cfg)
         else:
-            from isaac_lab_envs.direct.nav_env import NavEnv, NavEnvCfg
-            
             # 创建配置
-            cfg = NavEnvCfg()
+            cfg = NavCityEnvCfg()
             # cfg.scene.num_envs = args_cli.num_envs
             cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
             cfg.num_actions = 2
-            cfg.num_observations = 7
-
-            print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
+            print(f"动作维度: {cfg.num_actions}")
             
-            # 创建环境
-            env = NavEnv(cfg=cfg)
-    
-    print(f"环境创建成功！")
 
+    cfg.debug_vis = True
+    from omni.isaac.lab.envs.common import ViewerCfg
+    cfg.viewer = ViewerCfg(
+        resolution=(1920, 1080),
+        eye=(125, 0., 125),  #  <-- 使用非默认值
+        lookat=(0., 0., 1.)
+    )
+
+    if args_cli.traffic:
+        env = TrafficEnv(cfg=cfg, render_mode="rgb_array")
+    else:
+        env = NavCityEnv(cfg=cfg, render_mode="rgb_array")
+    print(f"环境创建成功！")
+    save_dir = "runs/test_nav_env"
+    os.makedirs(save_dir, exist_ok=True)
+    if args_cli.video:
+        video_kwargs = {
+            "video_folder": os.path.join(save_dir, "videos"),
+            "step_trigger": lambda step: step % args_cli.video_interval == 0,
+            "video_length": args_cli.video_length,
+            "disable_logger": True,
+        }
+        print("[INFO] Recording videos during training.")
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
     # 运行简单测试
     print("\n开始环境测试...")
     
@@ -73,7 +96,7 @@ def main():
     for step in range(2000):
         # 随机动作
 
-        if env.cfg.use_discrete_action:
+        if env.cfg.action_space_type == "discrete":
             actions = torch.randint(0, env.cfg.action_space_num_per_dim * env.cfg.action_space_num_per_dim, (env.num_envs,), device=env.device)
         else:
             actions = torch.randn(env.num_envs, env.num_actions, device=env.device)
@@ -98,7 +121,7 @@ def main():
         try:
             while True:
                 # 继续运行环境
-                if env.cfg.use_discrete_action:
+                if env.cfg.action_space_type == "discrete":
                     actions = torch.randint(0, env.cfg.action_space_num_per_dim * env.cfg.action_space_num_per_dim, (env.num_envs,), device=env.device)
                 else:
                     actions = torch.randn(env.num_envs, env.num_actions, device=env.device)

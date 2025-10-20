@@ -26,7 +26,7 @@ from skrl.utils import set_seed
 # Isaac Lab imports
 from omni.isaac.lab.app import AppLauncher
 
-from attention_networks import (
+from custom_agent import (
     SharedAttentionContinuous, 
     SharedAttentionDiscrete,
     SharedAttentionGRUContinuous,
@@ -68,6 +68,7 @@ def create_agent(env, device, args, experient_cfg):
     # Create shared model following official SKRL pattern
     # Both policy and value will use the same instance
     models = {}
+    from networks import AttentionFeaturesNetwork
     
     if is_discrete:
         # Create shared model for discrete actions
@@ -82,7 +83,8 @@ def create_agent(env, device, args, experient_cfg):
                 num_layers=1,
                 hidden_size=128,
                 sequence_length=args.n_steps,
-                unnormalized_log_prob=True
+                unnormalized_log_prob=True,
+                features_extractor_cls=AttentionFeaturesNetwork
             )
         else:
             shared_model = SharedAttentionDiscrete(
@@ -91,7 +93,8 @@ def create_agent(env, device, args, experient_cfg):
                 device,
                 features_dim=128,
                 net_arch=[256, 256],
-                unnormalized_log_prob=True
+                unnormalized_log_prob=True,
+                features_extractor_cls=AttentionFeaturesNetwork
             )
     else:
         # Create shared model for continuous actions
@@ -111,7 +114,9 @@ def create_agent(env, device, args, experient_cfg):
                 clip_log_std=True,
                 min_log_std=-20,
                 max_log_std=2,
-                reduction="sum"
+                reduction="sum",
+                features_extractor_cls=AttentionFeaturesNetwork
+
             )
         else:
             shared_model = SharedAttentionContinuous(
@@ -125,7 +130,8 @@ def create_agent(env, device, args, experient_cfg):
                 clip_log_std=True,
                 min_log_std=-20,
                 max_log_std=2,
-                reduction="sum"
+                reduction="sum",
+                features_extractor_cls=AttentionFeaturesNetwork
             )
     
     # Both policy and value use the same shared model instance
@@ -249,8 +255,8 @@ def main():
     
     # Video recording
     parser.add_argument("--video", action="store_true", help="Record videos")
-    parser.add_argument("--video_interval", type=int, default=2500, help="Video interval")
-    parser.add_argument("--video_length", type=int, default=250, help="Video length")
+    parser.add_argument("--video_interval", type=int, default=10000, help="Video interval")
+    parser.add_argument("--video_length", type=int, default=500, help="Video length")
     
     # Wandb
     parser.add_argument("--use_wandb", action="store_true", help="Use wandb logging")
@@ -453,9 +459,9 @@ def main():
     print(f"final model saved to: {save_dir}")
     
     # Finish wandb run
-    if args.use_wandb and WANDB_AVAILABLE:
-        wandb.save(model_path)
-        wandb.finish()
+    # if args.use_wandb and WANDB_AVAILABLE:
+    #     wandb.save(model_path)
+    #     wandb.finish()
         
     # Clean up
     env.close()

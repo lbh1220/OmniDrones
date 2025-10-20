@@ -29,7 +29,7 @@ import omni.isaac.lab.sim as sim_utils
 from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg
 from omni.isaac.lab.envs.common import ViewerCfg
 from omni.isaac.lab.envs.ui import BaseEnvWindow
-from omni.isaac.lab.markers import VisualizationMarkers
+from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from omni.isaac.lab.scene import InteractiveSceneCfg
 from omni.isaac.lab.sim import SimulationCfg
 from omni.isaac.lab.terrains import TerrainImporterCfg, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
@@ -145,9 +145,9 @@ class NavEnvCfg(DirectRLEnvCfg):
     ))
     
     # action space config
-    action_space_type: str = "beta" # discrete or beta or gaussian
+    action_space_type: str = "discrete" # discrete or beta or gaussian
     action_space_num_per_dim: int = 7  # 每个维度的离散动作数量
-    action_mode: str = "speed_direction"  # "velocity_components" or "speed_direction"
+    action_mode: str = "velocity_components"  # "velocity_components" or "speed_direction"
 
         # 原始参数配置
     lidar_range: float = 4.0
@@ -233,6 +233,7 @@ class NavEnv(DirectRLEnv):
         self.circle_radius = min(self.cfg.area_bounds.xmax - self.cfg.area_bounds.xmin, 
                                 self.cfg.area_bounds.ymax - self.cfg.area_bounds.ymin)/2.0
         
+        
         self._init_metrics()
 
         # debug visualization
@@ -269,6 +270,8 @@ class NavEnv(DirectRLEnv):
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+
+        
 
         # 4. 设置传感器（在克隆之前）
         self._setup_lidar()
@@ -463,7 +466,7 @@ class NavEnv(DirectRLEnv):
         """
         # 如果放在apply action之后，那更新太频繁了
         # 暂时放在get dones之前和reset_idx之后
-        self._lidar.update(self.step_dt)
+
         
         # 更新状态对象
         drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 25]
@@ -494,13 +497,15 @@ class NavEnv(DirectRLEnv):
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """计算基于2D导航的终止条件。"""
+        """计算基于Traffic环境的终止条件，包括碰撞检测。"""
         self._post_physics_step()
-        
-        # 从状态对象获取数据
-        reached_target = self.state.navigation.reached_target_mask
-        self.extras["goal_reached"] = reached_target.clone()
-        self.extras["is_success"] = reached_target.clone()
+
+        reached_target_mask = self.state.navigation.reached_target_mask
+        collision_mask = self.state.collision.collision_mask
+        # 更新统计信息
+        self.extras["goal_reached"] = reached_target_mask.clone()
+        self.extras["collision"] = collision_mask.clone()   
+        self.extras["is_success"] = reached_target_mask.clone()
         # 3. 高度异常条件（保持在合理高度范围内）
         robot_height = self.state.ego_drone.positions.squeeze(1)[:, 2]  # [num_envs]
         height_abnormal = (
@@ -511,9 +516,8 @@ class NavEnv(DirectRLEnv):
         # 4. NaN检测
         hasnan = torch.isnan(self.state.ego_drone.drone_state).any(dim=(1, 2))
         
-        # 终止条件：到达目标、高度异常或NaN
-        terminated = reached_target | height_abnormal | hasnan
-        
+        # 终止条件：到达目标、碰撞、高度异常或NaN
+        terminated = reached_target_mask | collision_mask | height_abnormal | hasnan
         # 超时条件：由DirectRLEnv框架自动处理
         truncated = self.episode_length_buf >= self.max_episode_length 
         
@@ -521,6 +525,7 @@ class NavEnv(DirectRLEnv):
         self.metrics.on_done(terminated, truncated)
         # write to mdp state
         self.state.set_dones(terminated, truncated)
+        
         return terminated, truncated
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -586,11 +591,20 @@ class NavEnv(DirectRLEnv):
 
             if not hasattr(self, "drone_pos_visualizer"):
                 # Create green marker for drone positions
-                drone_marker_cfg = CUBOID_MARKER_CFG.copy()
-                drone_marker_cfg.markers["cuboid"].size = (2.0, 2.0, 2.0)
-                drone_marker_cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 1.0, 0.0)  # Green color
-                drone_marker_cfg.prim_path = "/Visuals/Command/drone_position"
+                drone_marker_cfg = VisualizationMarkersCfg(
+                    prim_path="/Visuals/Command/drone_position",
+                        markers={
+                            "sphere": sim_utils.SphereCfg(
+                                radius=1.0,  # 设置球体的半径
+                                visual_material=sim_utils.PreviewSurfaceCfg(
+                                    diffuse_color=(0.0, 1.0, 0.0),
+                                    opacity=0.5
+                                ),
+                            )
+                        },
+                    )
                 self.drone_pos_visualizer = VisualizationMarkers(drone_marker_cfg)
+ 
             if self.cfg.use_global_path:
                 if not hasattr(self, "local_goal_visualizer"):
                     # Create blue marker for local goals

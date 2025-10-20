@@ -321,37 +321,7 @@ class TrafficEnv(NavEnv):
             self.traffic_visualizer.visualize(translations=positions, scales=scales)
         super()._debug_vis_callback(event)
 
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """计算基于Traffic环境的终止条件，包括碰撞检测。"""
-        self._post_physics_step()
 
-        reached_target_mask = self.state.navigation.reached_target_mask
-        collision_mask = self.state.collision.collision_mask
-        # 更新统计信息
-        self.extras["goal_reached"] = reached_target_mask.clone()
-        self.extras["collision"] = collision_mask.clone()   
-        self.extras["is_success"] = reached_target_mask.clone()
-        # 3. 高度异常条件（保持在合理高度范围内）
-        robot_height = self.state.ego_drone.positions.squeeze(1)[:, 2]  # [num_envs]
-        height_abnormal = (
-            (robot_height < (self.cfg.flight_height - 3*self.cfg.safety_radius)) |
-            (robot_height > (self.cfg.flight_height + 3*self.cfg.safety_radius))
-        )
-        
-        # 4. NaN检测
-        hasnan = torch.isnan(self.state.ego_drone.drone_state).any(dim=(1, 2))
-        
-        # 终止条件：到达目标、碰撞、高度异常或NaN
-        terminated = reached_target_mask | collision_mask | height_abnormal | hasnan
-        # 超时条件：由DirectRLEnv框架自动处理
-        truncated = self.episode_length_buf >= self.max_episode_length 
-        
-        # 在返回之前，通知 metrics 管理器（用于写入 episode/rolling 指标）
-        self.metrics.on_done(terminated, truncated)
-        # write to mdp state
-        self.state.set_dones(terminated, truncated)
-        
-        return terminated, truncated
     
     def _detect_collisions(self) -> torch.Tensor:
         """检测与traffic aircraft的碰撞"""
