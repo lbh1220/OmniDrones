@@ -311,7 +311,7 @@ class AttentionFeaturesNetwork(Model):
         robot_states = self.final_robot_linear(robot_states)
         hidden_attn_weighted = self.final_spatial_linear(hidden_attn_weighted) 
         features = torch.cat((robot_states, hidden_attn_weighted), dim=-1)  # [batch_size, features_dim]
-        
+        # TODO, lack a linear layer if there is no RNN
         return features
 
 

@@ -197,9 +197,7 @@ class NavEnv(DirectRLEnv):
         # 在父类初始化完成后进行无人机特定的初始化
         self._post_init_setup()
         
-        # 初始化状态管理对象
-        self.state = EnvState(device=self.device, num_envs=self.num_envs)
-        self.state.initialize_basic_tensors()
+
         self.state.collision.safety_radius = cfg.safety_radius
 
         
@@ -318,7 +316,10 @@ class NavEnv(DirectRLEnv):
         # 设置处理器的设备
         self.obs_processor.device = self.device
         self.reward_calculator.device = self.device
-        
+
+        # 初始化状态管理对象
+        self.state = EnvState(device=self.device, num_envs=self.num_envs)
+        self.state.initialize_basic_tensors()
 
     def _setup_lidar(self):
         """Setup the lidar sensor exactly like original implementation."""

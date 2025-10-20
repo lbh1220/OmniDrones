@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from inspect import BoundArguments
 import math
 import torch
 from dataclasses import dataclass, field
@@ -40,7 +41,7 @@ class NavCityEnvCfg(NavEnvCfg):
                     num_obstacles=4,
                     obstacle_height_mode="fixed",
                     obstacle_width_range=(3.0, 5.0),
-                    obstacle_height_range=(30.0, 50.0),
+                    obstacle_height_range=(15.0, 40.0),
                     platform_width=0.0,
                 )
             },
@@ -54,15 +55,19 @@ class NavCityEnvCfg(NavEnvCfg):
     rew_potential = 0.5
 
 
-    lidar_range: float = 15.0
-    lidar_resolution: tuple[int, int] = (36, 4)
+    lidar_range: float = 4.0
+    lidar_vfov: tuple[float, float] = (-10.0, 20.0)  # degrees
+    lidar_resolution: tuple[int, int] = (36, 4)  # horizontal x vertical
     lidar_attach_yaw_only: bool = True
-    grid_resolution: float = 0.5
-    grid_top_z: float = 100.0
+
+
     # global point cloud config
-    point_cloud_resolution: float = 0.25  # step for sampling rays in XY
-    point_cloud_top_z: float = 100.0      # ray start Z
+    point_cloud_resolution: float = 1.0  # step for sampling rays in XY
+    point_cloud_top_z: float = 200.0      # ray start Z
     point_cloud_margin: float = 0.0       # optional margin added around terrain bounds
+
+    # occupancy grid config
+    grid_size: float = 1.0 # grid size for occupancy map
 
 
 class NavCityEnv(NavEnv):
@@ -94,10 +99,10 @@ class NavCityEnv(NavEnv):
     def _post_init_setup(self):
         super()._post_init_setup()
         # 构建全局点云（一次性）
-        try:
-            self._create_global_point_cloud()
-        except Exception as e:
-            print(f"WARNING: Global point cloud generation failed: {e}")
+        # 应该不用担心顺序的问题，因为现在获取pc的方法是检测的world/ground这个mesh,即使有飞机也不会hit
+        self._create_global_point_cloud()
+        self._create_occupancy_grid()
+
 
     def _setup_lidar(self):
         lidar_vfov_rad = (
@@ -183,20 +188,6 @@ class NavCityEnv(NavEnv):
 
         return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints
 
-
-
-
-
-
-
-
-    def _create_global_occupancy_map(self):
-        """
-        在环境初始化时运行一次，生成并缓存整个静态地形的全局高度图。
-        """
-        # Deprecated in favor of _create_global_point_cloud
-        raise NotImplementedError("_create_global_occupancy_map is replaced by _create_global_point_cloud")
-
     def _create_global_point_cloud(self):
         """
         在环境初始化时运行一次，基于场景静态mesh自上而下投射，生成并缓存全局点云（致密栅格）。
@@ -261,52 +252,22 @@ class NavCityEnv(NavEnv):
         self.state.map.pc_resolution = resolution
         # 同时保留高度图视图（便于快速阈值化）
         self.state.map.height_map = z_hits.reshape(num_y, num_x).contiguous()
-        self._save_height_map(output_path="height_map.png")
+        self._save_height_map(hm=self.state.map.height_map,output_path="height_map.png")
         print(f"INFO: Global point cloud cached: shape(H,W)=({num_y},{num_x}), bounds=({xmin},{xmax},{ymin},{ymax})")
 
-    def _save_height_map(self, output_path: str, cmap: str = "viridis") -> None:
-        """
-        将 state.map.height_map 保存到本地：优先保存为 PNG，若缺依赖则保存为 NPY。
-        """
-        hm = self.state.map.height_map
-        if hm is None:
-            print("WARNING: height_map is None; skip saving")
-            return
-        output_path = str(output_path)
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        arr = hm.detach().cpu().numpy()
-        # 优先使用 matplotlib 直接保存彩色图
-        try:
-            import matplotlib.pyplot as plt
-            plt.imsave(output_path, arr, cmap=cmap)
-            print(f"INFO: Saved height_map PNG to {output_path}")
-            return
-        except Exception as e:
-            print(f"WARNING: matplotlib save failed ({e}); fallback to PIL/NPY")
-        # 尝试 PIL 保存灰度
-        try:
-            from PIL import Image
-            import numpy as np
-            vmin = float(arr.min()) if arr.size > 0 else 0.0
-            vmax = float(arr.max()) if arr.size > 0 else 1.0
-            if vmax <= vmin:
-                norm = (arr - vmin)
-            else:
-                norm = (arr - vmin) / (vmax - vmin)
-            img = (np.clip(norm, 0.0, 1.0) * 255.0).astype("uint8")
-            Image.fromarray(img).save(output_path)
-            print(f"INFO: Saved height_map PNG (PIL) to {output_path}")
-            return
-        except Exception as e:
-            print(f"WARNING: PIL save failed ({e}); fallback to NPY")
-        # 最后退化为 NPY
-        try:
-            import numpy as np
-            np.save(output_path if output_path.endswith('.npy') else output_path + '.npy', arr)
-            print(f"INFO: Saved height_map NPY to {output_path}")
-        except Exception as e:
-            print(f"ERROR: Failed to save height_map to {output_path}: {e}")
-
+    def _create_occupancy_grid(self):
+        bounds = (
+            self.cfg.area_bounds.xmin,
+            self.cfg.area_bounds.xmax,
+            self.cfg.area_bounds.ymin,
+            self.cfg.area_bounds.ymax,
+        )
+        height_z = self.cfg.flight_height
+        grid_size = self.cfg.grid_size
+        self.state.map.occupancy_grid = self.get_occupancy_grid_at_height(bounds=bounds, height_z=height_z, grid_size=grid_size)
+        self.state.map.grid_bounds = bounds
+        self.state.map.grid_size = grid_size
+    
     # 新API：从全局点云派生任意范围与分辨率的占据网格
     def get_occupancy_grid_at_height(self, bounds: tuple[float, float, float, float], height_z: float, grid_size: float) -> torch.Tensor:
         """
@@ -350,39 +311,80 @@ class NavCityEnv(NavEnv):
         sub_height = self.state.map.height_map[iy0_clamp:iy1_clamp, ix0_clamp:ix1_clamp]
         # 对子图按高度阈值生成占据（inf 表示未命中，应视为未占据，这里比较会为 False）
         occ_sub = sub_height >= float(height_z)
-        # 计算子图的物理范围
-        sub_xmin = pc_xmin + ix0_clamp * step
-        sub_xmax = pc_xmin + ix1_clamp * step
-        sub_ymin = pc_ymin + iy0_clamp * step
-        sub_ymax = pc_ymin + iy1_clamp * step
-        # 将子图重采样到目标分辨率与尺寸：
-        # 简单做法：块最大/任一为True聚合，以保证保守占据。
-        # 计算目标网格每个cell在子图索引空间的覆盖区间
-        out = torch.zeros(out_h, out_w, dtype=torch.bool, device=self.device)
-        for oy in range(out_h):
-            y0 = bymin + oy * gs
-            y1 = min(bymin + (oy + 1) * gs, bymax)
-            # 映射到子图索引
-            sy0 = max(0.0, (y0 - sub_ymin) / step)
-            sy1 = max(0.0, (y1 - sub_ymin) / step)
-            sy0_i = int(math.floor(sy0))
-            sy1_i = int(math.ceil(sy1))
-            sy0_i = max(0, min(occ_sub.shape[0], sy0_i))
-            sy1_i = max(0, min(occ_sub.shape[0], sy1_i))
-            if sy0_i >= sy1_i:
-                continue
-            for ox in range(out_w):
-                x0 = bxmin + ox * gs
-                x1 = min(bxmin + (ox + 1) * gs, bxmax)
-                sx0 = max(0.0, (x0 - sub_xmin) / step)
-                sx1 = max(0.0, (x1 - sub_xmin) / step)
-                sx0_i = int(math.floor(sx0))
-                sx1_i = int(math.ceil(sx1))
-                sx0_i = max(0, min(occ_sub.shape[1], sx0_i))
-                sx1_i = max(0, min(occ_sub.shape[1], sx1_i))
-                if sx0_i >= sx1_i:
-                    continue
-                if occ_sub[sy0_i:sy1_i, sx0_i:sx1_i].any():
-                    out[oy, ox] = True
-        return out.unsqueeze(0)
+        # 1. 创建最终输出的“画布”，尺寸为 (out_h, out_w)，初始值全为 False
+        final_out = torch.zeros(out_h, out_w, dtype=torch.bool, device=self.device)
 
+        # 2. 计算重叠区域 `occ_sub` 在 `final_out` 画布中应该占据的像素尺寸
+        #    这需要考虑从 base_res 到 gs 的分辨率变化
+        sub_h, sub_w = occ_sub.shape
+        interp_h = max(1, round(sub_h * base_res / gs))
+        interp_w = max(1, round(sub_w * base_res / gs))
+
+        # 3. 将布尔图转换为浮点图，并添加维度以符合 interpolate 的输入要求
+        occ_sub_float = occ_sub.float().unsqueeze(0).unsqueeze(0)
+
+        # 4. 使用 'area' 模式将子图重采样到我们刚刚计算出的、正确的中间尺寸
+        interpolated_sub = torch.nn.functional.interpolate(occ_sub_float, size=(interp_h, interp_w), mode='area')
+
+        # 5. 将插值结果转换回布尔类型
+        out = (interpolated_sub > 0).bool().squeeze(0).squeeze(0)
+
+        # 6. 计算 `out` 这块内容应该被粘贴到 `final_out` 画布的哪个位置
+        #    首先计算重叠区域的物理起始点 (sub_xmin, sub_ymin)
+        sub_xmin = pc_xmin + ix0_clamp * base_res
+        sub_ymin = pc_ymin + iy0_clamp * base_res
+        #    然后计算这个物理点在最终输出网格中的索引位置
+        paste_x_start = max(0, math.floor((sub_xmin - bxmin) / gs))
+        paste_y_start = max(0, math.floor((sub_ymin - bymin) / gs))
+
+        # 7. 【核心修复】定义切片的终点，由 `out` 的实际形状决定
+        paste_x_end = paste_x_start + out.shape[1]
+        paste_y_end = paste_y_start + out.shape[0]
+
+        # 8. 执行粘贴操作，现在源和目标的尺寸保证匹配
+        final_out[paste_y_start:paste_y_end, paste_x_start:paste_x_end] = out
+        self._save_height_map(hm=final_out,output_path="grid_map.png")
+        # out put is [H,W]
+        return final_out
+
+    def _save_height_map(self, hm, output_path: str, cmap: str = "viridis") -> None:
+        """
+        将 state.map.height_map 保存到本地：优先保存为 PNG，若缺依赖则保存为 NPY。
+        """
+        if hm is None:
+            print("WARNING: height_map is None; skip saving")
+            return
+        output_path = str(output_path)
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        arr = hm.detach().cpu().numpy()
+        # 优先使用 matplotlib 直接保存彩色图
+        try:
+            import matplotlib.pyplot as plt
+            plt.imsave(output_path, arr, cmap=cmap, origin='lower')
+            print(f"INFO: Saved height_map PNG to {output_path}")
+            return
+        except Exception as e:
+            print(f"WARNING: matplotlib save failed ({e}); fallback to PIL/NPY")
+        # 尝试 PIL 保存灰度
+        try:
+            from PIL import Image
+            import numpy as np
+            vmin = float(arr.min()) if arr.size > 0 else 0.0
+            vmax = float(arr.max()) if arr.size > 0 else 1.0
+            if vmax <= vmin:
+                norm = (arr - vmin)
+            else:
+                norm = (arr - vmin) / (vmax - vmin)
+            img = (np.clip(norm, 0.0, 1.0) * 255.0).astype("uint8")
+            Image.fromarray(img).save(output_path)
+            print(f"INFO: Saved height_map PNG (PIL) to {output_path}")
+            return
+        except Exception as e:
+            print(f"WARNING: PIL save failed ({e}); fallback to NPY")
+        # 最后退化为 NPY
+        try:
+            import numpy as np
+            np.save(output_path if output_path.endswith('.npy') else output_path + '.npy', arr)
+            print(f"INFO: Saved height_map NPY to {output_path}")
+        except Exception as e:
+            print(f"ERROR: Failed to save height_map to {output_path}: {e}")
