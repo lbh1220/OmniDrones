@@ -93,6 +93,21 @@ class GlobalPathPlanner:
             x, y = self._grid_to_world_xy(c, r)
             path_xy.append((x, y))
 
+        # snap endpoints to the exact input start/goal if close enough
+        tol = max(1e-6, 1.42 * self.grid_size) if self.grid_size is not None else 0.5
+        # start
+        if len(path_xy) >= 1:
+            dx0 = path_xy[0][0] - sx
+            dy0 = path_xy[0][1] - sy
+            if (dx0 * dx0 + dy0 * dy0) ** 0.5 <= tol:
+                path_xy[0] = (sx, sy)
+        # goal
+        if len(path_xy) >= 1:
+            dx1 = path_xy[-1][0] - gx
+            dy1 = path_xy[-1][1] - gy
+            if (dx1 * dx1 + dy1 * dy1) ** 0.5 <= tol:
+                path_xy[-1] = (gx, gy)
+
         return path_xy
 
     def _world_to_grid_rc(self, x: float, y: float) -> Tuple[int, int]:

@@ -166,6 +166,7 @@ class NavEnvCfg(DirectRLEnvCfg):
 
     # global planner
     use_global_path: bool = True
+    max_waypoints: int = 3
     lookahead_distance: float = 10.0
     rew_cross_track_coeff = 0.0
     rew_cross_track_alpha = 1.0
@@ -320,6 +321,8 @@ class NavEnv(DirectRLEnv):
         # 初始化状态管理对象
         self.state = EnvState(device=self.device, num_envs=self.num_envs)
         self.state.initialize_basic_tensors()
+        if self.cfg.use_global_path:
+            self.state.initialize_navigation_waypoints(max_wps=self.cfg.max_waypoints)
 
     def _setup_lidar(self):
         """Setup the lidar sensor exactly like original implementation."""

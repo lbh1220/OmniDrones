@@ -171,8 +171,8 @@ class EnvState:
         self.navigation.reached_target_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.navigation.velocity_commands = torch.zeros(self.num_envs, 1, 3, device=self.device)
         # 航路点信息
-
-        self.navigation.waypoints = torch.zeros(self.num_envs, 3, 3, device=self.device)
+        max_wps = 3
+        self.navigation.waypoints = torch.zeros(self.num_envs, max_wps, 3, device=self.device)
         self.navigation.waypoint_lengths = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.navigation.current_waypoint_indices = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
@@ -206,7 +206,14 @@ class EnvState:
         self.map.occupancy_grid = None
         self.map.grid_size = None
         self.map.grid_bounds = None
-        
+    
+
+    def initialize_navigation_waypoints(self, max_wps: int = 3):
+        """初始化导航航路点"""
+        self.navigation.waypoints = torch.zeros(self.num_envs, max_wps, 3, device=self.device)
+        self.navigation.waypoint_lengths = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.navigation.current_waypoint_indices = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
     def update_ego_drone_state(self, drone_state: torch.Tensor):
         """更新自车无人机状态"""
         self.ego_drone.drone_state = drone_state

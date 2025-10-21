@@ -50,6 +50,14 @@ class NavCityEnvCfg(NavEnvCfg):
         collision_group=-1,
         debug_vis=False,
     )
+
+
+
+
+
+    # observation config
+    use_angle_distance_obs: bool = True
+    # reward config
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
@@ -72,6 +80,7 @@ class NavCityEnvCfg(NavEnvCfg):
 
     # if use global path
     use_global_path: bool = True
+    max_waypoints: int = 20
     lookahead_distance: float = 10.0
     rew_cross_track_coeff: float = 0.0
     rew_cross_track_alpha: float = 1.0
@@ -91,10 +100,14 @@ class NavCityEnv(NavEnv):
 
     def _init_mdp_components(self, cfg: NavEnvCfg):
         """初始化模块化组件"""
-        from isaac_lab_envs.direct.mdp.observations import CityNavObservationProcessor
-        from isaac_lab_envs.direct.mdp.rewards import CityNavRewardCalculator
-        self.obs_processor = CityNavObservationProcessor(cfg)
-        self.reward_calculator = CityNavRewardCalculator(cfg)
+        from isaac_lab_envs.direct.mdp.observations import CityNavObservationProcessor,CityNavObservationProcessorWithPath
+        from isaac_lab_envs.direct.mdp.rewards import CityNavRewardCalculator,CityNavRewardCalculatorWithPath
+        if cfg.use_global_path:
+            self.obs_processor = CityNavObservationProcessorWithPath(cfg)
+            self.reward_calculator = CityNavRewardCalculatorWithPath(cfg)
+        else:
+            self.obs_processor = CityNavObservationProcessor(cfg)
+            self.reward_calculator = CityNavRewardCalculator(cfg)
 
     def _setup_scene(self):
         # Terrain config is already set to generator under /World/ground; parent will create it
@@ -190,16 +203,19 @@ class NavCityEnv(NavEnv):
         start_tensor = start_tensor + area_center
         goal_tensor = goal_tensor + area_center
 
+        start_tensor = start_tensor.unsqueeze(1)
+        goal_tensor = goal_tensor.unsqueeze(1)
+
         # Prepare outputs
-        max_wps = 256  # reasonable upper bound for A* path points
+        max_wps = self.state.navigation.waypoints.shape[1]  # reasonable upper bound for A* path points
         waypoints = torch.zeros(num_env, max_wps, 3, device=self.device)
         waypoints_length = torch.zeros(num_env, dtype=torch.long, device=self.device)
 
         # Ensure planner ready and grid available
         planner = self.global_path_planner if self.cfg.use_global_path else None
-        grid = getattr(self.state.map, "occupancy_grid", None)
+        grid = getattr(self.state.map, "extended_occupancy_grid", None)
         bounds = getattr(self.state.map, "grid_bounds", None)
-        if planner is not None and grid is not None and bounds is not None:
+        if planner is not None and planner.grid_map_np is None:
             # update grid in case re-generated
             planner.update_grid_map(grid, self.cfg.grid_size, bounds)
 
@@ -234,14 +250,27 @@ class NavCityEnv(NavEnv):
             # Write into waypoints with fixed altitude
             altitude = float(flight_height)
             n = min(len(path_xy), max_wps)
-            for k in range(n):
-                xk, yk = path_xy[k]
-                waypoints[i, k, 0] = xk
-                waypoints[i, k, 1] = yk
-                waypoints[i, k, 2] = altitude
+            if n > 0:
+                # vectorized write
+                pts = torch.tensor(path_xy[:n], dtype=waypoints.dtype, device=self.device)
+                waypoints[i, :n, :2] = pts[:, :2]
+                waypoints[i, :n, 2] = altitude
             waypoints_length[i] = n
 
-        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints, waypoints_length
+        # from isaac_lab_envs.utils.map_utils import visualize_paths_on_grid
+        # if grid is not None and bounds is not None:
+        #     visualize_paths_on_grid(
+        #         grid_map=grid,
+        #         waypoints=waypoints,
+        #         waypoint_lengths=waypoints_length,
+        #         bounds=bounds,
+        #         grid_size=self.cfg.grid_size,
+        #         output_path="planned_paths.png",
+        #         max_trajs=min(10, num_env),
+        #     )
+
+
+        return start_tensor, goal_tensor, waypoints, waypoints_length
 
     def _create_global_point_cloud(self):
         """
@@ -328,9 +357,10 @@ class NavCityEnv(NavEnv):
         if self.cfg.use_global_path:
             if self.global_path_planner is None:
                 self.global_path_planner = GlobalPathPlanner(self.cfg.global_path_planner)
-            self.global_path_planner.update_grid_map(self.state.map.occupancy_grid, 
+            self.global_path_planner.update_grid_map(self.state.map.extended_occupancy_grid, 
                                                     self.cfg.grid_size, bounds=bounds)
-
+        # from isaac_lab_envs.utils.map_utils import save_height_map
+        # save_height_map(self.state.map.extended_occupancy_grid, "extended_occupancy_grid.png")
     
     def _are_positions_safe(self, positions: torch.Tensor) -> torch.Tensor:
         """

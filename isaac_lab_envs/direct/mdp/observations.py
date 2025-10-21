@@ -4,7 +4,15 @@ import numpy as np
 import gymnasium as gym
 from isaac_lab_envs.direct.mdp.state import EnvState
 
-
+from omni_drones.utils.torch import (
+    quat_mul,
+    quat_rotate_inverse,
+    normalize,
+    quaternion_to_rotation_matrix,
+    quaternion_to_euler,
+    axis_angle_to_quaternion,
+    axis_angle_to_matrix
+)
 
 class NavObservationProcessor:
     """基础导航环境的观测处理器"""
@@ -156,7 +164,7 @@ class TrafficObservationProcessor:
         self.spatial_point_dim = 3 if self.use_angle_distance_obs else 2
         self.spatial_dim = self.spatial_point_dim * (self.predict_steps + 1) + 1 
 
-        self.robot_node_dim = 5
+        self.robot_node_dim = 6
         if self.use_angle_distance_obs:
             self.robot_node_dim += 1
         
@@ -277,6 +285,8 @@ class TrafficObservationProcessor:
         
         # 计算速度方向yaw
         robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
+        cy = torch.cos(robot_yaw)
+        sy = torch.sin(robot_yaw)
         
         # 机器人参数
         robot_radius = torch.full((num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
@@ -287,7 +297,8 @@ class TrafficObservationProcessor:
             encoded_goal,       # [num_envs, 1, 2/3]
             robot_radius,       # [num_envs, 1, 1]  
             robot_v_pref,       # [num_envs, 1, 1]
-            robot_yaw.unsqueeze(-1)  # [num_envs, 1, 1]
+            cy.unsqueeze(-1),  # [num_envs, 1, 1]
+            sy.unsqueeze(-1)  # [num_envs, 1, 1]
         ], dim=-1)
         
         # 计算空间边观测（使用预计算的轨迹）
@@ -407,7 +418,7 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
     def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
         super().__init__(cfg, device)
         # self.robot_node_dim = 3 if self.use_angle_distance_obs else 2 + 3 + (3 if self.use_angle_distance_obs else 2) + (3 if self.use_angle_distance_obs else 2)
-        self.robot_node_dim = 9
+        self.robot_node_dim = 10
         if self.use_angle_distance_obs:
             self.robot_node_dim += 3
         self.temporal_edges_dim = 2
@@ -451,6 +462,8 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
         
         # 计算速度方向yaw
         robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])  # [num_envs, 1]
+        cy = torch.cos(robot_yaw)
+        sy = torch.sin(robot_yaw)
         
         # 机器人参数
         robot_radius = torch.full((num_envs, 1, 1), self.cfg.safety_radius, device=self.device)
@@ -461,7 +474,8 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
             encoded_goal,                # [num_envs, 1, 2/3]
             robot_radius,                # [num_envs, 1, 1]  
             robot_v_pref,                # [num_envs, 1, 1]
-            robot_yaw.unsqueeze(-1),     # [num_envs, 1, 1]
+            cy.unsqueeze(-1),            # [num_envs, 1, 1]
+            sy.unsqueeze(-1),            # [num_envs, 1, 1]
             encoded_local_goal,          # [num_envs, 1, 2/3]
             encoded_projection,          # [num_envs, 1, 2/3]
         ], dim=-1)  # [num_envs, 1, 9]
@@ -499,10 +513,29 @@ class CityNavObservationProcessor:
     def __init__(self, cfg, device: str = "cuda"):
         self.cfg = cfg
         self.device = device
+        # angle+distance encoding switch (sin, cos, 1/(d+1))
+        self.use_angle_distance_obs = getattr(cfg, 'use_angle_distance_obs', False)
+        self.robot_node_dim = 8
+        if self.use_angle_distance_obs:
+            self.robot_node_dim += 1
+
+    def _encode_relative_xy(self, relative_xy: torch.Tensor) -> torch.Tensor:
+        """Encode relative XY either as normalized (dx, dy) or (sin, cos, 1/(d+1))."""
+        if not self.use_angle_distance_obs:
+            # normalize by lidar range to [~ -1, 1]
+            return relative_xy / max(1e-6, float(self.cfg.lidar_range))
+        dx = relative_xy[..., 0]
+        dy = relative_xy[..., 1]
+        theta = torch.atan2(dy, dx)
+        sin_theta = torch.sin(theta)
+        cos_theta = torch.cos(theta)
+        dist = torch.norm(relative_xy, dim=-1)
+        inv_dist = 1.0 / (dist + 1.0)
+        return torch.stack([sin_theta, cos_theta, inv_dist], dim=-1)
 
     def generate_policy_obs_dict(self):
         policy_space_dict = {
-            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 10), dtype=np.float32),
+            'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.robot_node_dim), dtype=np.float32),
             'lidar': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 36, 4), dtype=np.float32),
         }
         return policy_space_dict
@@ -511,30 +544,123 @@ class CityNavObservationProcessor:
         drone_state = state.ego_drone.drone_state
         target_pos = state.navigation.target_positions
 
-        robot_pos = drone_state[:, :, :2]
-        robot_vel = drone_state[:, :, 7:9]
+        robot_pos = drone_state[:, :, :2]  # [N,1,2]
+        robot_vel_world = drone_state[:, :, 7:9]  # [N,1,2]
+        robot_quat = drone_state[:, :, 3:7]
+        robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]  # [N,1]
+        cy = torch.cos(robot_yaw)
+        sy = torch.sin(robot_yaw)
+        encoded_robot_yaw = torch.stack([cy, sy], dim=-1)
+        # helper: rotate world -> body (yaw-only)
+        def world_to_body(rel_xy):
+            x = rel_xy[..., 0]
+            y = rel_xy[..., 1]
+            bx = x * cy + y * sy
+            by = -x * sy + y * cy
+            return torch.stack([bx, by], dim=-1)
 
         goal_pos = target_pos[:, :, :2]
-        relative_goal_pos = goal_pos - robot_pos
-        relative_goal_pos = relative_goal_pos / self.cfg.lidar_range
-        robot_quat = drone_state[:, :, 3:7]
+        rel_goal_world = goal_pos - robot_pos
+        rel_goal_body = world_to_body(rel_goal_world)
+        encoded_rel_goal = self._encode_relative_xy(rel_goal_body)
+        vel_body = world_to_body(robot_vel_world)
 
-        robot_yaw = torch.atan2(robot_vel[:, :, 1], robot_vel[:, :, 0])
+        robot_radius = torch.full((drone_state.shape[0], 1, 1), self.cfg.safety_radius, device=self.device)
+        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.v_pref, device=self.device)
+
+        # [rel_goal(2/3), radius(1), v_pref(1), yaw(1), vel_body(2)]
+        robot_node = torch.cat([
+            encoded_rel_goal,
+            robot_radius,
+            robot_v_pref,
+            encoded_robot_yaw,
+            vel_body,
+        ], dim=-1)
+
+        # lidar
+        if state.perception.lidar_scan is not None:
+            lidar_scan = state.perception.lidar_scan/self.cfg.lidar_range
+        else:
+            lidar_scan = torch.zeros(drone_state.shape[0], 1, 36, 4, device=self.device)
+
+        policy_obs = {
+            'robot_node': robot_node,
+            'lidar': lidar_scan,
+        }
+        return {"policy": policy_obs}
+
+
+
+class CityNavObservationProcessorWithPath(CityNavObservationProcessor):
+    """Observation processor for city nav with lidar and path.
+
+    Outputs a policy dict with:
+    - robot_node: [1, 10]
+    - lidar: [1, 36, 4]
+    - path: [1, 3, 3]
+    """
+
+    def __init__(self, cfg, device: str = "cuda"):
+        super().__init__(cfg, device)
+        self.robot_node_dim = 8+4
+        if self.use_angle_distance_obs:
+            self.robot_node_dim += 3
+
+    def process_observation(self, state: EnvState) -> dict:
+        drone_state = state.ego_drone.drone_state
+        target_pos = state.navigation.target_positions
+        local_goals = state.navigation.local_goals
+        projection_points = state.navigation.projection_points
+
+        robot_pos = drone_state[:, :, :2]
+        robot_vel_world = drone_state[:, :, 7:9]
+        robot_quat = drone_state[:, :, 3:7]
+        robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]
+        cy = torch.cos(robot_yaw)
+        sy = torch.sin(robot_yaw)
+        encoded_robot_yaw = torch.stack([cy, sy], dim=-1)
+
+        def world_to_body(rel_xy):
+            x = rel_xy[..., 0]
+            y = rel_xy[..., 1]
+            bx = x * cy + y * sy
+            by = -x * sy + y * cy
+            return torch.stack([bx, by], dim=-1)
+
+        goal_pos = target_pos[:, :, :2]
+        rel_goal_body = world_to_body(goal_pos - robot_pos)
+        enc_rel_goal = self._encode_relative_xy(rel_goal_body)
+
+        if local_goals is not None:
+            rel_local_goal_body = world_to_body(local_goals[:, :, :2] - robot_pos)
+        else:
+            rel_local_goal_body = torch.zeros_like(rel_goal_body)
+        enc_rel_local = self._encode_relative_xy(rel_local_goal_body)
+
+        if projection_points is not None:
+            rel_proj_body = world_to_body(projection_points[:, :, :2] - robot_pos)
+        else:
+            rel_proj_body = torch.zeros_like(rel_goal_body)
+        enc_rel_proj = self._encode_relative_xy(rel_proj_body)
+
+        vel_body = world_to_body(robot_vel_world)
 
         robot_radius = torch.full((drone_state.shape[0], 1, 1), self.cfg.safety_radius, device=self.device)
         robot_v_pref = torch.full((drone_state.shape[0], 1, 1), self.cfg.v_pref, device=self.device)
 
         robot_node = torch.cat([
-            relative_goal_pos,
+            enc_rel_goal,
             robot_radius,
             robot_v_pref,
-            robot_quat,
-            robot_vel,
-        ], dim=-1) 
+            encoded_robot_yaw,
+            vel_body,
+            enc_rel_local,
+            enc_rel_proj,
+        ], dim=-1)
 
         # lidar
         if state.perception.lidar_scan is not None:
-            lidar_scan = state.perception.lidar_scan/self.cfg.lidar_range
+            lidar_scan = state.perception.lidar_scan / self.cfg.lidar_range
         else:
             lidar_scan = torch.zeros(drone_state.shape[0], 1, 36, 4, device=self.device)
 
