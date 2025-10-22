@@ -12,7 +12,7 @@ import torch
 # 导入Isaac Lab
 from omni.isaac.lab.app import AppLauncher
 from dataclasses import replace
-headless = False
+headless = True
 def main():
     """Main function."""
     # Create argument parser
@@ -39,9 +39,10 @@ def main():
             cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
             cfg.num_actions = 2
             cfg.num_observations = 7
-            cfg.traffic_sim.num_drones = 0
-            cfg.traffic_sim.num_evtols = 0
-            cfg.use_discrete_action = True
+            cfg.traffic_sim.num_drones = 10
+            cfg.traffic_sim.num_evtols = 1
+            cfg.action_space_type = "discrete"
+            cfg.action_mode = "velocity_components"
             print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
             env = TrafficEnv(cfg=cfg)
         else:
@@ -73,7 +74,7 @@ def main():
     for step in range(2000):
         # 随机动作
 
-        if env.cfg.use_discrete_action:
+        if cfg.action_space_type == "discrete":
             actions = torch.randint(0, env.cfg.action_space_num_per_dim * env.cfg.action_space_num_per_dim, (env.num_envs,), device=env.device)
         else:
             actions = torch.randn(env.num_envs, env.num_actions, device=env.device)
