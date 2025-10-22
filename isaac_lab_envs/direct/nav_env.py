@@ -37,7 +37,7 @@ from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.sensors import RayCaster, RayCasterCfg, patterns
 import omni.isaac.lab.utils.math as math_utils
 
-from omni_drones.traffic.cfg.config import AreaBoundsCfg
+from isaac_lab_envs.traffic.cfg.config import AreaBoundsCfg
 
 # 导入原始OmniDrones的robot系统
 from omni_drones.robots.drone import MultirotorBase

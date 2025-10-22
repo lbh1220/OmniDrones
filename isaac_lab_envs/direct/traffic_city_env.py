@@ -49,7 +49,7 @@ from omni_drones.utils.torch import euler_to_quaternion
 from tensordict.tensordict import TensorDict
 from torchrl.data import CompositeSpec, UnboundedContinuousTensorSpec
 
-from isaac_lab_envs.direct.nav_env import NavEnvCfg, NavEnv
+from isaac_lab_envs.direct.city_nav_env import NavCityEnvCfg, NavCityEnv
 from isaac_lab_envs.direct.mdp.metrics import MetricsManager, FlagsModule, CrossTrackModule, AccelerationModule, NearCollisionModule
 from isaac_lab_envs.traffic import TrafficSimulator, TrafficCfg, TrafficEvtolCfg, TrafficDroneCfg, AreaBoundsCfg
 from isaac_lab_envs.traffic.cfg.config import OrcaCfg
@@ -87,7 +87,7 @@ class NavEnvWindow(BaseEnvWindow):
                     self._create_debug_vis_ui_element("targets", self.env)
 
 @configclass
-class TrafficEnvCfg(NavEnvCfg):
+class TrafficCityEnvCfg(NavCityEnvCfg):
     """Configuration for the Nav navigation environment."""
     
     traffic_sim: TrafficCfg = field(default_factory=lambda: TrafficCfg(
@@ -134,17 +134,13 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_patience_coeff = 0.0
     
 
-class TrafficEnvWithCurriculumCfg(TrafficEnvCfg):
-    # curriculum learning
-    curriculum_learning: bool = False
-    curriculum_list: List[TrafficCurriculumCfg] = None
 
-class TrafficEnv(NavEnv):
+class TrafficCityEnv(NavCityEnv):
     """Nav navigation environment for drones using Direct RL workflow."""
     
-    cfg: TrafficEnvCfg
+    cfg: TrafficCityEnvCfg
 
-    def __init__(self, cfg: TrafficEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: TrafficCityEnvCfg, render_mode: str | None = None, **kwargs):
         # 保存配置参数（在父类初始化之前）
         self.traffic_sim = None
         
@@ -166,19 +162,19 @@ class TrafficEnv(NavEnv):
         self.traffic_sim.reset()
         # traffic env 不是reset idx，不是每次step都reset
 
-    def _init_mdp_components(self, cfg: TrafficEnvCfg):
-        """初始化模块化组件"""
-        if cfg.use_global_path:
-            from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessorWithPath
-            from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculatorWithPath
-            self.obs_processor = TrafficObservationProcessorWithPath(cfg)
-            self.reward_calculator = TrafficRewardCalculatorWithPath(cfg)
+    # def _init_mdp_components(self, cfg: TrafficCityEnvCfg):
+    #     """初始化模块化组件"""
+    #     if cfg.use_global_path:
+    #         from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessorWithPath
+    #         from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculatorWithPath
+    #         self.obs_processor = TrafficObservationProcessorWithPath(cfg)
+    #         self.reward_calculator = TrafficRewardCalculatorWithPath(cfg)
 
-        else:
-            from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
-            from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
-            self.obs_processor = TrafficObservationProcessor(cfg)
-            self.reward_calculator = TrafficRewardCalculator(cfg)
+    #     else:
+    #         from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
+    #         from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
+    #         self.obs_processor = TrafficObservationProcessor(cfg)
+    #         self.reward_calculator = TrafficRewardCalculator(cfg)
         # 初始化 Metrics 管理器并注册 Traffic 相关模块
     
     def _init_metrics(self):
@@ -358,69 +354,4 @@ class TrafficEnv(NavEnv):
         # 不再在state中维护eVTOL专用视图，使用时按类型筛选
 
 
-
-class TrafficEnvWithCurriculum(TrafficEnv):
-    """Traffic environment with curriculum learning"""
-
-    def __init__(self, cfg: TrafficEnvCfg, render_mode: str | None = None, **kwargs):
-        self.course_num = len(cfg.curriculum_list)
-        self.current_course = 0
-
-        self.active_drones_num = cfg.curriculum_list[0].drones_num
-        self.active_evtols_num = cfg.curriculum_list[0].evtol_num
-
-        super().__init__(cfg, render_mode, **kwargs)
-
-
-
-    def set_curriculum(self, course_idx: int):
-        """Switch to next course"""
-        self.current_course = course_idx
-        if self.current_course >= self.course_num:
-            self.current_course = self.course_num - 1
-        self.active_drones_num = self.cfg.curriculum_list[self.current_course].drones_num
-        self.active_evtols_num = self.cfg.curriculum_list[self.current_course].evtol_num
-        # previous_evtol_radius = self.traffic_sim.evtol_manager.state.safety_radius
-        # new_evtol_radius = torch.ones(previous_evtol_radius.shape, device=self.device) * self.cfg.curriculum_list[self.current_course].evtol_radius
-        # self.traffic_sim.evtol_manager.state.safety_radius = new_evtol_radius
-        # self.traffic_sim.evtol_manager.random_attributes(self.cfg.traffic_sim.evtol.random_speed, self.cfg.traffic_sim.evtol.random_safety_radius)
-        self.traffic_sim.evtol_manager.config.evtol.safety_radius = self.cfg.curriculum_list[self.current_course].evtol_radius
-        
-    def _detect_collisions(self) -> torch.Tensor:
-        """检测与traffic aircraft的碰撞"""
-        
-        ego_pos = self.state.ego_drone.positions
-        ego_safety_radius = torch.ones(self.num_envs, device=self.device) * self.cfg.safety_radius
-
-        collision_mask = self.traffic_sim.check_collision(
-            ego_pos.squeeze(1),
-            ego_safety_radius,
-            activate_drones_num=self.active_drones_num,
-            activate_evtols_num=self.active_evtols_num
-        )
-        
-        return collision_mask
-
-    def _update_traffic_obs_processor(self):
-        # 预计算traffic轨迹预测，供观测和奖励计算使用
-        traffic_positions = self.traffic_sim.get_aircraft_positions(activate_drones_num=self.active_drones_num, 
-                                                                    activate_evtols_num=self.active_evtols_num)  # [total_traffic, 3]
-        traffic_velocities = self.traffic_sim.get_aircraft_velocities(activate_drones_num=self.active_drones_num, 
-                                                                    activate_evtols_num=self.active_evtols_num)  # [total_traffic, 3]
-        traffic_types = self.traffic_sim.get_aircraft_types(activate_drones_num=self.active_drones_num, 
-                                                            activate_evtols_num=self.active_evtols_num)  # [total_traffic] tensor
-        traffic_safety_radius = self.traffic_sim.get_aircraft_safety_radius(activate_drones_num=self.active_drones_num, 
-                                                            activate_evtols_num=self.active_evtols_num)  # [total_traffic] tensor
-        
-        # 更新state中的traffic数据
-        self.state.traffic.traffic_positions = traffic_positions
-        self.state.traffic.traffic_velocities = traffic_velocities
-        self.state.traffic.traffic_types = traffic_types
-        self.state.traffic.traffic_safety_radius = traffic_safety_radius
-        
-        # 同时更新观测处理器的缓存（保持兼容性）
-        self.obs_processor.predict_traffic_trajectory(
-            traffic_positions, traffic_velocities, traffic_types, traffic_safety_radius
-        )
-        self.state.traffic.traffic_future_traj = self.obs_processor.traffic_future_traj.clone()
 

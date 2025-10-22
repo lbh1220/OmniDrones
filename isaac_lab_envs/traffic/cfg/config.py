@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import field
 from omni.isaac.lab.utils.configclass import configclass
-
+from isaac_lab_envs.utils.path_planner import GlobalPathPlannerCfg
 # 1. 为每一个子配置定义一个独立的 configclass
 @configclass
 class AreaBoundsCfg:
@@ -20,8 +20,17 @@ class TrafficDroneCfg:
     v_pref: float = 1.0 # preferred speed
     arrival_threshold: float = 1.0
     target_num: int = 8
+    max_offset_radius: float = 4.0 # maximum offset radius for target generation
     random_safety_radius: bool = False
     random_speed: bool = True
+
+    global_path_planner: GlobalPathPlannerCfg = GlobalPathPlannerCfg(
+        algorithm="astar",
+        smooth_method="shortcut"
+    )
+    # local guidance
+    lookahead_distance: float = 10.0
+
 
 @configclass
 class TrafficEvtolCfg:
@@ -35,6 +44,13 @@ class TrafficEvtolCfg:
     course_num: int = 3
     random_speed: bool = True
     random_safety_radius: bool = False
+
+
+    global_path_planner: GlobalPathPlannerCfg = GlobalPathPlannerCfg(
+        algorithm="astar",
+        smooth_method="douglas_peucker"
+    )
+
 @configclass
 class OrcaCfg:
     enable: bool = True
@@ -57,6 +73,7 @@ class TrafficCfg:
     orca: OrcaCfg = field(default_factory=OrcaCfg)
 
     reset_interval: int = 1024
+
 
 # --- 如何在您的主环境配置中使用 ---
 # @configclass

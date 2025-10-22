@@ -21,8 +21,8 @@ def main():
     parser.add_argument("--workflow", type=str, default="direct", choices=["direct", "manager"], 
                        help="The workflow to use: 'direct' or 'manager'")
     parser.add_argument("--num_envs", type=int, default=8, help="Number of environments")
-    parser.add_argument("--traffic", type=bool, default=False, help="Whether to use traffic")
-    parser.add_argument("--video", type=bool, default=True, help="Whether to use video")
+    parser.add_argument("--traffic", type=bool, default=True, help="Whether to use traffic")
+    parser.add_argument("--video", type=bool, default=False, help="Whether to use video")
     parser.add_argument("--video_interval", type=int, default=10000, help="Video interval")
     parser.add_argument("--video_length", type=int, default=100, help="Video length")
 

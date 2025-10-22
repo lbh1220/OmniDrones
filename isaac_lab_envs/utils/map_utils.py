@@ -2,7 +2,9 @@ import torch
 import torch.nn.functional as F
 import math
 import os
-
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import List
 
 def extend_occupancy_map(
     occ_grid: torch.Tensor,
@@ -192,3 +194,163 @@ def visualize_paths_on_grid(
     fig.savefig(output_path, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
     print(f"INFO: Saved planned paths visualization to {output_path}")
+
+
+def get_convex_hulls_from_grid(
+    occ_grid: torch.Tensor,
+    grid_bounds: tuple[float, float, float, float],
+    grid_size: float,
+    min_area_m2: float = 0.5,
+    simplification_tolerance_m: float = 0.1
+) -> list[np.ndarray]:
+    """
+    从2D占据栅格地图中提取所有障碍物簇的简化凸包。
+    
+    使用OpenCV高效地执行：
+    1. 查找轮廓 (findContours) 进行聚类。
+    2. 计算凸包 (convexHull) 作为包络。
+    3. 【新增】使用 (approxPolyDP) 简化凸包，去除锯齿状的小边。
+    4. 将像素坐标转换回世界坐标。
+
+    Args:
+        occ_grid: 布尔型占据栅格，形状为 [H, W]。
+        grid_bounds: 地图的物理边界 (xmin, xmax, ymin, ymax)。
+        grid_size: 栅格地图的分辨率 (米/像素)。
+        min_area_m2: 过滤掉的最小障碍物簇面积（平方米）。
+        simplification_tolerance_m: 简化容差（米）。
+            这是近似多边形与原始凸包之间的最大允许偏差。
+            值越大，简化程度越高，凸包的边数越少。
+            设为 0.0 可以跳过简化。
+
+    Returns:
+        一个列表，其中每个元素是一个 [N, 2] 的 NumPy 数组，
+        代表一个【简化的】凸包的 N 个顶点在世界坐标系下的 (x, y) 坐标。
+    """
+    import cv2
+    # -- 1. 准备输入：将 PyTorch 张量转换为 OpenCV 格式 --
+    if occ_grid.dim() != 2:
+        raise ValueError(f"Input occ_grid must be a 2D tensor [H, W], got {occ_grid.shape}")
+    grid_np = (occ_grid.cpu().numpy() * 255).astype(np.uint8)
+
+    # -- 2. 聚类：查找轮廓 --
+    contours, _ = cv2.findContours(grid_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    all_hulls_world = []
+    pc_xmin, _, pc_ymin, _ = grid_bounds
+    min_area_px = min_area_m2 / (grid_size * grid_size)
+    
+    # 将简化容差从“米”转换为“像素”
+    epsilon_px = simplification_tolerance_m / grid_size
+
+    # -- 3. 提取、简化凸包并转换坐标 --
+    for contour in contours:
+        # a. 过滤掉太小的物体
+        area = cv2.contourArea(contour)
+        if area < min_area_px:
+            continue
+            
+        # b. 计算精细的凸包
+        hull_pixels_detailed = cv2.convexHull(contour)
+        
+        # c. 【新步骤】简化凸包
+        if epsilon_px > 0.0 and len(hull_pixels_detailed) > 3:
+            hull_pixels_simple = cv2.approxPolyDP(
+                hull_pixels_detailed,
+                epsilon=epsilon_px,  # 关键参数：像素单位的容差
+                closed=True          # 这是一个闭合多边形
+            )
+        else:
+            hull_pixels_simple = hull_pixels_detailed # 跳过简化
+
+        # d. 检查简化后是否仍能构成多边形
+        if len(hull_pixels_simple) < 3:
+            continue
+            
+        # e. 转换坐标
+        hull_pixels = hull_pixels_simple.squeeze(1)
+
+        # -- 4. 将像素坐标 (x_pix, y_pix) 转换为世界坐标 (x_world, y_world) --
+        hull_world_coords_x = pc_xmin + (hull_pixels[:, 0].astype(np.float32) + 0.5) * grid_size
+        hull_world_coords_y = pc_ymin + (hull_pixels[:, 1].astype(np.float32) + 0.5) * grid_size
+        hull_world_coords = np.stack([hull_world_coords_x, hull_world_coords_y], axis=1)
+
+        all_hulls_world.append(hull_world_coords)
+
+    return all_hulls_world
+
+def plot_convex_hulls(
+    hulls_list: List[np.ndarray],
+    output_path: str,
+    fill_color: str = 'gray',
+    edge_color: str = 'black',
+    alpha: float = 0.7,
+    title: str = "Obstacle Convex Hulls"
+):
+    """
+    将 get_convex_hulls_from_grid 生成的凸包列表绘制并保存为图像。
+    
+    Args:
+        hulls_list: 一个列表，其中每个元素是 [N, 2] 的 NumPy 数组（世界坐标）。
+        output_path: 保存图像的文件路径 (例如 "hulls.png")。
+        fill_color: 凸包的填充颜色。
+        edge_color: 凸包的边缘颜色。
+        alpha: 填充的透明度。
+        title: 图像的标题。
+    """
+    
+    # 1. 创建一个绘图对象
+    fig, ax = plt.subplots(figsize=(12, 12))
+
+    if not hulls_list:
+        print("Warning: No hulls provided to plot.")
+    else:
+        # 2. 遍历每一个凸包（每一个障碍物）
+        for hull in hulls_list:
+            if len(hull) < 2:
+                continue # 跳过无效的点或线
+                
+            # 3. 【核心】手动闭合凸包
+            #    将第一个顶点 [x0, y0] 附加到数组末尾
+            #    hull (N, 2) -> closed_hull (N+1, 2)
+            closed_hull = np.vstack([hull, hull[0]])
+            
+            # 4. 提取 X 和 Y 坐标
+            x_coords = closed_hull[:, 0]
+            y_coords = closed_hull[:, 1]
+            
+            # 5. 绘制填充的多边形
+            ax.fill(
+                x_coords, 
+                y_coords, 
+                facecolor=fill_color, 
+                edgecolor=edge_color, 
+                alpha=alpha, 
+                linewidth=1.0
+            )
+
+    # 6. 设置绘图属性
+    ax.set_xlabel("World X Coordinate (m)")
+    ax.set_ylabel("World Y Coordinate (m)")
+    ax.set_title(title)
+    
+    # 7. 【关键】设置相等的坐标轴比例
+    #    这可以确保一个正方形不会被拉伸成一个矩形
+    ax.set_aspect('equal', 'box')
+    
+    ax.grid(True, linestyle='--', alpha=0.5)
+    
+    # 8. 自动调整视图范围（如果提供了凸包）
+    if hulls_list:
+        all_points = np.vstack(hulls_list)
+        min_x, min_y = all_points.min(axis=0)
+        max_x, max_y = all_points.max(axis=0)
+        padding_x = (max_x - min_x) * 0.1
+        padding_y = (max_y - min_y) * 0.1
+        
+        ax.set_xlim(min_x - padding_x - 1, max_x + padding_x + 1)
+        ax.set_ylim(min_y - padding_y - 1, max_y + padding_y + 1)
+        
+    # 9. 保存并关闭图形
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Hull visualization saved to {output_path}")

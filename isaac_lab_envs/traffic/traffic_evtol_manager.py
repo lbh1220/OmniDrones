@@ -38,6 +38,7 @@ from omni.isaac.core.utils import prims as prim_utils
 from omni_drones.robots.evtol import EVTOLBase
 from isaac_lab_envs.traffic.utils.state import TrafficState, Waypoint, Waypoint_ex
 from isaac_lab_envs.traffic.utils.generator import EVTOLTargetGenerator
+from isaac_lab_envs.utils.path_planner import GlobalPathPlanner
 
 
 
@@ -68,8 +69,8 @@ class TrafficEVTOLManager:
         
         # 预生成的航线数据 - 修改为预计算模式
         self.all_courses = []  # 所有可用的航线
-        self.all_smooth_waypoints = []  # 所有可用的平滑轨迹
-        self.evtol_course_assignments = []  # 每个EVTOL被分配的course索引
+        self.all_smooth_path = []  # 所有可用的平滑轨迹
+        self.evtol_course_assignments = [0] * self.num_evtols  # 每个EVTOL被分配的course索引
         
         # EVTOL参数
         self.max_speed = config.evtol.max_speed
@@ -86,6 +87,9 @@ class TrafficEVTOLManager:
         
         # 日志
         self.logger = logging.getLogger(__name__)
+        
+        # grid and planner
+        self.global_path_planner: GlobalPathPlanner | None = None
     
     def create_evtols(self):
         """创建EVTOL primitives"""
@@ -101,22 +105,16 @@ class TrafficEVTOLManager:
         # 创建EVTOL基础对象
         self.evtol = EVTOLBase(device=self.device)
         
-        # 预生成所有可用的航线
-        self._pregenerate_all_courses(self.config.evtol.course_num)
-        
         # 为每个EVTOL分配航线
         initial_positions = []
         prim_paths = []
         scales = []
         
+        # 随机为每个evtol分一个地面以下的位置
+        init_2d = [1.5*self.config.area_bounds.xmax, 1.5*self.config.area_bounds.ymax]
         for i in range(self.num_evtols):
-            # 随机分配一条course
-            # course_idx = random.randint(0, len(self.all_courses) - 1)
-            course_idx = torch.randint(0, len(self.all_courses), (1,), device=self.device).item()
-            self.evtol_course_assignments.append(course_idx)            
-            # 设置初始位置为航线起点
-            smooth_waypoints = self.all_smooth_waypoints[course_idx]
-            initial_positions.append((smooth_waypoints[0].x, smooth_waypoints[0].y, smooth_waypoints[0].z))
+            init_height = -5 - 5*i
+            initial_positions.append((init_2d[0], init_2d[1], init_height))
             prim_paths.append(f"{self.traffic_prim_path}/traffic_evtol_{i}")
             # scales.append((self.config.evtol.safety_radius, self.config.evtol.safety_radius, 1.0))  # EVTOL通常比较大
             scales.append((2.0, 2.0, 1.0))
@@ -132,16 +130,35 @@ class TrafficEVTOLManager:
         
         self.is_created = True
         self.logger.info(f"Created {len(created_prims)} EVTOL primitives")
+
+    def update_grid_map(self, no_extended_grid: torch.Tensor, grid_size: float, bounds: tuple[float, float, float, float]):
+        """Update internal map and pass to target generator and planner."""
+        from isaac_lab_envs.utils.map_utils import extend_occupancy_map
+        extended_grid = extend_occupancy_map(no_extended_grid, self.config.evtol.safety_radius, grid_size)
+        self.state.extended_occupancy_grid = extended_grid
+        self.state.grid_size = float(grid_size)
+        self.state.grid_bounds = bounds
+        planner_cfg = getattr(self.config.evtol, "global_path_planner", None)
+        # 更新/创建 manager 自己的 planner
+        if planner_cfg is not None:
+            if self.global_path_planner is None:
+                self.global_path_planner = GlobalPathPlanner(planner_cfg)
+            self.global_path_planner.update_grid_map(self.state.extended_occupancy_grid, self.state.grid_size, bounds)
+        # 将 manager 的 planner 引用传给生成器
+        self.target_generator.update_grid_map(self.state.extended_occupancy_grid, self.state.grid_size, bounds, self.global_path_planner)
     
     def _pregenerate_all_courses(self, num_courses: int):
         """预生成所有可用的航线"""
         self.all_courses = []
-        self.all_smooth_waypoints = []
+        self.all_smooth_path = []
         for i in range(num_courses):
             # 生成航线并获取平滑后的轨迹
             course, smooth_waypoints = self.target_generator.generate_course_with_smooth_trajectory()
+            if course is None:
+                # 规划失败，跳过
+                continue
             self.all_courses.append(course)
-            self.all_smooth_waypoints.append(smooth_waypoints)
+            self.all_smooth_path.append(smooth_waypoints)
         self.logger.info(f"Pre-generated {num_courses} courses")
     
     def initialize(self):
@@ -161,7 +178,6 @@ class TrafficEVTOLManager:
         
         # 初始化EVTOL视图
         self.evtol.initialize(prim_paths_expr=f"{self.traffic_prim_path}/traffic_evtol_*")
-        
         # 初始化状态管理器
         names = [f"traffic_evtol_{i}" for i in range(self.num_evtols)]
         aircraft_types = ["evtol"] * self.num_evtols
@@ -170,28 +186,13 @@ class TrafficEVTOLManager:
         min_speed = [self.min_speed] * self.num_evtols
         v_pref = [self.v_pref] * self.num_evtols
         self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, min_speed, v_pref, self.device)
-        
-        # 随机生成EVTOL的属性
-        # 这个暂时没办法用，因为simulator很少reset
         self.random_attributes(self.config.evtol.random_speed, self.config.evtol.random_safety_radius)
-        
-        # 为每个EVTOL在state中设置对应的平滑后轨迹
-        for i in range(self.num_evtols):
-            course_idx = self.evtol_course_assignments[i]
-            course_waypoints = self.all_courses[course_idx]
-            
-            # 转换smooth waypoints为新格式
-            # waypoints = []
-            # for wp in smooth_waypoints:
-            #     waypoints.append(Waypoint(wp.x, wp.y, wp.z, self.max_speed))
-            
-            self.state.set_waypoints_for_aircraft(i, course_waypoints)
-        
-        # 设置初始状态
-        self._update_initial_states()
-        
+
         self.is_initialized = True
-        self.logger.info(f"Initialized {self.num_evtols} EVTOLs")
+        self.reset()
+
+
+
     
     
     def _update_initial_states(self, from_start_waypoint: bool = False):
@@ -199,9 +200,9 @@ class TrafficEVTOLManager:
         if not self.evtol or not self.evtol.is_valid:
             return
         for i in range(self.num_evtols):
-            course_idx = torch.randint(0, len(self.all_smooth_waypoints), (1,), device=self.device).item()
+            course_idx = self.evtol_course_assignments[i]
 
-            smooth_waypoints = self.all_smooth_waypoints[course_idx]
+            smooth_waypoints = self.all_smooth_path[course_idx]
             if from_start_waypoint:
                 start_idx = 0
             else:
@@ -215,8 +216,7 @@ class TrafficEVTOLManager:
             self.state.target_positions[i] = torch.tensor([smooth_waypoints[-1].x, smooth_waypoints[-1].y, smooth_waypoints[-1].z], device=self.device)
             self.state.start_positions[i] = torch.tensor([smooth_waypoints[0].x, smooth_waypoints[0].y, smooth_waypoints[0].z], device=self.device)
     
-
-        self.evtol.set_world_poses(self.state.positions.unsqueeze(0), self.state.rotations.unsqueeze(0))
+        self.evtol.reset_positions(self.state.positions.unsqueeze(0), self.state.rotations.unsqueeze(0))
         
         
     
@@ -233,6 +233,8 @@ class TrafficEVTOLManager:
         
         # 更新每个EVTOL的位置和姿态
         self.evtol.update_states()
+        if len(self.all_courses) == 0:
+            return
         for i in range(self.num_evtols):
             self._update_evtol_state(i, dt)
         
@@ -243,7 +245,7 @@ class TrafficEVTOLManager:
         """更新单个EVTOL的状态 - 使用基于距离的连续移动和插值"""
         # 获取平滑后的轨迹waypoints
         course_idx = self.evtol_course_assignments[evtol_idx]
-        smooth_waypoints = self.all_smooth_waypoints[course_idx]
+        smooth_waypoints = self.all_smooth_path[course_idx]
         
         if not smooth_waypoints:
             return
@@ -360,7 +362,7 @@ class TrafficEVTOLManager:
         self.state.current_waypoint_indices[evtol_idx] = 0
         
         # 设置新的起始位置 - 使用第一个平滑轨迹点
-        smooth_waypoints = self.all_smooth_waypoints[new_course_idx]
+        smooth_waypoints = self.all_smooth_path[new_course_idx]
         first_smooth_wp = smooth_waypoints[0]
         self.state.positions[evtol_idx] = torch.tensor([first_smooth_wp.x, first_smooth_wp.y, first_smooth_wp.z], device=self.device)
         self.state.start_positions[evtol_idx] = torch.tensor([first_smooth_wp.x, first_smooth_wp.y, first_smooth_wp.z], device=self.device)
@@ -438,6 +440,8 @@ class TrafficEVTOLManager:
 
         # 重新生成course
         self._pregenerate_all_courses(self.config.evtol.course_num)
+        if len(self.all_courses) == 0:
+            return
         # 为每个EVTOL在state中设置对应的平滑后轨迹
         for i in range(self.num_evtols):
             course_idx = torch.randint(0, len(self.all_courses), (1,), device=self.device).item()

@@ -99,7 +99,7 @@ class TrafficSimulator:
         # Initialize drone components if present
         if self.drone_manager is not None:
             self.drone_manager.initialize()
-            self.drone_manager.set_initial_targets()
+
         
         # Initialize eVTOL components
         if self.evtol_manager is not None:
@@ -108,6 +108,12 @@ class TrafficSimulator:
         self.is_initialized = True
         logging.info("TrafficSimulator initialization complete")
     
+    def update_grid_map(self, no_extended_grid: torch.Tensor, grid_size: float, bounds: tuple[float, float, float, float]):
+        """Propagate occupancy map and bounds to managers and their planners."""
+        if self.drone_manager is not None:
+            self.drone_manager.update_grid_map(no_extended_grid, grid_size, bounds)
+        if self.evtol_manager is not None:
+            self.evtol_manager.update_grid_map(no_extended_grid, grid_size, bounds)
 
     def _pre_physics_step(self, dt: float=0.16):
         '''

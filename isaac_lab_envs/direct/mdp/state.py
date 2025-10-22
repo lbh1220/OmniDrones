@@ -375,6 +375,7 @@ class EnvState:
             self.mdp.terminated[env_ids] = False
         if self.mdp.truncated is not None:
             self.mdp.truncated[env_ids] = False
+            
     def update_navigation_state_vectorized(self, lookahead_distance: float = 10.0, env_ids: torch.Tensor | None = None):
         """
         【矢量化版】为指定环境（或全部环境）更新其导航状态。

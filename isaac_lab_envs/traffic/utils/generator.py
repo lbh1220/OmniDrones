@@ -5,6 +5,7 @@ import torch
 
 from isaac_lab_envs.traffic.utils.state import Waypoint_ex, Waypoint
 import omni.isaac.lab.utils.math as math_utils
+from isaac_lab_envs.utils.path_planner import GlobalPathPlanner, GlobalPathPlannerCfg
 
 class DroneTargetGenerator_simple:
     """Generate flight targets for traffic drones."""
@@ -46,6 +47,20 @@ class DroneTargetGenerator:
         # 偏移参数
         self.min_offset_radius = 0.0  # 最小偏移半径
         self.max_offset_radius = getattr(config, 'max_offset_radius', 8.0)  # 最大偏移半径
+
+        # 地图与规划
+        self.extended_grid = None
+        self.grid_size = None
+        self.grid_bounds = None
+        self.planner: GlobalPathPlanner | None = None
+
+    def update_grid_map(self, extended_grid: torch.Tensor, grid_size: float, bounds: tuple[float, float, float, float], planner: GlobalPathPlanner | None = None):
+        self.extended_grid = extended_grid
+        self.grid_size = float(grid_size)
+        self.grid_bounds = bounds
+        # 不在生成器内部创建/更新 planner；直接引用 manager 注入的实例
+        if planner is not None:
+            self.planner = planner
         
     def initialize_targets(self, num_candidates: int = 20):
         """Initialize candidate target points within bounds, distributed relatively evenly.
@@ -54,40 +69,53 @@ class DroneTargetGenerator:
             num_candidates: Number of candidate target points to generate
         """
         self.num_candidates = num_candidates
-        
-        # 计算网格大小以实现相对均匀的分布
+
+        # 若有扩展占据图：在“安全盘”（半径 max_offset_radius）中挑选候选点
+        if self.extended_grid is not None and self.grid_size is not None and self.grid_bounds is not None:
+            import torch.nn.functional as F
+            grid = self.extended_grid.to(self.device)
+            xmin, xmax, ymin, ymax = map(float, self.grid_bounds)
+            gs = float(self.grid_size) if self.grid_size is not None else 1.0
+            # 使用最大池化等效形态学膨胀来检测邻域是否有障碍
+            kernel_r_px = int(torch.ceil(torch.tensor(max(self.max_offset_radius, 0.0) / max(gs, 1e-9))).item())
+            kernel_size = 2 * kernel_r_px + 1
+            pooled = F.max_pool2d(grid.float().unsqueeze(0).unsqueeze(0), kernel_size=kernel_size, stride=1, padding=kernel_r_px)
+            safe_map = (pooled.squeeze(0).squeeze(0) == 0)  # True 表示该格及周围半径内无障碍
+            safe_indices = torch.nonzero(safe_map, as_tuple=False)
+            if safe_indices.numel() > 0:
+                M = safe_indices.shape[0]
+                if M >= self.num_candidates:
+                    pick = torch.randperm(M, device=self.device)[: self.num_candidates]
+                else:
+                    pick = torch.randint(0, M, (self.num_candidates,), device=self.device)
+                chosen = safe_indices[pick]
+                iy = chosen[:, 0].float()
+                ix = chosen[:, 1].float()
+                x = xmin + (ix + 0.5) * gs
+                y = ymin + (iy + 0.5) * gs
+                z = torch.full_like(x, fill_value=self.flight_height)
+                self.candidate_targets = torch.stack([x, y, z], dim=-1)
+                return
+            # 若没有安全点，退化为无图方案
+
+        # 无图/无安全点：均匀网格放置（不抖动），保证覆盖度
         grid_size_x = (self.bounds.xmax - self.bounds.xmin) / (self.num_candidates ** 0.5)
         grid_size_y = (self.bounds.ymax - self.bounds.ymin) / (self.num_candidates ** 0.5)
-        
-        # 生成候选目标点
         candidate_targets = []
-        
         for i in range(self.num_candidates):
-            # 使用网格索引计算基础位置
             grid_x = i % int(self.num_candidates ** 0.5)
             grid_y = i // int(self.num_candidates ** 0.5)
-            
-            # 在网格中心添加随机偏移
             base_x = self.bounds.xmin + grid_x * grid_size_x + grid_size_x * 0.5
             base_y = self.bounds.ymin + grid_y * grid_size_y + grid_size_y * 0.5
-            
-            # 添加随机偏移以避免完全对齐
-            offset_x = (torch.rand(1, device=self.device) - 0.5) * grid_size_x * 0.3
-            offset_y = (torch.rand(1, device=self.device) - 0.5) * grid_size_y * 0.3
-            
-            x = base_x + offset_x
-            y = base_y + offset_y
+            x = torch.tensor([base_x], device=self.device)
+            y = torch.tensor([base_y], device=self.device)
             z = torch.tensor([self.flight_height], device=self.device)
-            
-            target = torch.cat([x, y, z])
-            candidate_targets.append(target)
-        
-        # 转换为张量 [num_candidates, 3]
+            candidate_targets.append(torch.cat([x, y, z]))
         self.candidate_targets = torch.stack(candidate_targets)
         
         # print(f"Initialized {self.num_candidates} candidate targets")
     
-    def generate_targets(self, num_drones: int, max_offset = None) -> torch.Tensor:
+    def generate_targets(self, num_drones: int) -> torch.Tensor:
         """Batch generate targets for multiple drones with random offsets.
         
         Args:
@@ -96,8 +124,6 @@ class DroneTargetGenerator:
         Returns:
             Tensor of shape [num_drones, 3] containing target positions
         """
-        if max_offset is not None:
-            self.max_offset_radius = max_offset
         
         if self.candidate_targets is None:
             raise RuntimeError("Must call initialize_targets() first")
@@ -111,26 +137,34 @@ class DroneTargetGenerator:
         selected_targets = self.candidate_targets[drone_indices]  # [num_drones, 3]
         
         # Step 2: Generate random offsets around selected targets
-        # 生成随机半径和角度
         radii = torch.rand(num_drones, device=self.device) * (self.max_offset_radius - self.min_offset_radius) + self.min_offset_radius
         angles = torch.rand(num_drones, device=self.device) * 2 * torch.pi
-        
-        # 计算偏移量 [num_drones, 3]
-        # 只在xy平面上添加偏移，z保持不变
         offsets = torch.zeros(num_drones, 3, device=self.device)
-        offsets[:, 0] = radii * torch.cos(angles)  # x偏移
-        offsets[:, 1] = radii * torch.sin(angles)  # y偏移
-        offsets[:, 2] = 0.0  # z偏移为0
-        
-        # 应用偏移量
+        offsets[:, 0] = radii * torch.cos(angles)
+        offsets[:, 1] = radii * torch.sin(angles)
+        # z offset = 0.0
+
         final_targets = selected_targets + offsets
-        
-        # 确保目标点在边界内
-        final_targets[:, 0] = torch.clamp(final_targets[:, 0], 
-                                         self.bounds.xmin, self.bounds.xmax)
-        final_targets[:, 1] = torch.clamp(final_targets[:, 1], 
-                                         self.bounds.ymin, self.bounds.ymax)
-        
+        # clip to bounds
+        final_targets[:, 0] = torch.clamp(final_targets[:, 0], self.bounds.xmin, self.bounds.xmax)
+        final_targets[:, 1] = torch.clamp(final_targets[:, 1], self.bounds.ymin, self.bounds.ymax)
+
+        # 单次安全检查：若 final 不安全则回退为 selected_targets（不再做 offsets 重试）
+        if self.extended_grid is not None and self.grid_bounds is not None and self.grid_size is not None:
+            xmin, xmax, ymin, ymax = map(float, self.grid_bounds)
+            ix = torch.floor((final_targets[:, 0] - xmin) / float(self.grid_size)).long()
+            iy = torch.floor((final_targets[:, 1] - ymin) / float(self.grid_size)).long()
+            H, W = self.extended_grid.shape[-2], self.extended_grid.shape[-1]
+            in_bounds = (ix >= 0) & (ix < W) & (iy >= 0) & (iy < H)
+            occ = torch.zeros(num_drones, dtype=torch.bool, device=self.device)
+            valid_idx = torch.where(in_bounds)[0]
+            if valid_idx.numel() > 0:
+                occ_in = self.extended_grid[iy[valid_idx], ix[valid_idx]]
+                occ[valid_idx] = occ_in
+            bad = (~in_bounds) | occ
+            if torch.any(bad):
+                final_targets[bad] = selected_targets[bad]
+
         return final_targets
     
     def generate_single_target(self) -> torch.Tensor:
@@ -182,43 +216,62 @@ class EVTOLTargetGenerator:
         # 当前正在处理的航线数据
         self.waypoints = []
         self.smooth_waypoints = []
+
+        # 地图/规划器（外部注入）
+        self.extended_grid = None
+        self.grid_bounds = None
+        self.planner: GlobalPathPlanner | None = None
+
+    def update_grid_map(self, extended_grid: torch.Tensor, grid_size: float, bounds: tuple[float, float, float, float], planner: GlobalPathPlanner | None = None):
+        self.extended_grid = extended_grid
+        self.grid_size = float(grid_size)
+        self.grid_bounds = bounds
+        # 不在生成器内部创建/更新 planner；直接引用 manager 注入的实例
+        if planner is not None:
+            self.planner = planner
     
     def generate_course_with_smooth_trajectory(self):
-        """生成航线并返回平滑后的轨迹"""
-        # 随机选择起点和终点
+        """生成航线并返回平滑后的轨迹。
+        若全局规划失败，进行多次重试；最终失败则返回 (None, 0)。
+        """
+        max_retries = 10
         area_radius_x = self.bounds.xmax - self.bounds.xmin
         area_radius_y = self.bounds.ymax - self.bounds.ymin
-        area_radius = max(area_radius_x, area_radius_y)/2.0
-        area_center = torch.tensor([(self.bounds.xmin + self.bounds.xmax) / 2, 
-                                    (self.bounds.ymin + self.bounds.ymax) / 2, 
-                                    self.flight_height], device=self.device)
-        area_center = area_center.unsqueeze(0)
-        start_tensor = math_utils.sample_cylinder(area_radius, (self.flight_height, self.flight_height), 1, self.device)
-        goal_tensor = start_tensor.clone()
-        goal_tensor[:,:2] = -goal_tensor[:,:2]
-        start_tensor[:,:2] = start_tensor[:,:2] + area_center[:,:2]
-        goal_tensor[:,:2] = goal_tensor[:,:2] + area_center[:,:2]
-        start = start_tensor.cpu().numpy()[0].astype(np.float64)
-        goal = goal_tensor.cpu().numpy()[0].astype(np.float64)
-        
-        # 生成中间航路点（3-4个点）
-        inter_points = math_utils.sample_cylinder(area_radius/2.0, (self.flight_height, self.flight_height), 1, self.device)
-        inter_points[:,:2] = inter_points[:,:2] + area_center[:,:2]
-        inter_points = inter_points.cpu().numpy()[0].astype(np.float64)
-        waypoints = [start, inter_points, goal]
-        
-        course = {
-            "start":start,
-            "end":goal,
-            "waypoints":waypoints
-        }
-        
-        # 生成基础waypoints并进行平滑处理
-        self.set_course(course)
-        if len(self.smooth_waypoints) > 0:
-            return self.waypoints, self.smooth_waypoints
-        else:
-            raise ValueError("course is not valid")
+        area_radius = max(area_radius_x, area_radius_y) / 2.0
+        area_center = torch.tensor([
+            (self.bounds.xmin + self.bounds.xmax) / 2,
+            (self.bounds.ymin + self.bounds.ymax) / 2,
+            self.flight_height,
+        ], device=self.device).unsqueeze(0)
+
+        for _ in range(max_retries):
+            # 采样起终点（对称取反，保证跨度）
+            start_tensor = math_utils.sample_cylinder(area_radius, (self.flight_height, self.flight_height), 1, self.device)
+            goal_tensor = start_tensor.clone()
+            goal_tensor[:, :2] = -goal_tensor[:, :2]
+            start_tensor[:, :2] = start_tensor[:, :2] + area_center[:, :2]
+            goal_tensor[:, :2] = goal_tensor[:, :2] + area_center[:, :2]
+            start = start_tensor.cpu().numpy()[0].astype(np.float64)
+            goal = goal_tensor.cpu().numpy()[0].astype(np.float64)
+
+            # 全局路径规划（不降采样）
+            if self.planner is None:
+                inter_points = math_utils.sample_cylinder(area_radius/2.0, (self.flight_height, self.flight_height), 1, self.device)
+                inter_points[:,:2] = inter_points[:,:2] + area_center[:,:2]
+                inter_points = inter_points.cpu().numpy()[0].astype(np.float64)
+                path_xy = [start[0:2], inter_points[0:2], goal[0:2]]
+            else:
+                path_xy = self.planner.plan_path((float(start[0]), float(start[1])), (float(goal[0]), float(goal[1])))
+            if len(path_xy) >= 2:
+                waypoints = [np.array([x, y, self.flight_height], dtype=np.float64) for (x, y) in path_xy]
+                course = {"start": start, "end": goal, "waypoints": waypoints}
+                self.set_course(course)
+                if len(self.smooth_waypoints) > 0:
+                    return self.waypoints, self.smooth_waypoints
+                # 否则继续重试
+
+        # 多次失败：返回 None, 0
+        return None, 0
             
     def set_course(self, course):
         """

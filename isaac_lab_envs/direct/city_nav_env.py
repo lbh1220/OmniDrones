@@ -359,8 +359,10 @@ class NavCityEnv(NavEnv):
                 self.global_path_planner = GlobalPathPlanner(self.cfg.global_path_planner)
             self.global_path_planner.update_grid_map(self.state.map.extended_occupancy_grid, 
                                                     self.cfg.grid_size, bounds=bounds)
-        # from isaac_lab_envs.utils.map_utils import save_height_map
-        # save_height_map(self.state.map.extended_occupancy_grid, "extended_occupancy_grid.png")
+        from isaac_lab_envs.utils.map_utils import save_height_map, get_convex_hulls_from_grid, plot_convex_hulls
+        save_height_map(self.state.map.extended_occupancy_grid, "extended_occupancy_grid.png")
+        hulls = get_convex_hulls_from_grid(self.state.map.extended_occupancy_grid, bounds, grid_size)
+        plot_convex_hulls(hulls, "convex_hulls.png")
     
     def _are_positions_safe(self, positions: torch.Tensor) -> torch.Tensor:
         """
