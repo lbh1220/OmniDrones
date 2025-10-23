@@ -24,24 +24,24 @@ class NavCityEnvCfg(NavEnvCfg):
         terrain_type="generator",
         terrain_generator=TerrainGeneratorCfg(
             seed=0,
-            size=(20.0, 20.0),
-            border_width=20.0,
-            num_rows=3,
-            num_cols=3,
+            size=(50.0, 50.0),
+            border_width=0.0,
+            num_rows=2,
+            num_cols=2,
             horizontal_scale=0.5,
             vertical_scale=1.0,
             slope_threshold=0.75,
             use_cache=False,
             sub_terrains={
                 "obstacles": HfDiscreteObstaclesTerrainCfg(
-                    size=(20.0, 20.0),
+                    size=(50.0, 50.0),
                     horizontal_scale=0.5,
                     vertical_scale=1.0,
-                    border_width=0.0,
-                    num_obstacles=4,
+                    border_width=10.0,
+                    num_obstacles=3,
                     obstacle_height_mode="fixed",
-                    obstacle_width_range=(3.0, 5.0),
-                    obstacle_height_range=(15.0, 40.0),
+                    obstacle_width_range=(5, 15),
+                    obstacle_height_range=(25.0, 40.0),
                     platform_width=0.0,
                 )
             },
@@ -74,8 +74,6 @@ class NavCityEnvCfg(NavEnvCfg):
     point_cloud_top_z: float = 200.0      # ray start Z
     point_cloud_margin: float = 0.0       # optional margin added around terrain bounds
 
-    # occupancy grid config
-    grid_size: float = 1.0 # grid size for occupancy map
 
 
     # if use global path
@@ -169,13 +167,14 @@ class NavCityEnv(NavEnv):
         
     def _detect_collisions(self) -> torch.Tensor:
         """检测与障碍物的碰撞"""
+        collision_mask = super()._detect_collisions()
         scan = self.state.perception.lidar_scan
         scan = scan.reshape(self.num_envs, -1)
         # scan in [0, lidar_range]; physical distance = lidar_range - scan
         distances = self.cfg.lidar_range - scan
         # 碰撞条件：任一射线距离 <= safety_radius
-        collision_mask = (distances <= self.cfg.safety_radius).any(dim=1)
-
+        lidar_collision_mask = (distances <= self.cfg.safety_radius).any(dim=1)
+        collision_mask = collision_mask | lidar_collision_mask
         # If extended occupancy grid exists, also check collision by occupancy map
         grid = getattr(self.state.map, "extended_occupancy_grid", None)
         bounds = getattr(self.state.map, "grid_bounds", None)
@@ -215,9 +214,10 @@ class NavCityEnv(NavEnv):
         planner = self.global_path_planner if self.cfg.use_global_path else None
         grid = getattr(self.state.map, "extended_occupancy_grid", None)
         bounds = getattr(self.state.map, "grid_bounds", None)
+        grid_size = getattr(self.state.map, "grid_size", None)
         if planner is not None and planner.grid_map_np is None:
             # update grid in case re-generated
-            planner.update_grid_map(grid, self.cfg.grid_size, bounds)
+            planner.update_grid_map(grid, grid_size, bounds)
 
         # Iterate each env to plan individually
         for i in range(num_env):
@@ -257,17 +257,18 @@ class NavCityEnv(NavEnv):
                 waypoints[i, :n, 2] = altitude
             waypoints_length[i] = n
 
-        # from isaac_lab_envs.utils.map_utils import visualize_paths_on_grid
-        # if grid is not None and bounds is not None:
-        #     visualize_paths_on_grid(
-        #         grid_map=grid,
-        #         waypoints=waypoints,
-        #         waypoint_lengths=waypoints_length,
-        #         bounds=bounds,
-        #         grid_size=self.cfg.grid_size,
-        #         output_path="planned_paths.png",
-        #         max_trajs=min(10, num_env),
-        #     )
+        from isaac_lab_envs.utils.map_utils import visualize_paths_on_grid
+        if (grid is not None and bounds is not None) and (not getattr(self, "_paths_viz_done", False)):
+            visualize_paths_on_grid(
+                grid_map=self.state.map.occupancy_grid,
+                waypoints=waypoints,
+                waypoint_lengths=waypoints_length,
+                bounds=bounds,
+                grid_size=grid_size,
+                output_path="planned_paths.png",
+                max_trajs=min(10, num_env),
+            )
+            self._paths_viz_done = True
 
 
         return start_tensor, goal_tensor, waypoints, waypoints_length
@@ -297,7 +298,7 @@ class NavCityEnv(NavEnv):
         num_y = max(1, int(math.ceil((ymax - ymin) / resolution)))
         x_coords = torch.linspace(xmin, xmax, num_x, device=self.device)
         y_coords = torch.linspace(ymin, ymax, num_y, device=self.device)
-        grid_x, grid_y = torch.meshgrid(y_coords, x_coords, indexing="ij")  # 注意 Isaac Lab 中 x,y 对应关系
+        grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing="ij")  # 注意 Isaac Lab 中 x,y 对应关系
         # 组装射线
         num_rays = num_x * num_y
         ray_starts = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1), torch.full((num_rays,), z_top, device=self.device)], dim=-1)
@@ -347,7 +348,7 @@ class NavCityEnv(NavEnv):
             self.cfg.area_bounds.ymax,
         )
         height_z = self.cfg.flight_height
-        grid_size = self.cfg.grid_size
+        grid_size = self.cfg.area_bounds.grid_size
         self.state.map.occupancy_grid = self.get_occupancy_grid_at_height(bounds=bounds, height_z=height_z, grid_size=grid_size)
         self.state.map.grid_bounds = bounds
         self.state.map.grid_size = grid_size
@@ -358,7 +359,7 @@ class NavCityEnv(NavEnv):
             if self.global_path_planner is None:
                 self.global_path_planner = GlobalPathPlanner(self.cfg.global_path_planner)
             self.global_path_planner.update_grid_map(self.state.map.extended_occupancy_grid, 
-                                                    self.cfg.grid_size, bounds=bounds)
+                                                    grid_size, bounds=bounds)
         from isaac_lab_envs.utils.map_utils import save_height_map, get_convex_hulls_from_grid, plot_convex_hulls
         save_height_map(self.state.map.extended_occupancy_grid, "extended_occupancy_grid.png")
         hulls = get_convex_hulls_from_grid(self.state.map.extended_occupancy_grid, bounds, grid_size)

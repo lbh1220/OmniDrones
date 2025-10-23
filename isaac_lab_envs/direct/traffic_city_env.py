@@ -98,9 +98,19 @@ class TrafficCityEnvCfg(NavCityEnvCfg):
             xmin=-80.0,
             xmax=80.0,
             ymin=-80.0,
-            ymax=80.0
+            ymax=80.0,
+            grid_size=1.0
         )
     ))
+    area_bounds: AreaBoundsCfg = field(default_factory=lambda: AreaBoundsCfg(
+        xmin=-60.0,
+        xmax=60.0,
+        ymin=-60.0,
+        ymax=60.0,
+        grid_size=1.0
+    ))
+    point_cloud_resolution = 1.0
+
     
     predict_steps: int = 5
     pred_timestep: float = 2.0
@@ -162,20 +172,20 @@ class TrafficCityEnv(NavCityEnv):
         self.traffic_sim.reset()
         # traffic env 不是reset idx，不是每次step都reset
 
-    # def _init_mdp_components(self, cfg: TrafficCityEnvCfg):
-    #     """初始化模块化组件"""
-    #     if cfg.use_global_path:
-    #         from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessorWithPath
-    #         from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculatorWithPath
-    #         self.obs_processor = TrafficObservationProcessorWithPath(cfg)
-    #         self.reward_calculator = TrafficRewardCalculatorWithPath(cfg)
 
-    #     else:
-    #         from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
-    #         from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
-    #         self.obs_processor = TrafficObservationProcessor(cfg)
-    #         self.reward_calculator = TrafficRewardCalculator(cfg)
-        # 初始化 Metrics 管理器并注册 Traffic 相关模块
+    def _init_mdp_components(self, cfg: TrafficCityEnvCfg):
+        """初始化模块化组件"""
+        if cfg.use_global_path:
+            from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessorWithPath
+            from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculatorWithPath
+            self.obs_processor = TrafficObservationProcessorWithPath(cfg)
+            self.reward_calculator = TrafficRewardCalculatorWithPath(cfg)
+
+        else:
+            from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
+            from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
+            self.obs_processor = TrafficObservationProcessor(cfg)
+            self.reward_calculator = TrafficRewardCalculator(cfg)
     
     def _init_metrics(self):
         self.metrics = MetricsManager(num_envs=self.num_envs, device=self.device)
@@ -201,6 +211,22 @@ class TrafficCityEnv(NavCityEnv):
         
         super()._post_init_setup()
 
+        self._create_occupancy_grid_for_traffic()
+
+    def _create_occupancy_grid_for_traffic(self):
+        bounds = (
+            self.cfg.traffic_sim.area_bounds.xmin,
+            self.cfg.traffic_sim.area_bounds.xmax,
+            self.cfg.traffic_sim.area_bounds.ymin,
+            self.cfg.traffic_sim.area_bounds.ymax,
+        )
+        height_z = self.cfg.traffic_sim.flight_height
+        grid_size = self.cfg.traffic_sim.area_bounds.grid_size
+        occupancy_grid_for_traffic = self.get_occupancy_grid_at_height(bounds=bounds, height_z=height_z, grid_size=grid_size)
+        self.traffic_sim.update_grid_map(no_extended_grid=occupancy_grid_for_traffic, 
+                                        grid_size=grid_size,
+                                        bounds=bounds)
+
     def _pre_physics_step(self, actions: torch.Tensor):
         dt_for_evtol = self.cfg.sim.dt * self.cfg.decimation
         self.traffic_sim._pre_physics_step(dt=dt_for_evtol)
@@ -223,12 +249,13 @@ class TrafficCityEnv(NavCityEnv):
         """Update sensors after physics step."""
         self.traffic_sim._post_physics_step()
         self._update_traffic_obs_processor()
+
+        super()._post_physics_step(env_ids)
         # 计算碰撞和到达目标的mask
         collision_mask = self._detect_collisions()
         self.state.collision.collision_mask = collision_mask.clone()
         # reached_target_mask will be updated in super()._post_physics_step
 
-        super()._post_physics_step(env_ids)
 
     def _get_observations(self) -> dict:
         """计算基于字典格式的导航观测。"""
@@ -321,15 +348,16 @@ class TrafficCityEnv(NavCityEnv):
     
     def _detect_collisions(self) -> torch.Tensor:
         """检测与traffic aircraft的碰撞"""
+        collision_mask = super()._detect_collisions()
         
         ego_pos = self.state.ego_drone.positions
         ego_safety_radius = torch.ones(self.num_envs, device=self.device) * self.cfg.safety_radius
 
-        collision_mask = self.traffic_sim.check_collision(
+        traffic_collision_mask = self.traffic_sim.check_collision(
             ego_pos.squeeze(1),
             ego_safety_radius
         )
-        
+        collision_mask = collision_mask | traffic_collision_mask
         return collision_mask
 
     def _update_traffic_obs_processor(self):

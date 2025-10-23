@@ -325,15 +325,16 @@ class TrafficEnv(NavEnv):
     
     def _detect_collisions(self) -> torch.Tensor:
         """检测与traffic aircraft的碰撞"""
+        collision_mask = super()._detect_collisions()
         
         ego_pos = self.state.ego_drone.positions
         ego_safety_radius = torch.ones(self.num_envs, device=self.device) * self.cfg.safety_radius
 
-        collision_mask = self.traffic_sim.check_collision(
+        traffic_collision_mask = self.traffic_sim.check_collision(
             ego_pos.squeeze(1),
             ego_safety_radius
         )
-        
+        collision_mask = collision_mask | traffic_collision_mask
         return collision_mask
 
     def _update_traffic_obs_processor(self):

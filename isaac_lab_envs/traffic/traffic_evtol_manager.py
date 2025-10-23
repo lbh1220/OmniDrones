@@ -134,8 +134,8 @@ class TrafficEVTOLManager:
     def update_grid_map(self, no_extended_grid: torch.Tensor, grid_size: float, bounds: tuple[float, float, float, float]):
         """Update internal map and pass to target generator and planner."""
         from isaac_lab_envs.utils.map_utils import extend_occupancy_map
-        extended_grid = extend_occupancy_map(no_extended_grid, self.config.evtol.safety_radius, grid_size)
-        self.state.extended_occupancy_grid = extended_grid
+        self.state.occupancy_grid = no_extended_grid
+        self.state.extended_occupancy_grid = extend_occupancy_map(no_extended_grid, self.config.evtol.safety_radius, grid_size)
         self.state.grid_size = float(grid_size)
         self.state.grid_bounds = bounds
         planner_cfg = getattr(self.config.evtol, "global_path_planner", None)

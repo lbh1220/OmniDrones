@@ -237,7 +237,9 @@ class TrafficState:
         Returns:
             [N] bool，True 表示安全或超出地图（视为安全）。
         """
-        grid = self.extended_occupancy_grid
+        # 不用extended, 否则在临界位置下判定的是碰撞
+        # 对于RL来说可以用更精确的判定，但是traffic中差不多就行
+        grid = self.occupancy_grid
         bounds = self.grid_bounds
         grid_size = self.grid_size
         if grid is None or bounds is None or grid_size is None:

@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--traffic", type=bool, default=True, help="Whether to use traffic")
     parser.add_argument("--video", type=bool, default=False, help="Whether to use video")
     parser.add_argument("--video_interval", type=int, default=10000, help="Video interval")
-    parser.add_argument("--video_length", type=int, default=100, help="Video length")
+    parser.add_argument("--video_length", type=int, default=500, help="Video length")
 
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
@@ -40,10 +40,11 @@ def main():
     from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvCfg
     from isaac_lab_envs.direct.city_nav_env import NavCityEnv, NavCityEnvCfg
     from isaac_lab_envs.direct.nav_env import NavEnv, NavEnvCfg
+    from isaac_lab_envs.direct.traffic_city_env import TrafficCityEnv, TrafficCityEnvCfg
     if args_cli.workflow == "direct":
         if args_cli.traffic:
 
-            cfg = TrafficEnvCfg()
+            cfg = TrafficCityEnvCfg()
             cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
             cfg.num_actions = 2
             cfg.num_observations = 7
@@ -62,14 +63,16 @@ def main():
 
     cfg.debug_vis = True
     from omni.isaac.lab.envs.common import ViewerCfg
+    bounds = cfg.area_bounds
+    range_x = bounds.xmax - bounds.xmin
     cfg.viewer = ViewerCfg(
         resolution=(1920, 1080),
-        eye=(125, 0., 125),  #  <-- 使用非默认值
+        eye=(0, 0.0, range_x*1.5),  #  <-- 使用非默认值
         lookat=(0., 0., 1.)
     )
 
     if args_cli.traffic:
-        env = TrafficEnv(cfg=cfg, render_mode="rgb_array")
+        env = TrafficCityEnv(cfg=cfg, render_mode="rgb_array")
     else:
         env = NavCityEnv(cfg=cfg, render_mode="rgb_array")
     print(f"环境创建成功！")

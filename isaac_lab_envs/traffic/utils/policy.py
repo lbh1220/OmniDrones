@@ -26,6 +26,13 @@ class ORCA:
         # RVO2 模拟器
         self.sim = None
 
+        self.static_obstacles = None
+    
+    def set_static_obstacles(self, obstacles):
+        """
+        设置静态障碍物
+        """
+        self.static_obstacles = obstacles
 
 
     def predict(self, self_state: TrafficState, other_aircraft_state: TrafficState=None, dt: float=None):
@@ -75,11 +82,23 @@ class ORCA:
             # self.sim.setAgentPrefVelocity(agent_idx, (0, 0))
             agent_idx += 1
 
-        self.sim.doStep()
-    
-        for i in range(self_state.num_aircraft):
-            vx,vy = self.sim.getAgentVelocity(i)
-            self_state.velocity_commands[i][0] = vx
-            self_state.velocity_commands[i][1] = vy
+
+        try:
+            if self.static_obstacles is not None:
+                for hull in self.static_obstacles:
+                    if len(hull) >= 3:
+                        obstacle_vertices = [(float(point[0]), float(point[1])) for point in hull]
+                        self.sim.addObstacle(obstacle_vertices)
+        except Exception as e:
+            print(f"[ERROR][traffic]Error adding static obstacles: {e}")
+        try:
+            self.sim.doStep()
+        
+            for i in range(self_state.num_aircraft):
+                vx,vy = self.sim.getAgentVelocity(i)
+                self_state.velocity_commands[i][0] = vx
+                self_state.velocity_commands[i][1] = vy
+        except Exception as e:
+            print(f"[ERROR][traffic]Error doing step in ORCA: {e}")
         # do not cal speed for evtol states
         

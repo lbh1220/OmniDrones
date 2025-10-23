@@ -40,7 +40,7 @@ class TrafficEvtolCfg:
     min_speed: float = 1.0
     v_pref: float = 2.0 # preferred speed
     arrival_threshold: float = 2.0
-    turn_radius: float = 10.0
+    turn_radius: float = 2.0
     course_num: int = 3
     random_speed: bool = True
     random_safety_radius: bool = False
@@ -48,7 +48,7 @@ class TrafficEvtolCfg:
 
     global_path_planner: GlobalPathPlannerCfg = GlobalPathPlannerCfg(
         algorithm="astar",
-        smooth_method="douglas_peucker"
+        smooth_method="shortcut"
     )
 
 @configclass

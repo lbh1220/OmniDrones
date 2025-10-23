@@ -119,6 +119,10 @@ def visualize_paths_on_grid(
     max_trajs: int = 10,
     dpi: int = 200,
     min_edge_px: int = 1200,
+    show_grid: bool = True,
+    grid_interval: float | None = None,
+    grid_alpha: float = 0.25,
+    grid_linewidth: float = 0.6,
 ) -> None:
     """
     Visualize first N trajectories over the occupancy grid and save to file.
@@ -157,8 +161,23 @@ def visualize_paths_on_grid(
     fig_h = (H * scale) / dpi
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])
-    # show obstacles as black (1.0) and free as white (0.0)
-    ax.imshow(gm, cmap="gray_r", origin="lower", interpolation="nearest")
+    # show obstacles as black (1.0) and free as white (0.0) in WORLD coordinates
+    # use extent to map array indices -> world (x,y)
+    extent = [xmin, xmax, ymin, ymax]
+    ax.imshow(gm, cmap="gray_r", origin="lower", interpolation="nearest", extent=extent, aspect='equal')
+
+    # optional: draw coarse world-grid similar to convex hull visuals
+    if show_grid:
+        # default grid every 5 cells if not provided
+        gi = float(grid_interval) if grid_interval is not None else 5.0 * float(grid_size)
+        # major ticks in world coordinates
+        xticks = np.arange(np.floor(xmin / gi) * gi, xmax + gi * 0.5, gi)
+        yticks = np.arange(np.floor(ymin / gi) * gi, ymax + gi * 0.5, gi)
+        ax.set_xticks(xticks)
+        ax.set_yticks(yticks)
+        ax.grid(which="major", color="k", linestyle="-", alpha=float(grid_alpha), linewidth=float(grid_linewidth))
+        # keep axis labels/ticks visible
+        ax.tick_params(which='both', bottom=True, left=True, labelbottom=True, labelleft=True)
 
     # colors for up to max_trajs
     from itertools import cycle
@@ -170,29 +189,25 @@ def visualize_paths_on_grid(
     num_envs = int(waypoints.shape[0])
     draw_n = min(max_trajs, num_envs)
 
-    # draw each trajectory
+    # draw each trajectory (in world coordinates)
     for i in range(draw_n):
         n = int(waypoint_lengths[i].item())
         if n <= 0:
             continue
         pts = waypoints[i, :n, :2].detach().to("cpu").numpy()
-        # map world -> grid indices
-        gx = np.clip(((pts[:, 0] - xmin) / grid_size).astype(np.float32), 0, W - 1)
-        gy = np.clip(((pts[:, 1] - ymin) / grid_size).astype(np.float32), 0, H - 1)
         c = next(color_cycle)
-        # thinner lines/markers when figure is upscaled
-        lw = max(0.6, 1.2 / max(scale, 1.0))
-        ms_start = max(8.0, 24.0 / max(scale, 1.0))
-        ms_goal = max(10.0, 28.0 / max(scale, 1.0))
-        ax.plot(gx, gy, color=c, linewidth=lw, alpha=0.9)
-        ax.scatter(gx[:1], gy[:1], color=c, marker="o", s=ms_start)
-        ax.scatter(gx[-1:], gy[-1:], color=c, marker="x", s=ms_goal)
+        lw = 1.0
+        ms_start = 18.0
+        ms_goal = 22.0
+        ax.plot(pts[:, 0], pts[:, 1], color=c, linewidth=lw, alpha=0.9)
+        ax.scatter(pts[:1, 0], pts[:1, 1], color=c, marker="o", s=ms_start)
+        ax.scatter(pts[-1:, 0], pts[-1:, 1], color=c, marker="x", s=ms_goal)
 
-    ax.set_xlim([0, W])
-    ax.set_ylim([0, H])
+    ax.set_xlim([xmin, xmax])
+    ax.set_ylim([ymin, ymax])
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fig.savefig(output_path, bbox_inches='tight', pad_inches=0)
-    plt.close(fig)
+    # plt.close(fig)
     print(f"INFO: Saved planned paths visualization to {output_path}")
 
 

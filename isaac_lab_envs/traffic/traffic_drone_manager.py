@@ -140,8 +140,9 @@ class TrafficDroneManager:
 
     def update_grid_map(self, no_extended_grid: torch.Tensor, grid_size: float, bounds: tuple[float, float, float, float]):
         """Update internal occupancy map and optionally the global path planner."""
-        from isaac_lab_envs.utils.map_utils import extend_occupancy_map
+        from isaac_lab_envs.utils.map_utils import extend_occupancy_map, get_convex_hulls_from_grid
         # mirror into state for downstream checks
+        self.state.occupancy_grid = no_extended_grid
         self.state.extended_occupancy_grid = extend_occupancy_map(no_extended_grid, self.safety_radius, grid_size)
         self.state.grid_size = float(grid_size)
         self.state.grid_bounds = bounds
@@ -149,11 +150,22 @@ class TrafficDroneManager:
         self.safe_indices = None
         # update target generator and planner
         planner_cfg = getattr(self.config.drone, "global_path_planner", None)
-        self.target_generator.update_grid_map(self.state.extended_occupancy_grid, self.state.grid_size, bounds, planner_cfg)
+
         if planner_cfg is not None:
             if self.global_path_planner is None:
                 self.global_path_planner = GlobalPathPlanner(planner_cfg)
-            self.global_path_planner.update_grid_map(self.state.extended_occupancy_grid, self.state.grid_bounds, bounds)
+            self.global_path_planner.update_grid_map(self.state.extended_occupancy_grid, self.state.grid_size, bounds)
+
+        self.target_generator.update_grid_map(self.state.extended_occupancy_grid, self.state.grid_size, bounds, self.global_path_planner)
+
+
+        if self.policy is not None:
+            from isaac_lab_envs.utils.map_utils import get_convex_hulls_from_grid
+            # 这里需要使用no_extended_grid, 因为ORCA算法本身有safety_space的考虑，如果用extended_grid, 会让行为变得非常保守
+            hulls = get_convex_hulls_from_grid(no_extended_grid, bounds, grid_size)
+            from isaac_lab_envs.utils.map_utils import plot_convex_hulls
+            plot_convex_hulls(hulls, "static_obstacles.png")
+            self.policy.set_static_obstacles(hulls)
 
     def update_global_path(self, drones_ids: torch.Tensor | None = None):
         """Compute and write waypoint paths from current starts to targets using the global planner.
@@ -168,7 +180,7 @@ class TrafficDroneManager:
         max_wps = self.state.max_waypoints
         waypoints = self.state.waypoints
         waypoint_lengths = self.state.waypoint_lengths
-        positions = self.drone.pos.squeeze(0)
+        positions = self.state.start_positions
         targets = self.state.target_positions
         altitude = float(self.config.flight_height)
         use_planner = (self.global_path_planner is not None and self.global_path_planner.grid_map_np is not None)
@@ -193,6 +205,8 @@ class TrafficDroneManager:
                 waypoints[i, :n, 3] = float(speed)
             waypoint_lengths[i] = n
 
+
+
     def set_targets_for_drones(self, drones_ids: torch.Tensor | None = None):
         """Generate and assign targets for specified drones; update start_positions and global path."""
         if drones_ids is None:
@@ -207,6 +221,8 @@ class TrafficDroneManager:
         # self.state.start_positions[drones_ids, :] = cur_pos[drones_ids, :].clone()
         # plan path if enabled
         self.update_global_path(drones_ids)
+
+        
 
     def random_attributes(self, random_speed, random_safety_radius):
         """随机生成drone的属性"""
@@ -285,7 +301,7 @@ class TrafficDroneManager:
             # 获取需要新目标的无人机索引
             drone_indices = torch.where(arrived_drones)[0]  # 返回需要更新的无人机索引
             num_arrived = len(drone_indices)
-            
+            self.state.start_positions[drone_indices] = self.state.positions[drone_indices].clone()
             if num_arrived > 0:
                 # 批量生成并设置目标（含路径）
                 self.set_targets_for_drones(drone_indices)
@@ -317,9 +333,12 @@ class TrafficDroneManager:
         target_vel_xy = target_velocities[:, :, :2]
         
 
-
-        if self.policy is not None:
-            self.policy.predict(self.state, self.evtol_states, dt)
+        try:
+            if self.policy is not None:
+                self.policy.predict(self.state, self.evtol_states, dt)
+        except Exception as e:
+            # 如果失败了就用原来的速度指令
+            print(f"[ERROR][traffic]Error predicting in ORCA: {e}")
         # this change the state.velocity__commands
 
     def _apply_actions(self):
@@ -449,7 +468,7 @@ class TrafficDroneManager:
         if rotations is None:
             rotations = torch.zeros(positions.shape[0], 4, device=self.device)
             rotations[:, 0] = 1.0  # Identity quaternion [w, x, y, z]
-        
+        self.state.positions = positions.clone()
         self.drone.set_world_poses(positions.unsqueeze(0), rotations.unsqueeze(0))
         zero_velocities = torch.zeros(positions.shape[0], 6, device=self.device)
         self.drone.set_velocities(zero_velocities.unsqueeze(0))
@@ -508,6 +527,7 @@ class TrafficDroneManager:
         # Generate new positions for all drones (batch)
         positions_batch = self._generate_random_position(self.num_drones)  # [N, 3]
         self.reset_positions(positions_batch)
+        self.state.start_positions = positions_batch.clone()
         
         self.reset_drones()
         # 重置速度参数为配置值
@@ -520,6 +540,7 @@ class TrafficDroneManager:
         self.state.v_pref = torch.tensor(v_pref, device=self.device)
         self.state.safety_radius = torch.tensor(safety_radius, device=self.device)
         self.random_attributes(self.config.drone.random_speed, self.config.drone.random_safety_radius)
+
 
         # Assign new targets using internal target generator
         self.set_targets_for_drones()

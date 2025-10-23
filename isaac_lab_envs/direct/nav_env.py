@@ -583,7 +583,15 @@ class NavEnv(DirectRLEnv):
         
         super()._reset_idx(env_ids)
         self.metrics.on_reset(env_ids)
-        
+    
+    
+    def _detect_collisions(self) -> torch.Tensor:
+        """
+        Nav env中没有障碍物, 为了和子类对齐，返回全zero的collision_mask
+        """
+        collision_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        return collision_mask
+
     def _set_debug_vis_impl(self, debug_vis: bool):
         """Setup debug visualization."""
         if debug_vis:
