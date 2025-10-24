@@ -375,7 +375,14 @@ class EnvState:
             self.mdp.terminated[env_ids] = False
         if self.mdp.truncated is not None:
             self.mdp.truncated[env_ids] = False
-            
+    def update_lidar_scan(self, lidar, lidar_range: float, lidar_resolution: tuple[int, int]):
+        hits = lidar.data.ray_hits_w
+        origins = lidar.data.pos_w
+        scan = lidar_range - (
+            (hits - origins.unsqueeze(1)).norm(dim=-1).clamp_max(lidar_range)
+        )
+        scan = scan.reshape(self.num_envs, 1, lidar_resolution[0], lidar_resolution[1])
+        self.perception.lidar_scan = scan
     def update_navigation_state_vectorized(self, lookahead_distance: float = 10.0, env_ids: torch.Tensor | None = None):
         """
         【矢量化版】为指定环境（或全部环境）更新其导航状态。

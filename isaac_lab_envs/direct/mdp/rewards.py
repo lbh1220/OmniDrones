@@ -1,15 +1,54 @@
 import torch
-from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
-from isaac_lab_envs.direct.mdp.observations import TrafficObservationProcessor
 from isaac_lab_envs.direct.mdp.state import EnvState
+from abc import ABC, abstractmethod
+from omni.isaac.lab.utils import configclass
 
+@configclass
+class RewardCalculatorCfg:
+    rew_success = 15.0
+    rew_collision = -16.0
+    rew_potential = 0.5
+    rew_action_penalty = -0.1  # 动作惩罚系数（速度变化惩罚）
 
-class NavRewardCalculator:
+    # for path tracking
+    rew_cross_track_coeff = 0.0
+    rew_cross_track_alpha = 1.0
+
+    # for future reward
+    rew_evtol_future_penalty = -0.0
+    rew_drone_future_penalty = -0.0
+    rew_time_penalty = 0.0
+    rew_drones_threshold_factor = 2.0
+    rew_drones_decay_factor = 0.667
+    rew_evtols_threshold_factor = 2.0
+    rew_evtols_decay_factor = 0.9
+
+    # for TTC reward
+    rew_ttc_threshold = 10.0
+    rew_ttc_alpha = 0.0
+    rew_ttc_beta = 5.0
+    rew_ttc_idle_penalty = 0.0
+    rew_patience_coeff = 0.0
+
+class RewardCalculator(ABC):
+    def __init__(self, cfg: RewardCalculatorCfg, env):
+        self.cfg = cfg
+        self.env = env
+        self.device = "cuda"
+    
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        reward = torch.zeros(state.num_envs, device=self.device)
+        return reward
+    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+        pass
+
+class NavRewardCalculator(RewardCalculator):
     """基础导航环境的奖励计算器"""
     
-    def __init__(self, cfg, device: str = "cuda"):
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         self.cfg = cfg
-        self.device = device
+        self.device = "cuda"
         
         # 奖励配置参数
         self.success_reward = cfg.rew_success
@@ -90,8 +129,8 @@ class NavRewardCalculator:
 
 class CityNavRewardCalculator(NavRewardCalculator):
     """City导航环境的奖励计算器"""
-    def __init__(self, cfg, device: str = "cuda"):
-        super().__init__(cfg, device)
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         self.collision_penalty = cfg.rew_collision
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         """计算基础导航奖励
@@ -127,8 +166,8 @@ class CityNavRewardCalculator(NavRewardCalculator):
 
 class CityNavRewardCalculatorWithPath(CityNavRewardCalculator):
     """City导航环境的奖励计算器，基于Isaac Lab tensor操作优化"""
-    def __init__(self, cfg, device: str = "cuda"):
-        super().__init__(cfg, device)
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         # 横向误差奖励系数
         self.cross_track_reward_coeff = getattr(cfg, 'rew_cross_track_coeff', 0.0)
         self.alpha = getattr(cfg, 'rew_cross_track_alpha', 1.0)
@@ -224,12 +263,11 @@ class CityNavRewardCalculatorWithPath(CityNavRewardCalculator):
             self.previous_potential[env_ids] = current_potential.clone()   
 
 
-class TrafficRewardCalculator:
+class TrafficRewardCalculator(RewardCalculator):
     """Traffic环境的奖励计算器，基于Isaac Lab tensor操作优化"""
     
-    def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
-        self.cfg = cfg
-        self.device = device
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         
         # 奖励配置参数
         self.collision_penalty = cfg.rew_collision
@@ -754,8 +792,8 @@ class TrafficRewardCalculator:
 class TrafficRewardCalculatorWithPath(TrafficRewardCalculator):
     """支持横向误差奖励的交通环境奖励计算器"""
     
-    def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
-        super().__init__(cfg, device)
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         
         # 横向误差奖励系数
         self.cross_track_reward_coeff = getattr(cfg, 'rew_cross_track_coeff', 0.0)

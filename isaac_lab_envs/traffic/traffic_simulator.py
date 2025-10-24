@@ -434,3 +434,16 @@ class TrafficSimulator:
 
         # predicted_positions.premute(1, 0, 2) # [N, predict_steps+1, 3]
         return predicted_positions
+    
+    def update_traffic_for_env(self, state, drones_num: int = None, evtols_num: int = None):
+        """Update the traffic for the environment."""
+        if hasattr(state, 'traffic'):
+            traffic_positions = self.get_aircraft_positions(activate_drones_num=drones_num, activate_evtols_num=evtols_num)
+            traffic_velocities = self.get_aircraft_velocities(activate_drones_num=drones_num, activate_evtols_num=evtols_num)
+            traffic_types = self.get_aircraft_types(activate_drones_num=drones_num, activate_evtols_num=evtols_num)
+            traffic_safety_radius = self.get_aircraft_safety_radius(activate_drones_num=drones_num, activate_evtols_num=evtols_num)
+            state.traffic.traffic_positions = traffic_positions
+            state.traffic.traffic_velocities = traffic_velocities
+            state.traffic.traffic_types = traffic_types
+            state.traffic.traffic_safety_radius = traffic_safety_radius
+            # state.traffic.traffic_future_traj = self.predict_future_positions(state.cfg.predict_steps, state.cfg.pred_timestep)

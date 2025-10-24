@@ -22,6 +22,7 @@ def main():
                        help="The workflow to use: 'direct' or 'manager'")
     parser.add_argument("--num_envs", type=int, default=8, help="Number of environments")
     parser.add_argument("--traffic", type=bool, default=True, help="Whether to use traffic")
+    parser.add_argument("--map", type=bool, default=True, help="Whether to use map")
     parser.add_argument("--video", type=bool, default=False, help="Whether to use video")
     parser.add_argument("--video_interval", type=int, default=10000, help="Video interval")
     parser.add_argument("--video_length", type=int, default=500, help="Video length")
@@ -37,28 +38,23 @@ def main():
     simulation_app = app_launcher.app
 
     # 导入环境（在AppLauncher之后）
-    from isaac_lab_envs.direct.traffic_env import TrafficEnv, TrafficEnvCfg
-    from isaac_lab_envs.direct.city_nav_env import NavCityEnv, NavCityEnvCfg
-    from isaac_lab_envs.direct.nav_env import NavEnv, NavEnvCfg
-    from isaac_lab_envs.direct.traffic_city_env import TrafficCityEnv, TrafficCityEnvCfg
-    if args_cli.workflow == "direct":
-        if args_cli.traffic:
-
-            cfg = TrafficCityEnvCfg()
-            cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
-            cfg.num_actions = 2
-            cfg.num_observations = 7
-            cfg.traffic_sim.num_drones = 10
-            cfg.traffic_sim.num_evtols = 1
-            cfg.action_space_type = 'discrete'
-            print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
-        else:
-            # 创建配置
-            cfg = NavCityEnvCfg()
-            # cfg.scene.num_envs = args_cli.num_envs
-            cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
-            cfg.num_actions = 2
-            print(f"动作维度: {cfg.num_actions}")
+    from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg, CityUamEnvCfg, OpenAirEnvCfg, DyanmicUamEnvCfg
+    # if args_cli.map:
+    #     cfg = CityUamEnvCfg()
+    # else:
+    #     cfg = UamEnvCfg()
+    cfg = CityUamEnvCfg()
+    cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
+    cfg.num_actions = 2
+    cfg.num_observations = 7
+    cfg.action_manager.action_space_type = 'discrete'
+    print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
+    
+    cfg.use_global_path = True
+    from isaac_lab_envs.direct.mdp.observations import CityNavObservationProcessorWithPath
+    cfg.observation_processor_cls = CityNavObservationProcessorWithPath
+    from isaac_lab_envs.direct.mdp.rewards import CityNavRewardCalculatorWithPath
+    cfg.reward_calculator_cls = CityNavRewardCalculatorWithPath
             
 
     cfg.debug_vis = True
@@ -70,13 +66,10 @@ def main():
         eye=(0, 0.0, range_x*1.5),  #  <-- 使用非默认值
         lookat=(0., 0., 1.)
     )
-
-    if args_cli.traffic:
-        env = TrafficCityEnv(cfg=cfg, render_mode="rgb_array")
-    else:
-        env = NavCityEnv(cfg=cfg, render_mode="rgb_array")
+    from isaac_lab_envs.direct.uam_env import UamEnv
+    env = UamEnv(cfg=cfg, render_mode="rgb_array")
     print(f"环境创建成功！")
-    save_dir = "runs/test_nav_env"
+    save_dir = "runs/test_uam_env"
     os.makedirs(save_dir, exist_ok=True)
     if args_cli.video:
         video_kwargs = {
@@ -101,8 +94,8 @@ def main():
         action_space_num_per_dim = env.cfg.action_manager.action_space_num_per_dim
         action_space_type = env.cfg.action_manager.action_space_type
         if action_space_type == "discrete":
-            # actions = torch.randint(0, action_space_num_per_dim * action_space_num_per_dim, (env.num_envs,), device=env.device)
-            actions = torch.full((env.num_envs,), 0, device=env.device)
+            actions = torch.randint(0, action_space_num_per_dim * action_space_num_per_dim, (env.num_envs,), device=env.device)
+            # actions = torch.full((env.num_envs,), 0, device=env.device)
         else:
             actions = torch.randn(env.num_envs, env.num_actions, device=env.device)
             actions = actions.clamp(-1.0, 1.0)        

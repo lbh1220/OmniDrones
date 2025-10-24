@@ -26,10 +26,10 @@ from omni.isaac.lab.app import AppLauncher
 
 def create_env(cfg, headless=True, record_video=False, video_kwargs=None):
     """创建并包装 City 环境为 SKRL 兼容格式，支持视频录制"""
-    from isaac_lab_envs.direct.city_nav_env import NavCityEnv
+    from isaac_lab_envs.direct.uam_env import UamEnv
     from omni.isaac.lab_tasks.utils.wrappers.skrl import SkrlVecEnvWrapper
 
-    env = NavCityEnv(cfg=cfg, render_mode="rgb_array" if record_video else None)
+    env = UamEnv(cfg=cfg, render_mode="rgb_array" if record_video else None)
 
     # 录制视频
     if record_video and video_kwargs is not None:
@@ -130,8 +130,8 @@ def main():
 
     # Video recording
     parser.add_argument("--video", action="store_true", default=True, help="Record videos")
-    parser.add_argument("--video_interval", type=int, default=2500, help="Video interval (steps)")
-    parser.add_argument("--video_length", type=int, default=250, help="Video length (frames)")
+    parser.add_argument("--video_interval", type=int, default=10000, help="Video interval (steps)")
+    parser.add_argument("--video_length", type=int, default=500, help="Video length (frames)")
     parser.add_argument("--experiment_name", type=str, default=None, help="Experiment name")
 
     # Add AppLauncher arguments
@@ -151,21 +151,30 @@ def main():
     simulation_app = app_launcher.app
 
     # Import env cfg after AppLauncher
-    from isaac_lab_envs.direct.city_nav_env import NavCityEnvCfg
+    from isaac_lab_envs.direct.uam_env_cfg import CityUamEnvCfg
     from omni.isaac.lab.envs.common import ViewerCfg
 
     # Build env cfg
-    cfg = NavCityEnvCfg()
+    cfg = CityUamEnvCfg()
     cfg.seed = args.seed
     cfg.scene.num_envs = args.num_envs
+    bounds = cfg.area_bounds
+    range_x = bounds.xmax - bounds.xmin
     cfg.viewer = ViewerCfg(
         resolution=(1920, 1080),
-        eye=(125, 0., 125),
+        eye=(0, 0.0, range_x*1.5),  #  <-- 使用非默认值
         lookat=(0., 0., 1.)
     )
     # Ensure continuous action space in [-1, 1]
-    cfg.action_space_type = "gaussian"
-    cfg.action_mode = "velocity_components"
+    cfg.action_manager.action_space_type = "gaussian"
+    cfg.action_manager.action_mode = "velocity_components"
+
+    # global path
+    cfg.use_global_path = True
+    from isaac_lab_envs.direct.mdp.observations import CityNavObservationProcessorWithPath, CityNavObservationProcessor
+    cfg.observation_processor_cls = CityNavObservationProcessorWithPath
+    from isaac_lab_envs.direct.mdp.rewards import CityNavRewardCalculatorWithPath, CityNavRewardCalculator
+    cfg.reward_calculator_cls = CityNavRewardCalculatorWithPath
 
     if args.experiment_name is None:
         timestamp = datetime.now().strftime("%m%d_%H%M%S")
@@ -199,7 +208,6 @@ def main():
         }
         # 打开可视化辅助
         cfg.debug_vis = True
-    cfg.use_global_path = False
 
     # Save environment and training configurations
     from omni.isaac.lab.utils.io import dump_yaml

@@ -74,17 +74,7 @@ class TrafficCurriculumCfg:
     evtol_num: int = 0
     evtol_radius: float = 10.0
     
-class NavEnvWindow(BaseEnvWindow):
-    """Window manager for the Nav environment."""
 
-    def __init__(self, env: NavEnv, window_name: str = "IsaacLab"):
-        """Initialize the window."""
-        super().__init__(env, window_name)
-        # add custom UI elements
-        with self.ui_window_elements["main_vstack"]:
-            with self.ui_window_elements["debug_frame"]:
-                with self.ui_window_elements["debug_vstack"]:
-                    self._create_debug_vis_ui_element("targets", self.env)
 
 @configclass
 class TrafficCityEnvCfg(NavCityEnvCfg):

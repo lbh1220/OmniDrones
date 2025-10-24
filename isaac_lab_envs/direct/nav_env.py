@@ -2,21 +2,6 @@
 #
 # Copyright (c) 2023 Isaac Lab Nav Environment Implementation
 
-"""Nav Navigation Environment using Direct RL Workflow
-
-这个环境直接复用了原始OmniDrones项目中的robot系统，包括：
-1. MultirotorBase、Firefly等完整的drone实现
-2. 原始的旋翼动力学模型和RotorGroup
-3. 原始的参数配置系统（yaml文件）
-4. 原始的控制器系统
-5. Isaac Lab的RayCaster激光雷达系统和DirectRLEnv框架
-
-核心设计理念：
-- 100% 复用原始drone系统的精心设计
-- 使用Isaac Lab的DirectRLEnv作为基础框架
-- 保持原始环境的所有功能和行为
-"""
-
 from __future__ import annotations
 
 import math
@@ -50,6 +35,7 @@ from tensordict.tensordict import TensorDict
 
 from isaac_lab_envs.direct.mdp.state import EnvState
 from isaac_lab_envs.direct.mdp.metrics import MetricsManager, CrossTrackModule, AccelerationModule, FlagsModule
+from isaac_lab_envs.direct.mdp.action import ActionManagerCfg, VelocityXYActionManager
 
 
 ##
@@ -144,10 +130,11 @@ class NavEnvCfg(DirectRLEnvCfg):
         ymax=50.0
     ))
     
-    # action space config
-    action_space_type: str = "discrete" # discrete or beta or gaussian
-    action_space_num_per_dim: int = 7  # 每个维度的离散动作数量
-    action_mode: str = "velocity_components"  # "velocity_components" or "speed_direction"
+    action_manager: ActionManagerCfg = ActionManagerCfg(
+        action_space_type="discrete",
+        action_space_num_per_dim=7,
+        action_mode="velocity_components"
+    )
 
         # 原始参数配置
     lidar_range: float = 4.0
@@ -190,6 +177,7 @@ class NavEnv(DirectRLEnv):
         if cfg.seed is not None:
             self.seed(cfg.seed)
         # 初始化观测和奖励处理器
+        self.action_manager = VelocityXYActionManager(cfg.action_manager, self)
         self._init_mdp_components(cfg)
         
         # 父类初始化 - 这会调用 _setup_scene()
@@ -202,18 +190,12 @@ class NavEnv(DirectRLEnv):
         self.state.collision.safety_radius = cfg.safety_radius
 
         
-        # 设置离散动作空间映射
-        if cfg.action_space_type == "discrete":
-            self._setup_discrete_action()
         
         # 初始姿态分布
         self.init_rpy_dist = torch.distributions.Uniform(
             torch.tensor([-.2, -.2, 0.], device=self.device) * torch.pi,
             torch.tensor([0.2, 0.2, 2.], device=self.device) * torch.pi
         )
-        
-        # 保留command_vel_xy作为控制命令（不是状态的一部分）
-        self.command_vel_xy = None
         
         self.extras = {
             "goal_reached": torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
@@ -244,6 +226,7 @@ class NavEnv(DirectRLEnv):
         from isaac_lab_envs.direct.mdp.rewards import NavRewardCalculator
         self.obs_processor = NavObservationProcessor(cfg)
         self.reward_calculator = NavRewardCalculator(cfg)
+        
 
     def _init_metrics(self):
         # 初始化 Metrics 管理器并注册模块
@@ -362,106 +345,12 @@ class NavEnv(DirectRLEnv):
         sky_light_cfg.func("/World/skyLight", sky_light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        """Apply actions to the drone using original apply_action method."""
-        # 处理离散动作空间
-        if self.cfg.action_space_type == "discrete":
-            # 将离散动作转换为连续动作
-            continuous_actions = self.discrete_to_continuous_action(actions)
-            if self.cfg.action_mode == "speed_direction":
-                raise ValueError("Speed direction action mode not supported for discrete action space")
-        else:
-            continuous_actions = actions
-        
-        # 根据action_mode处理连续动作
-        if self.cfg.action_mode == "velocity_components":
-            # 原模式：vx, vy速度分量
-            self.command_vel_xy = self._process_velocity_components(continuous_actions)
-        elif self.cfg.action_mode == "speed_direction":
-            # 新模式：速度大小 + 方向
-            self.command_vel_xy = self._process_speed_direction(continuous_actions)
-        else:
-            raise ValueError(f"Unknown action mode: {self.cfg.action_mode}")
-        
-        # 确保速度在合理范围内 - 按模长缩放而非简单裁切
-        speed_magnitude = torch.norm(self.command_vel_xy, dim=-1, keepdim=True)
-        
-        # 计算缩放因子：
-        # 1. 如果速度 > max_speed，缩放到 max_speed
-        # 2. 如果 0 < 速度 < min_speed，放大到 min_speed
-        # 3. 如果速度接近0（< 1e-3），保持不变（允许停止）
-        eps = 1e-3  # 接近零的阈值
-        scale_factor = torch.ones_like(speed_magnitude)
-        
-        # 速度过大：缩放到max_speed
-        too_fast = speed_magnitude > self.cfg.max_speed
-        scale_factor = torch.where(
-            too_fast,
-            self.cfg.max_speed / speed_magnitude,
-            scale_factor
-        )
-        
-        # 速度过小但不为零：放大到min_speed
-        too_slow = (speed_magnitude > eps) & (speed_magnitude < self.cfg.min_speed)
-        scale_factor = torch.where(
-            too_slow,
-            self.cfg.min_speed / speed_magnitude,
-            scale_factor
-        )
-        
-        self.command_vel_xy = self.command_vel_xy * scale_factor
-        self.command_vel_xy = self.command_vel_xy.unsqueeze(1)
-        self.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
+        """Delegate action processing to action manager."""
+        self.action_manager.process_actions(actions)
     
-    def _process_velocity_components(self, actions: torch.Tensor) -> torch.Tensor:
-        """处理速度分量模式的动作"""
-        if self.cfg.action_space_type == "beta":
-            # Beta分布输出[0,1]，需要映射到[-1,1]然后乘以max_speed
-            actions_scaled = (actions * 2.0) - 1.0  # [0,1] -> [-1,1]
-            command_vel_xy = actions_scaled * self.cfg.max_speed 
-        else:
-            # 高斯分布输出[-1,1]，直接乘以max_speed
-            command_vel_xy = actions * self.cfg.max_speed
-        
-        return command_vel_xy
-    
-    def _process_speed_direction(self, actions: torch.Tensor) -> torch.Tensor:
-        """处理速度大小+方向模式的动作"""
-        if self.cfg.action_space_type == "beta":
-            # Beta分布输出[0,1]
-            # 第一个维度：速度大小，映射到[min_speed, max_speed]
-            speed = actions[:, 0] * (self.cfg.max_speed - self.cfg.min_speed) + self.cfg.min_speed
-            # 第二个维度：方向，映射到[0, 2π]
-            direction = actions[:, 1] * 2.0 * math.pi
-        else:
-            # 高斯分布输出[-1,1]
-            # 第一个维度：速度大小，从[-1,1]映射到[0,1]再映射到[min_speed, max_speed]
-            normalized_speed = (actions[:, 0] + 1.0) / 2.0  # [-1,1] -> [0,1]
-            speed = normalized_speed * (self.cfg.max_speed - self.cfg.min_speed) + self.cfg.min_speed
-            # 第二个维度：方向，从[-1,1]映射到[0, 2π]
-            direction = (actions[:, 1] + 1.0) / 2.0 * 2.0 * math.pi
-        
-        # 将极坐标转换为笛卡尔坐标
-        vx = speed * torch.cos(direction)
-        vy = speed * torch.sin(direction)
-        
-        # 组合成velocity命令
-        command_vel_xy = torch.stack([vx, vy], dim=1)
-        
-        return command_vel_xy
 
     def _apply_action(self):
-        """Actions are applied in _pre_physics_step."""
-        drone_state = self.drone.get_state(env_frame=False)[..., :13]#[num_envs, N, 13]
-        if self.command_vel_xy is None:
-            self.command_vel_xy = torch.zeros(self.num_envs, 1, 2, device=self.device)
-            self.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
-        target_height = self.cfg.flight_height * torch.ones(self.num_envs, 1, 1, device=self.device)
-        rotor_commands = self.controller.compute(
-            root_state=drone_state,  # shape [num_envs, N, 3]
-            target_vel_xy=self.command_vel_xy,  # shape [num_envs, N, 2]
-            target_height=target_height,  # shape [num_envs, N, 1]
-        ) 
-        self.drone.apply_action(rotor_commands)
+        self.action_manager.apply_action()
     
     def _post_physics_step(self, env_ids: torch.Tensor = None):
         """
@@ -724,46 +613,7 @@ class NavEnv(DirectRLEnv):
         return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints, waypoints_length
 
     
-    def _setup_discrete_action(self):
-        """设置离散动作空间"""
-        total_actions = self.cfg.action_space_num_per_dim * self.cfg.action_space_num_per_dim
-        self._create_discrete_action_mapping()
-        print(f"Created discrete action mapping: {self.cfg.action_space_num_per_dim}x{self.cfg.action_space_num_per_dim} = {total_actions} actions")
-    
-    def _create_discrete_action_mapping(self):
-        """创建离散动作映射"""
-        speed_values = torch.linspace(-1.0, 1.0, self.cfg.action_space_num_per_dim, device=self.device)
-        
-        action_mapping = []
-        for i in range(self.cfg.action_space_num_per_dim):
-            for j in range(self.cfg.action_space_num_per_dim):
-                vx = speed_values[i]
-                vy = speed_values[j]
-                action_mapping.append([vx, vy])
-        
-        self.action_mapping = torch.tensor(action_mapping, device=self.device, dtype=torch.float32)
-    
-    def discrete_to_continuous_action(self, discrete_actions: torch.Tensor) -> torch.Tensor:
-        """将离散动作转换为连续动作
-        
-        Args:
-            discrete_actions: [num_envs] or [num_envs, 1] 离散动作索引
-            
-        Returns:
-            continuous_actions: [num_envs, 2] 连续动作 (vx, vy)
-        """
-        # 将float32转换为整数索引（处理vec env的numpy/tensor转换）
-        if discrete_actions.ndim == 2:
-            discrete_actions = discrete_actions.squeeze(1)
-        discrete_actions = discrete_actions.long()
-        
-        # 处理超出范围的动作索引
-        discrete_actions = torch.clamp(discrete_actions, 0, len(self.action_mapping) - 1)
-        
-        # 批量索引映射
-        continuous_actions = self.action_mapping[discrete_actions]
-        
-        return continuous_actions
+    # Discrete action mapping is now managed by the ActionManager
     
     @property 
     def _should_render(self):
@@ -786,15 +636,7 @@ class NavEnv(DirectRLEnv):
         # 3. 创建最外层的观测空间字典
         self.single_observation_space["policy"] = policy_space
 
-
-        # bound action space
-        if self.cfg.action_space_type == "discrete":
-            total_actions = self.cfg.action_space_num_per_dim * self.cfg.action_space_num_per_dim
-            self.single_action_space = gym.spaces.Discrete(total_actions)
-        elif self.cfg.action_space_type == "beta":
-            self.single_action_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.num_actions,))
-        else:
-            self.single_action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.num_actions,))
+        self.single_action_space = self.action_manager.get_action_space()
 
         # batch the spaces for vectorized environments
         self.observation_space = gym.vector.utils.batch_space(self.single_observation_space["policy"], self.num_envs)

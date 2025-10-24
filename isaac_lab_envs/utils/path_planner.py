@@ -6,6 +6,8 @@ from typing import Tuple, List
 class GlobalPathPlannerCfg:
     algorithm: str = "astar"
     smooth_method: str = "shortcut"
+    max_waypoints: int = 3
+    lookahead_distance: float = 10.0
 
 
 class GlobalPathPlanner:

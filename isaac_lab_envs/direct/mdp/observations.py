@@ -1,9 +1,9 @@
+from abc import ABC, abstractmethod
 import torch
-from isaac_lab_envs.direct.traffic_env import TrafficEnvCfg
 import numpy as np
 import gymnasium as gym
 from isaac_lab_envs.direct.mdp.state import EnvState
-
+from omni.isaac.lab.utils import configclass
 from omni_drones.utils.torch import (
     quat_mul,
     quat_rotate_inverse,
@@ -14,12 +14,40 @@ from omni_drones.utils.torch import (
     axis_angle_to_matrix
 )
 
-class NavObservationProcessor:
+@configclass
+class ObservationProcessorCfg:
+    use_angle_distance_obs: bool = True
+    observation_norm_scale: float = 10.0
+
+@configclass
+class TrafficObservationProcessorCfg(ObservationProcessorCfg):
+    predict_steps: int = 5
+    pred_timestep: float = 2.0
+    observation_norm_scale: float = 10.0
+    use_angle_distance_obs: bool = True
+    observation_radius: float = 100.0
+    
+
+class ObservationProcessor(ABC):
+    def __init__(self, cfg, env):
+        self.cfg = cfg # 这个是env的cfg
+        self.env = env
+        self.device = "cuda"
+
+
+    def generate_policy_obs_dict(self):
+        raise NotImplementedError
+
+    def process_observation(self, state: EnvState) -> dict:
+        raise NotImplementedError
+
+
+class NavObservationProcessor(ObservationProcessor):
     """基础导航环境的观测处理器"""
     
-    def __init__(self, cfg, device: str = "cuda"):
-        self.cfg = cfg
-        self.device = device
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+
         
     def generate_policy_obs_dict(self):
         """生成观测空间字典"""
@@ -139,12 +167,11 @@ class NavObservationProcessorWithPath(NavObservationProcessor):
         return {"policy": policy_obs}
 
 
-class TrafficObservationProcessor:
+class TrafficObservationProcessor(ObservationProcessor):
     """Traffic环境的观测处理器，基于Isaac Lab tensor操作优化"""
     
-    def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
-        self.cfg = cfg
-        self.device = device
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         self.predict_steps = cfg.predict_steps
         self.pred_timestep = cfg.pred_timestep
         self.observation_norm_scale = cfg.observation_norm_scale
@@ -415,8 +442,8 @@ class TrafficObservationProcessor:
 class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
     """支持局部目标的Traffic环境观测处理器"""
     
-    def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
-        super().__init__(cfg, device)
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         # self.robot_node_dim = 3 if self.use_angle_distance_obs else 2 + 3 + (3 if self.use_angle_distance_obs else 2) + (3 if self.use_angle_distance_obs else 2)
         self.robot_node_dim = 10
         if self.use_angle_distance_obs:
@@ -501,7 +528,7 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
 
 
 
-class CityNavObservationProcessor:
+class CityNavObservationProcessor(ObservationProcessor):
     """Observation processor for city nav with lidar.
 
     Outputs a policy dict with:
@@ -510,14 +537,14 @@ class CityNavObservationProcessor:
     - lidar: [1, 36, 4]
     """
 
-    def __init__(self, cfg, device: str = "cuda"):
-        self.cfg = cfg
-        self.device = device
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         # angle+distance encoding switch (sin, cos, 1/(d+1))
-        self.use_angle_distance_obs = getattr(cfg, 'use_angle_distance_obs', False)
+        self.use_angle_distance_obs = getattr(cfg, 'use_angle_distance_obs', True)
         self.robot_node_dim = 8
         if self.use_angle_distance_obs:
             self.robot_node_dim += 1
+            
 
     def _encode_relative_xy(self, relative_xy: torch.Tensor) -> torch.Tensor:
         """Encode relative XY either as normalized (dx, dy) or (sin, cos, 1/(d+1))."""
@@ -534,9 +561,11 @@ class CityNavObservationProcessor:
         return torch.stack([sin_theta, cos_theta, inv_dist], dim=-1)
 
     def generate_policy_obs_dict(self):
+
+        h, w = self.cfg.lidar_resolution
         policy_space_dict = {
             'robot_node': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.robot_node_dim), dtype=np.float32),
-            'lidar': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, 36, 4), dtype=np.float32),
+            'lidar': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, h, w), dtype=np.float32),
         }
         return policy_space_dict
 
@@ -581,7 +610,8 @@ class CityNavObservationProcessor:
         if state.perception.lidar_scan is not None:
             lidar_scan = state.perception.lidar_scan/self.cfg.lidar_range
         else:
-            lidar_scan = torch.zeros(drone_state.shape[0], 1, 36, 4, device=self.device)
+            h, w = self.cfg.lidar_resolution
+            lidar_scan = torch.zeros(drone_state.shape[0], 1, h, w, device=self.device)
 
         policy_obs = {
             'robot_node': robot_node,
@@ -600,8 +630,8 @@ class CityNavObservationProcessorWithPath(CityNavObservationProcessor):
     - path: [1, 3, 3]
     """
 
-    def __init__(self, cfg, device: str = "cuda"):
-        super().__init__(cfg, device)
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
         self.robot_node_dim = 8+4
         if self.use_angle_distance_obs:
             self.robot_node_dim += 3
@@ -662,7 +692,8 @@ class CityNavObservationProcessorWithPath(CityNavObservationProcessor):
         if state.perception.lidar_scan is not None:
             lidar_scan = state.perception.lidar_scan / self.cfg.lidar_range
         else:
-            lidar_scan = torch.zeros(drone_state.shape[0], 1, 36, 4, device=self.device)
+            h, w = self.cfg.lidar_resolution
+            lidar_scan = torch.zeros(drone_state.shape[0], 1, h, w, device=self.device)
 
         policy_obs = {
             'robot_node': robot_node,
