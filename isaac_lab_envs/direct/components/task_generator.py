@@ -62,7 +62,10 @@ class CrossTaskGenerator(TaskGenerator):
         inter_points = inter_points + area_center
         waypoints = torch.cat([start_tensor.unsqueeze(1), inter_points.unsqueeze(1), goal_tensor.unsqueeze(1)], dim=1)
         waypoints_length = torch.full((num_env,), 3, device=self.device)
-        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), waypoints, waypoints_length
+        max_wps = self.env.state.navigation.waypoints.shape[1]
+        fill_waypoints = torch.zeros(num_env, max_wps, 3, device=self.device)
+        fill_waypoints[:, :3, :] = waypoints
+        return start_tensor.unsqueeze(1), goal_tensor.unsqueeze(1), fill_waypoints, waypoints_length
 
 
     def _generate_crossing_task_with_planner(self, num_env: int = 1, flight_height: float = 20.0):

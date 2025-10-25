@@ -430,9 +430,8 @@ class TrafficSimulator:
         #    广播后，相当于将初始位置加到每一个时间戳的预测位置上
         #    predicted_positions 的形状变为 [predict_steps + 1, N, 3]
         predicted_positions = current_positions + displacement
-        
+        predicted_positions = predicted_positions.permute(1, 0, 2) # [N, predict_steps+1, 3]
 
-        # predicted_positions.premute(1, 0, 2) # [N, predict_steps+1, 3]
         return predicted_positions
     
     def update_traffic_for_env(self, state, drones_num: int = None, evtols_num: int = None):
@@ -446,4 +445,3 @@ class TrafficSimulator:
             state.traffic.traffic_velocities = traffic_velocities
             state.traffic.traffic_types = traffic_types
             state.traffic.traffic_safety_radius = traffic_safety_radius
-            # state.traffic.traffic_future_traj = self.predict_future_positions(state.cfg.predict_steps, state.cfg.pred_timestep)

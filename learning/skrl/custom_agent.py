@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Union, Tuple, Mapping, Any
 
 from skrl.models.torch import Model, CategoricalMixin, GaussianMixin, DeterministicMixin
-from networks import AttentionFeaturesNetwork, CityFeaturesNetwork
+from networks.dynamic_traffic import AttentionFeaturesNetwork, CityFeaturesNetwork
 from skrl.utils.spaces.torch import unflatten_tensorized_space
 # Shared model for continuous actions (following official SKRL pattern)
 class SharedAttentionContinuous(GaussianMixin, DeterministicMixin, Model):

@@ -151,7 +151,7 @@ def main():
     simulation_app = app_launcher.app
 
     # Import env cfg after AppLauncher
-    from isaac_lab_envs.direct.uam_env_cfg import CityUamEnvCfg
+    from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg, CityUamEnvCfg, OpenAirEnvCfg, DyanmicUamEnvCfg
     from omni.isaac.lab.envs.common import ViewerCfg
 
     # Build env cfg
@@ -171,10 +171,6 @@ def main():
 
     # global path
     cfg.use_global_path = True
-    from isaac_lab_envs.direct.mdp.observations import CityNavObservationProcessorWithPath, CityNavObservationProcessor
-    cfg.observation_processor_cls = CityNavObservationProcessorWithPath
-    from isaac_lab_envs.direct.mdp.rewards import CityNavRewardCalculatorWithPath, CityNavRewardCalculator
-    cfg.reward_calculator_cls = CityNavRewardCalculatorWithPath
 
     if args.experiment_name is None:
         timestamp = datetime.now().strftime("%m%d_%H%M%S")

@@ -10,11 +10,11 @@ from omni.isaac.lab.utils import configclass
 
 
 from isaac_lab_envs.direct.mdp.action import ActionManagerCfg
-from isaac_lab_envs.direct.mdp.rewards import RewardCalculatorCfg, RewardCalculator
-from isaac_lab_envs.direct.mdp.observations import ObservationProcessorCfg, ObservationProcessor
+from isaac_lab_envs.direct.mdp.rewards import RewardManagerCfg, RewardManager
+from isaac_lab_envs.direct.mdp.observations import ObservationManagerCfg, ObservationManager
 from isaac_lab_envs.direct.components.map import MapManagerCfg
 from isaac_lab_envs.utils.path_planner import GlobalPathPlannerCfg
-from isaac_lab_envs.traffic.cfg.config import AreaBoundsCfg, TrafficCfg, OrcaCfg
+from isaac_lab_envs.traffic.cfg.config import AreaBoundsCfg, TrafficCfg, OrcaCfg, TrafficEvtolCfg, TrafficDroneCfg
 
 @configclass
 class UamEnvCfg(DirectRLEnvCfg):
@@ -85,7 +85,8 @@ class UamEnvCfg(DirectRLEnvCfg):
         xmin=-50.0,
         xmax=50.0,
         ymin=-50.0,
-        ymax=50.0
+        ymax=50.0,
+        grid_size=1.0
     ))
     
     # mdp components
@@ -95,10 +96,10 @@ class UamEnvCfg(DirectRLEnvCfg):
         action_mode="velocity_components"
     )
     # action与reward的初始化方式略有不同，需要分别指定类和配置
-    reward_cfg: RewardCalculatorCfg = RewardCalculatorCfg()
-    reward_calculator_cls: Type[RewardCalculator] = RewardCalculator
-    observation_cfg: ObservationProcessorCfg = ObservationProcessorCfg()
-    observation_processor_cls: Type[ObservationProcessor] = ObservationProcessor
+    reward_cfg: RewardManagerCfg = RewardManagerCfg(modules=["nav"])
+    reward_calculator_cls: Type[RewardManager] = RewardManager
+    observation_cfg: ObservationManagerCfg = ObservationManagerCfg(modules=["robot_node"])
+    observation_processor_cls: Type[ObservationManager] = ObservationManager
 
 
         # 原始参数配置
@@ -114,7 +115,7 @@ class UamEnvCfg(DirectRLEnvCfg):
 
     # global planner
     use_global_path: bool = True
-    global_path_planner_cfg: GlobalPathPlannerCfg = GlobalPathPlannerCfg()
+    global_path_planner_cfg: GlobalPathPlannerCfg = GlobalPathPlannerCfg(max_waypoints=20)
     # 如果用了global, 则必须有map manager, 否则没有grid map
     # 但是如果有map manager, 可以没有global path planner，
     # map manager
@@ -126,6 +127,12 @@ class UamEnvCfg(DirectRLEnvCfg):
     predict_steps: int = 5
     pred_timestep: float = 2.0
 
+    # reward
+    rew_success = 15.0
+    rew_collision = -16.0
+    rew_potential = 0.5
+    rew_cross_track_coeff = 0.0
+
 @configclass
 class CityUamEnvCfg(UamEnvCfg):
     terrain: TerrainImporterCfg = TerrainImporterCfg(
@@ -133,23 +140,23 @@ class CityUamEnvCfg(UamEnvCfg):
         terrain_type="generator",
         terrain_generator=TerrainGeneratorCfg(
             seed=0,
-            size=(50.0, 50.0),
+            size=(30, 30),
             border_width=0.0,
-            num_rows=2,
-            num_cols=2,
+            num_rows=3,
+            num_cols=3,
             horizontal_scale=0.5,
             vertical_scale=1.0,
             slope_threshold=0.75,
             use_cache=False,
             sub_terrains={
                 "obstacles": HfDiscreteObstaclesTerrainCfg(
-                    size=(50.0, 50.0),
+                    size=(30, 30),
                     horizontal_scale=0.5,
                     vertical_scale=1.0,
-                    border_width=10.0,
-                    num_obstacles=3,
+                    border_width=5.0,
+                    num_obstacles=4,
                     obstacle_height_mode="fixed",
-                    obstacle_width_range=(5, 15),
+                    obstacle_width_range=(5, 8),
                     obstacle_height_range=(25.0, 40.0),
                     platform_width=0.0,
                 )
@@ -166,6 +173,10 @@ class CityUamEnvCfg(UamEnvCfg):
     rew_potential = 0.5
     rew_cross_track_coeff = 0.0
 
+    reward_cfg: RewardManagerCfg = RewardManagerCfg(modules=["nav", "cross_track"])
+    observation_cfg: ObservationManagerCfg = ObservationManagerCfg(modules=["robot_node", "lidar"])
+
+
 @configclass
 class OpenAirEnvCfg(UamEnvCfg):
     traffic_sim: TrafficCfg = field(default_factory=lambda: TrafficCfg(
@@ -176,10 +187,13 @@ class OpenAirEnvCfg(UamEnvCfg):
             xmin=-80.0,
             xmax=80.0,
             ymin=-80.0,
-            ymax=80.0
+            ymax=80.0,
+            grid_size=1.0
         )
     ))
 
+    reward_cfg: RewardManagerCfg = RewardManagerCfg(modules=["nav"])
+    observation_cfg: ObservationManagerCfg = ObservationManagerCfg(modules=["robot_node", "traffic_spatial_edges"])
 @configclass
 class DyanmicUamEnvCfg(UamEnvCfg):
     terrain: TerrainImporterCfg = TerrainImporterCfg(
@@ -187,7 +201,7 @@ class DyanmicUamEnvCfg(UamEnvCfg):
         terrain_type="generator",
         terrain_generator=TerrainGeneratorCfg(
             seed=0,
-            size=(50.0, 50.0),
+            size=(50, 50),
             border_width=0.0,
             num_rows=2,
             num_cols=2,
@@ -197,13 +211,13 @@ class DyanmicUamEnvCfg(UamEnvCfg):
             use_cache=False,
             sub_terrains={
                 "obstacles": HfDiscreteObstaclesTerrainCfg(
-                    size=(50.0, 50.0),
+                    size=(50, 50),
                     horizontal_scale=0.5,
                     vertical_scale=1.0,
-                    border_width=10.0,
-                    num_obstacles=3,
+                    border_width=4.0,
+                    num_obstacles=4,
                     obstacle_height_mode="fixed",
-                    obstacle_width_range=(5, 15),
+                    obstacle_width_range=(5, 12),
                     obstacle_height_range=(25.0, 40.0),
                     platform_width=0.0,
                 )
@@ -224,6 +238,93 @@ class DyanmicUamEnvCfg(UamEnvCfg):
             xmin=-80.0,
             xmax=80.0,
             ymin=-80.0,
-            ymax=80.0
-        )
-    ))
+            ymax=80.0,
+            grid_size=1.0
+        ),
+        evtol=TrafficEvtolCfg(safety_radius=5.0),
+        drone=TrafficDroneCfg(safety_radius=1.0),
+        ))
+
+    reward_cfg: RewardManagerCfg = RewardManagerCfg(modules=["nav", "traffic_future", "cross_track"])
+    observation_cfg: ObservationManagerCfg = ObservationManagerCfg(modules=["robot_node", "lidar", "traffic_spatial_edges"])
+    
+    rew_success = 15.0
+    rew_collision = -16.0
+    rew_potential = 0.5
+    rew_action_penalty = -0.0
+    rew_evtol_future_penalty = -0.0
+    rew_drone_future_penalty = -0.0
+    rew_time_penalty = 0.0
+    rew_drones_threshold_factor = 2.0
+    rew_drones_decay_factor = 0.667
+    rew_evtols_threshold_factor = 2.0
+    rew_evtols_decay_factor = 0.9
+    ## drones in previous, 2.0, 0.667; evtols in previous, 1.5, 0.9
+    rew_cross_track_coeff = 0.0
+
+    rew_ttc_threshold = 10.0
+    rew_ttc_alpha = 0.0
+    rew_ttc_beta = 5.0
+    rew_ttc_idle_penalty = 0.0
+    rew_patience_coeff = 0.0
+
+
+
+@configclass
+class NavrlEnvCfg(UamEnvCfg):
+    terrain: TerrainImporterCfg = TerrainImporterCfg(
+        prim_path="/World/ground",
+        terrain_type="generator",
+        terrain_generator=TerrainGeneratorCfg(
+            seed=0,
+            size=(50, 50),
+            border_width=0.0,
+            num_rows=2,
+            num_cols=2,
+            horizontal_scale=0.5,
+            vertical_scale=1.0,
+            slope_threshold=0.75,
+            use_cache=False,
+            sub_terrains={
+                "obstacles": HfDiscreteObstaclesTerrainCfg(
+                    size=(50, 50),
+                    horizontal_scale=0.5,
+                    vertical_scale=1.0,
+                    border_width=4.0,
+                    num_obstacles=4,
+                    obstacle_height_mode="fixed",
+                    obstacle_width_range=(5, 12),
+                    obstacle_height_range=(25.0, 40.0),
+                    platform_width=0.0,
+                )
+            },
+        ),
+        max_init_terrain_level=5,
+        collision_group=-1,
+        debug_vis=False,
+    )
+
+    map_cfg: MapManagerCfg = MapManagerCfg()
+
+    traffic_sim: TrafficCfg = field(default_factory=lambda: TrafficCfg(
+        num_drones=10,
+        num_evtols=1,
+        flight_height=20.0,
+        area_bounds=AreaBoundsCfg(
+            xmin=-80.0,
+            xmax=80.0,
+            ymin=-80.0,
+            ymax=80.0,
+            grid_size=1.0
+        ),
+        evtol=TrafficEvtolCfg(safety_radius=5.0),
+        drone=TrafficDroneCfg(safety_radius=1.0),
+        ))
+
+    reward_cfg: RewardManagerCfg = RewardManagerCfg(modules=["navrl"])
+    observation_cfg: ObservationManagerCfg = ObservationManagerCfg(modules=["robot_node", "lidar", "dynamic_obstacle"])
+    
+
+    arrival_threshold = -1.0 # navrl不会用到reach goal的termination, 所以这里设置为-1.0
+
+    dynamic_obstacle_num = 5

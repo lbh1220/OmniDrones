@@ -35,8 +35,8 @@ from tensordict.tensordict import TensorDict
 
 from isaac_lab_envs.direct.mdp.state import EnvState
 from isaac_lab_envs.direct.mdp.action import ActionManagerCfg, VelocityXYActionManager
-from isaac_lab_envs.direct.mdp.rewards import RewardCalculatorCfg, RewardCalculator
-from isaac_lab_envs.direct.mdp.observations import ObservationProcessorCfg, ObservationProcessor
+from isaac_lab_envs.direct.mdp.rewards import RewardManagerCfg, RewardManager
+from isaac_lab_envs.direct.mdp.observations import ObservationManagerCfg, ObservationManager
 from isaac_lab_envs.direct.components.map import MapManagerCfg, MapManager
 from isaac_lab_envs.direct.components.metrics import MetricsManager, CrossTrackModule, AccelerationModule, FlagsModule
 from isaac_lab_envs.direct.components.task_generator import CrossTaskGenerator
@@ -103,8 +103,8 @@ class UamEnv(DirectRLEnv):
         self.action_manager = VelocityXYActionManager(cfg.action_manager, self)
         ObsCls = cfg.observation_processor_cls
         RewCls = cfg.reward_calculator_cls
-        self.obs_processor = ObsCls(cfg, self)
-        self.reward_calculator = RewCls(cfg, self)
+        self.obs_processor = ObsCls(cfg, cfg.observation_cfg)
+        self.reward_calculator = RewCls(cfg, cfg.reward_cfg)
         self.task_generator = CrossTaskGenerator(cfg, self)
 
     def _init_metrics(self):
@@ -264,6 +264,7 @@ class UamEnv(DirectRLEnv):
         if self.traffic_sim is not None:
             self.traffic_sim._post_physics_step()
             self.traffic_sim.update_traffic_for_env(self.state)
+            self.state.traffic.traffic_future_traj = self.traffic_sim.predict_future_positions(self.cfg.predict_steps, self.cfg.pred_timestep)
         
         # TODO: 更新traffic的观测处理器
 

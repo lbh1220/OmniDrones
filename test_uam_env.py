@@ -43,7 +43,7 @@ def main():
     #     cfg = CityUamEnvCfg()
     # else:
     #     cfg = UamEnvCfg()
-    cfg = CityUamEnvCfg()
+    cfg = DyanmicUamEnvCfg()
     cfg.scene = replace(cfg.scene, num_envs=args_cli.num_envs)
     cfg.num_actions = 2
     cfg.num_observations = 7
@@ -51,10 +51,9 @@ def main():
     print(f"动作维度: {cfg.num_actions}, 观测维度: {cfg.num_observations}")
     
     cfg.use_global_path = True
-    from isaac_lab_envs.direct.mdp.observations import CityNavObservationProcessorWithPath
-    cfg.observation_processor_cls = CityNavObservationProcessorWithPath
-    from isaac_lab_envs.direct.mdp.rewards import CityNavRewardCalculatorWithPath
-    cfg.reward_calculator_cls = CityNavRewardCalculatorWithPath
+
+
+
             
 
     cfg.debug_vis = True
@@ -118,8 +117,8 @@ def main():
         try:
             while True:
                 # 继续运行环境
-                if env.cfg.action_space_type == "discrete":
-                    actions = torch.randint(0, env.cfg.action_space_num_per_dim * env.cfg.action_space_num_per_dim, (env.num_envs,), device=env.device)
+                if action_space_type == "discrete":
+                    actions = torch.randint(0, action_space_num_per_dim * action_space_num_per_dim, (env.num_envs,), device=env.device)
                 else:
                     actions = torch.randn(env.num_envs, env.num_actions, device=env.device)
                     actions = actions.clamp(-1.0, 1.0)

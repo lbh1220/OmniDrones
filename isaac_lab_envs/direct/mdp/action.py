@@ -7,14 +7,34 @@ from omni.isaac.lab.utils import configclass
 
 import gymnasium as gym
 import numpy as np
-
+from omni_drones.utils.torch import (
+    quat_mul,
+    quat_rotate_inverse,
+    normalize,
+    quaternion_to_rotation_matrix,
+    quaternion_to_euler,
+    axis_angle_to_quaternion,
+    axis_angle_to_matrix
+)
 @configclass
 class ActionManagerCfg:
     action_space_type: str = "discrete"
     action_space_num_per_dim: int = 7
     action_mode: str = "velocity_components"  # or "speed_direction"
-    # 未来可能还会扩展到用world or body frame
+    rl_action_frame: str = "body"  # or "world" # rl 输出的动作坐标系， action这边应该将其转换为world frame
 
+def body_to_world(body_xy: torch.Tensor, cy: torch.Tensor, sy: torch.Tensor) -> torch.Tensor:
+    x = body_xy[..., 0]
+    y = body_xy[..., 1]
+    num_extra_dims = x.dim() - cy.dim()
+    if num_extra_dims > 0:
+        # 在 cy 和 sy 的末尾添加所需的 singleton 维度
+        cy = cy.view(cy.shape + (1,) * num_extra_dims)
+        sy = sy.view(sy.shape + (1,) * num_extra_dims)
+
+    world_x = x * cy - y * sy
+    world_y = x * sy + y * cy
+    return torch.stack([world_x, world_y], dim=-1)
 
 class ActionManager(ABC):
     """Base action manager interface."""
@@ -95,10 +115,23 @@ class VelocityXYActionManager(ActionManager):
         scale_factor = torch.where(too_slow, env_cfg.min_speed / speed_magnitude, scale_factor)
         command_vel_xy = command_vel_xy * scale_factor
 
-        # 4) write back to env/state
-        self.command_vel_xy = command_vel_xy.unsqueeze(1)  # [num_envs, 1, 2]
+        self.command_vel_xy = self._convert_action_frame(command_vel_xy)
+
         env.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
 
+    def _convert_action_frame(self, velocity_commands: torch.Tensor) -> torch.Tensor:
+        if self.cfg.rl_action_frame == "world":
+            return velocity_commands.unsqueeze(1) # [num_envs, 1, 2]
+        elif self.cfg.rl_action_frame == "body":
+            drone_state = self.env.drone.get_state(env_frame=False)[..., :13]
+            robot_quat = drone_state[:, :, 3:7]
+            robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]  # [N,1]
+            cy = torch.cos(robot_yaw)
+            sy = torch.sin(robot_yaw)
+            world_velocity_commands = body_to_world(velocity_commands.unsqueeze(1), cy, sy)
+            return world_velocity_commands # [num_envs, 1, 2]
+        else:
+            raise ValueError(f"Unknown action frame: {self.cfg.rl_action_frame}")
     def _process_velocity_components(self, actions: torch.Tensor) -> torch.Tensor:
         env_cfg = self.env.cfg
         if self.cfg.action_space_type == "beta":

@@ -3,114 +3,53 @@ from isaac_lab_envs.direct.mdp.state import EnvState
 from abc import ABC, abstractmethod
 from omni.isaac.lab.utils import configclass
 
-@configclass
-class RewardCalculatorCfg:
-    rew_success = 15.0
-    rew_collision = -16.0
-    rew_potential = 0.5
-    rew_action_penalty = -0.1  # 动作惩罚系数（速度变化惩罚）
 
-    # for path tracking
-    rew_cross_track_coeff = 0.0
-    rew_cross_track_alpha = 1.0
 
-    # for future reward
-    rew_evtol_future_penalty = -0.0
-    rew_drone_future_penalty = -0.0
-    rew_time_penalty = 0.0
-    rew_drones_threshold_factor = 2.0
-    rew_drones_decay_factor = 0.667
-    rew_evtols_threshold_factor = 2.0
-    rew_evtols_decay_factor = 0.9
 
-    # for TTC reward
-    rew_ttc_threshold = 10.0
-    rew_ttc_alpha = 0.0
-    rew_ttc_beta = 5.0
-    rew_ttc_idle_penalty = 0.0
-    rew_patience_coeff = 0.0
-
-class RewardCalculator(ABC):
-    def __init__(self, cfg: RewardCalculatorCfg, env):
+class RewardModule(ABC):
+    def __init__(self, cfg):
         self.cfg = cfg
-        self.env = env
         self.device = "cuda"
-    
+
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         reward = torch.zeros(state.num_envs, device=self.device)
         return reward
+    
     def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
         pass
 
-class NavRewardCalculator(RewardCalculator):
-    """基础导航环境的奖励计算器"""
-    
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        self.cfg = cfg
-        self.device = "cuda"
-        
-        # 奖励配置参数
+class NavRewardModule(RewardModule):
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.collision_penalty = cfg.rew_collision
         self.success_reward = cfg.rew_success
-        self.potential_factor = cfg.rew_potential
         self.pot_factor = cfg.rew_potential
-        
-        # 势能缓存
         self.previous_potential = None
-    
+
     def compute_reward(self, state: EnvState) -> torch.Tensor:
-        """计算基础导航奖励
-        
-        Args:
-            state: 环境状态对象
-            
-        Returns:
-            reward: [num_envs] 奖励张量
-        """
-        # 从状态对象提取数据
+
         num_envs = state.num_envs
-        current_dist_to_target = state.navigation.current_dist_to_target
+
         reached_target_mask = state.navigation.reached_target_mask
-        
+        collision_mask = state.collision.collision_mask
+
         reward = torch.zeros(num_envs, device=self.device)
         
-        # 1. 到达奖励
-        reward[reached_target_mask] += self.success_reward
+        # 1. 碰撞惩罚
+        reward = torch.where(collision_mask, 
+                           torch.full_like(reward, self.collision_penalty), 
+                           reward)
         
-        # 2. 潜力奖励 (距离变化)
+        # 2. 成功奖励
+        reward = torch.where(reached_target_mask,
+                           torch.full_like(reward, self.success_reward),
+                           reward)
+
         potential_reward = self._compute_potential_reward(state)
         reward += potential_reward
-        
         return reward
     
-    def _compute_potential_reward(self, state: EnvState) -> torch.Tensor:
-        """计算势能奖励（基于距离变化）
-        
-        Args:
-            state: 环境状态对象
-            
-        Returns:
-            potential_reward: [N] 势能奖励
-        """
-        # 计算当前势能（负距离）
-
-        
-        # 计算2D距离（只考虑x,y）
-        current_distance = state.navigation.current_dist_to_target # [N]
-        current_potential = -current_distance  # [N]
-        
-        if self.previous_potential is None:
-            # 第一次调用，初始化previous_potential
-            self.previous_potential = current_potential.clone()
-            return torch.zeros_like(current_potential)
-        
-        # 计算势能变化
-        potential_reward = self.pot_factor * (current_potential - self.previous_potential)
-        
-        # 更新previous_potential
-        self.previous_potential = current_potential.clone()
-        
-        return potential_reward
     def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
         """重置势能缓存"""
         # 计算当前势能（负距离）
@@ -125,72 +64,54 @@ class NavRewardCalculator(RewardCalculator):
             # 第一次调用，初始化previous_potential
             self.previous_potential = current_potential.clone()
         else:
-            self.previous_potential[env_ids] = current_potential.clone()   
+            self.previous_potential[env_ids] = current_potential.clone()
 
-class CityNavRewardCalculator(NavRewardCalculator):
-    """City导航环境的奖励计算器"""
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        self.collision_penalty = cfg.rew_collision
-    def compute_reward(self, state: EnvState) -> torch.Tensor:
-        """计算基础导航奖励
+    def _compute_potential_reward(self, state: EnvState) -> torch.Tensor:
+        """计算势能奖励（基于距离变化）
         
         Args:
             state: 环境状态对象
             
         Returns:
-            reward: [num_envs] 奖励张量
+            potential_reward: [N] 势能奖励
         """
-        # 从状态对象提取数据
-        num_envs = state.num_envs
-        current_dist_to_target = state.navigation.current_dist_to_target
-        reached_target_mask = state.navigation.reached_target_mask
-        collision_mask = state.collision.collision_mask
-        reward = torch.zeros(num_envs, device=self.device)
-        
-        # 1. 碰撞惩罚
-        reward = torch.where(collision_mask, 
-                           torch.full_like(reward, self.collision_penalty), 
-                           reward)
-        
-        # 2. 成功奖励
-        reward = torch.where(reached_target_mask,
-                           torch.full_like(reward, self.success_reward),
-                           reward)
-        
-        # 2. 潜力奖励 (距离变化)
-        potential_reward = self._compute_potential_reward(state)
-        reward += potential_reward
-        
-        return reward
+        # 计算当前势能（负距离）
 
-class CityNavRewardCalculatorWithPath(CityNavRewardCalculator):
-    """City导航环境的奖励计算器，基于Isaac Lab tensor操作优化"""
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        # 横向误差奖励系数
-        self.cross_track_reward_coeff = getattr(cfg, 'rew_cross_track_coeff', 0.0)
+        
+        # 计算2D距离（只考虑x,y）
+
+        current_distance = state.navigation.current_dist_to_target # [N]
+        if self.cfg.use_global_path:
+            current_distance = state.navigation.current_dist_along_path # [N]
+        current_potential = -current_distance  # [N]
+        
+        if self.previous_potential is None:
+            # 第一次调用，初始化previous_potential
+            self.previous_potential = current_potential.clone()
+            return torch.zeros_like(current_potential)
+        
+        # 计算势能变化
+        potential_reward = self.pot_factor * (current_potential - self.previous_potential)
+        
+        # 更新previous_potential
+        self.previous_potential = current_potential.clone()
+        
+        return potential_reward
+
+class CrossTrackRewardModule(RewardModule):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.cross_track_reward_coeff = cfg.rew_cross_track_coeff
         self.alpha = getattr(cfg, 'rew_cross_track_alpha', 1.0)
-        
+        self.previous_cross_track = None
+
     def compute_reward(self, state: EnvState) -> torch.Tensor:
-        """计算包含横向误差的交通环境奖励
-        
-        Args:
-            state: 环境状态对象
-            
-        Returns:
-            reward: [num_envs] 奖励张量
-        """
-        # 调用父类的基础奖励计算
-        reward = super().compute_reward(state)
-        
+        reward = torch.zeros(state.num_envs, device=self.device)
         # 添加横向误差奖励项
         if self.cross_track_reward_coeff != 0.0 and state.navigation.cross_track_errors is not None:
             cross_track_reward = self._compute_cross_track_reward(state)
             reward += cross_track_reward
-            
         return reward
-    
     def _compute_cross_track_reward(self, state: EnvState) -> torch.Tensor:
         """计算横向误差奖励
         
@@ -218,95 +139,12 @@ class CityNavRewardCalculatorWithPath(CityNavRewardCalculator):
             
         return cross_track_reward
 
-    def _compute_potential_reward(self, state: EnvState) -> torch.Tensor:
-        """计算势能奖励（基于距离变化）
-        
-        Args:
-            state: 环境状态对象
-            use dist along path for potential reward
-        Returns:
-            potential_reward: [N] 势能奖励
-        """
-        # 计算当前势能（负距离）
-
-        
-        # 计算2D距离（只考虑x,y）
-        current_distance = state.navigation.current_dist_along_path # [N]
-        current_potential = -current_distance  # [N]
-        
-        if self.previous_potential is None:
-            # 第一次调用，初始化previous_potential
-            self.previous_potential = current_potential.clone()
-            return torch.zeros_like(current_potential)
-        
-        # 计算势能变化
-        potential_reward = self.pot_factor * (current_potential - self.previous_potential)
-        
-        # 更新previous_potential
-        self.previous_potential = current_potential.clone()
-        
-        return potential_reward
-    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
-        """重置势能缓存"""
-        # 计算当前势能（负距离）
-        if env_ids is None or env_ids.shape[0] == 0:
-            return
-            
-        
-        # 计算2D距离（只考虑x,y）
-        current_distance = state.navigation.current_dist_along_path[env_ids] # [N]
-        current_potential = -current_distance  # [N]
-        if self.previous_potential is None:
-            # 第一次调用，初始化previous_potential
-            self.previous_potential = current_potential.clone()
-        else:
-            self.previous_potential[env_ids] = current_potential.clone()   
-
-
-class TrafficRewardCalculator(RewardCalculator):
-    """Traffic环境的奖励计算器，基于Isaac Lab tensor操作优化"""
-    
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        
-        # 奖励配置参数
-        self.collision_penalty = cfg.rew_collision
-        self.pot_factor = cfg.rew_potential  # 势能奖励因子
-        self.time_penalty = cfg.rew_time_penalty  # 时间惩罚
-        self.success_reward = cfg.rew_success
-        
+class TrafficFutureRewardModule(RewardModule):
+    def __init__(self, cfg):
+        super().__init__(cfg)
         self.future_evtol_penalty = cfg.rew_evtol_future_penalty  # EVTOL未来碰撞惩罚
         self.future_drone_penalty = cfg.rew_drone_future_penalty  # Drone未来碰撞惩罚
-
-        self.action_penalty = cfg.rew_action_penalty  # 动作惩罚
-        self.action_penalty = -abs(cfg.rew_action_penalty)
-
-        # self.speed_penalty = cfg.rew_speed_penalty
-
-
-        # self.future_penalty = cfg.rew_evtol_future_penalty  # 未来碰撞惩罚
-        self.discomfort_dist = 0.2  # 不适距离
-        self.discomfort_penalty_factor = 0.5
-        # 仿真参数
-        self.predict_steps = cfg.predict_steps
-        self.pred_timestep = cfg.pred_timestep
-        
-        # 势能缓存
-        self.previous_potential = None
-
-        # TTC-based reward parameters (reasonable defaults; can be overridden by cfg)
-        # R_risk = -alpha * exp(-TTC / beta), for TTC < threshold
-        self.ttc_threshold = getattr(cfg, 'rew_ttc_threshold', 10.0)
-        self.ttc_alpha = getattr(cfg, 'rew_ttc_alpha', 0.0)
-        self.ttc_beta = getattr(cfg, 'rew_ttc_beta', 5.0)
-        # Contextual potential: (1 - risk_factor) * R_potential - risk_factor * delta
-        self.ttc_idle_penalty = getattr(cfg, 'rew_ttc_idle_penalty', 0.01)
-        # Optional patience reward coefficient (omega). 0 disables this term.
-        self.patience_coeff = getattr(cfg, 'rew_patience_coeff', 0.0)
-        # Memory for patience reward (per-env). Initialized lazily on first use.
-        self.previous_min_d_cpa = None
-
-
+        self.previous_future_penalty = None
         # future reward param
         self.drones_threshold_factor = cfg.rew_drones_threshold_factor
         self.drones_decay_factor = cfg.rew_drones_decay_factor
@@ -314,13 +152,28 @@ class TrafficRewardCalculator(RewardCalculator):
         self.evtols_decay_factor = cfg.rew_evtols_decay_factor
         
     def compute_reward(self, state: EnvState) -> torch.Tensor:
-        """计算复杂奖励
-        
+
+
+        reward = torch.zeros(state.num_envs, device=self.device)
+
+        future_penalty = self._compute_future_collision_penalty_refactored(state)
+        reward += future_penalty
+        return reward
+
+    def _compute_future_collision_penalty_refactored(
+        self, 
+        state: EnvState
+    ) -> torch.Tensor:
+        """
+        计算未来碰撞风险惩罚（向量化版本）。
+        逻辑对标 AirSim 版本的 "取最大风险" 模式。
+
         Args:
-            state: 环境状态对象
-            
+            drone_state: [num_envs, 1, 13] drone状态
+            obs_processor: 观测处理器，包含预计算的轨迹和属性
+
         Returns:
-            reward: [num_envs] 奖励张量
+            future_penalty: [num_envs] 未来碰撞惩罚
         """
         # 从状态对象提取数据
         drone_state = state.ego_drone.drone_state
@@ -334,260 +187,6 @@ class TrafficRewardCalculator(RewardCalculator):
         traffic_types = state.traffic.traffic_types if state.traffic else None
         traffic_safety_radius = state.traffic.traffic_safety_radius if state.traffic else None
         traffic_future_traj = state.traffic.traffic_future_traj if state.traffic else None
-        
-        num_envs = drone_state.shape[0]
-        reward = torch.zeros(num_envs, device=self.device)
-        
-        # 1. 碰撞惩罚
-        reward = torch.where(collision_mask, 
-                           torch.full_like(reward, self.collision_penalty), 
-                           reward)
-        
-        # 2. 成功奖励
-        reward = torch.where(reached_target_mask,
-                           torch.full_like(reward, self.success_reward),
-                           reward)
-        
-        # 对于既没有碰撞也没有到达目标的环境，计算其他奖励
-        # continue_mask = ~(collision_mask | reached_target_mask)
-
-        # 3. 不适距离惩罚（与traffic的距离过近）
-        # discomfort_penalty = self._compute_discomfort_penalty(
-        #     drone_state[continue_mask],
-        #     traffic_positions,
-        #     traffic_velocities
-        # )
-        # reward[continue_mask] += discomfort_penalty
-
-        # 4. 动作奖励
-        action_reward = self._compute_action_reward(state)
-        reward += action_reward
-            
-            # 5. 未来碰撞风险惩罚
-        use_future_penalty = abs(self.future_evtol_penalty) > 1e-4 or abs(self.future_drone_penalty) > 1e-4
-
-        use_ttc = abs(self.ttc_alpha) > 1e-4
-
-
-        if use_future_penalty:
-            future_penalty = self._compute_future_collision_penalty_refactored(
-                drone_state,
-                traffic_future_traj,
-                traffic_safety_radius,
-                traffic_types
-            )
-            reward += future_penalty
-
-        # 6. 基础势能奖励（与TTC联动前的原始项）
-        potential_reward = self._compute_potential_reward(state)
-
-
-        
-        if use_ttc:
-            # 7. 计算TTC/CPA指标（基于当前 traffic 的位置和速度）
-            robot_vel_2d = state.ego_drone.velocities[:, :, :2]
-            # Filter eVTOLs on the fly using traffic_types == 2
-            use_positions = None
-            if (state.traffic is not None and
-                state.traffic.traffic_positions is not None and state.traffic.traffic_positions.numel() > 0 and
-                state.traffic.traffic_velocities is not None and state.traffic.traffic_velocities.numel() > 0 and
-                state.traffic.traffic_safety_radius is not None and state.traffic.traffic_safety_radius.numel() > 0 and
-                state.traffic.traffic_types is not None and state.traffic.traffic_types.numel() > 0):
-                evtol_mask = (state.traffic.traffic_types == 2)
-                if evtol_mask.any():
-                    use_positions = state.traffic.traffic_positions[evtol_mask]
-                    use_velocities = state.traffic.traffic_velocities[evtol_mask]
-                    use_safety_radius = state.traffic.traffic_safety_radius[evtol_mask]
-
-            if use_positions is not None:
-                min_ttc, min_d_cpa = self._compute_ttc_metrics(
-                    drone_state,
-                    robot_vel_2d,
-                    use_positions,
-                    use_velocities,
-                    use_safety_radius
-                )
-            else:
-                # No traffic: TTC=+inf leads to no risk; CPA uses current distance surrogate
-                num_envs = drone_state.shape[0]
-                min_ttc = torch.full((num_envs,), float('inf'), device=self.device)
-                # use zeros for d_cpa so patience reward contributes 0
-                min_d_cpa = torch.zeros((num_envs,), device=self.device)
-
-            # 8. TTC风险惩罚 R_risk
-            ttc_risk_penalty = self._compute_ttc_risk_penalty(min_ttc)
-            reward += ttc_risk_penalty
-            # 10. 可选耐心奖励：仅在存在碰撞风险时鼓励增大与威胁的最近距离
-            if self.patience_coeff != 0.0:
-                patience_reward = self._compute_patience_reward(min_d_cpa, min_ttc)
-                reward += patience_reward
-                
-            # 9. 上下文势能奖励：用 contextual potential 替换原始 potential
-            potential_reward = self._compute_contextual_potential_from_base(potential_reward, min_ttc)
-
-        if use_future_penalty:
-        # 和原逻辑保持一致：若存在强 future penalty，则屏蔽势能奖励
-            future_penalty_mask = future_penalty < -1e-6
-            potential_reward = torch.where(
-                future_penalty_mask, torch.zeros_like(potential_reward), potential_reward
-            )
-        reward += potential_reward
-
-
-
-
-        # 6. 时间惩罚（所有环境都有）
-        dt = self.cfg.sim.dt * self.cfg.decimation
-        reward += self.time_penalty * dt
-        
-        return reward
-    
-    def _compute_potential_reward(self, state: EnvState) -> torch.Tensor:
-        """计算势能奖励（基于距离变化）
-        
-        Args:
-            state: 环境状态对象
-            
-        Returns:
-            potential_reward: [N] 势能奖励
-        """
-        # 计算当前势能（负距离）
-
-        
-        # 计算2D距离（只考虑x,y）
-        current_distance = state.navigation.current_dist_to_target # [N]
-        current_potential = -current_distance  # [N]
-        
-        if self.previous_potential is None:
-            # 第一次调用，初始化previous_potential
-            self.previous_potential = current_potential.clone()
-            return torch.zeros_like(current_potential)
-        
-        # 计算势能变化
-        potential_reward = self.pot_factor * (current_potential - self.previous_potential)
-        
-        # 更新previous_potential
-        self.previous_potential = current_potential.clone()
-        
-        return potential_reward
-
-    def _compute_action_reward(self, state: EnvState) -> torch.Tensor:
-        """计算动作奖励（速度变化惩罚）
-        
-        Args:
-            state: 环境状态对象
-            
-        Returns:
-            action_reward: [num_envs] 动作奖励（通常为负值，用于惩罚速度变化）
-        """
-        # 获取当前和上一步的实际速度
-        current_velocity = state.ego_drone.velocities   # [num_envs, 1, 3]
-        previous_velocity = state.ego_drone.previous_velocities   # [num_envs, 1, 3]
-        
-        # 计算速度变化（加速度）
-        velocity_change = current_velocity - previous_velocity  # [num_envs, 1, 3]
-        
-        # 计算速度变化的模（L2范数）
-        acceleration_magnitude = torch.norm(velocity_change.squeeze(1), dim=1)  # [num_envs]
-        
-        # 返回负的惩罚（鼓励平稳的速度变化）
-        action_reward = self.action_penalty * acceleration_magnitude
-        
-        return action_reward
-
-
-    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
-        """重置势能缓存"""
-        # 计算当前势能（负距离）
-        if env_ids is None or env_ids.shape[0] == 0:
-            return
-            
-        
-        # 计算2D距离（只考虑x,y）
-        current_distance = state.navigation.current_dist_to_target[env_ids] # [N]
-        current_potential = -current_distance  # [N]
-        if self.previous_potential is None:
-            # 第一次调用，初始化previous_potential
-            self.previous_potential = current_potential.clone()
-        else:
-            self.previous_potential[env_ids] = current_potential.clone()
-
-        # Reset patience memory for the specified envs
-        if self.previous_min_d_cpa is not None:
-            if self.previous_min_d_cpa.shape[0] < state.ego_drone.drone_state.shape[0]:
-                # Expand to full size if needed
-                full = torch.zeros(state.ego_drone.drone_state.shape[0], device=self.device)
-                full[: self.previous_min_d_cpa.shape[0]] = self.previous_min_d_cpa
-                self.previous_min_d_cpa = full
-            # Use NaN sentinel to indicate re-initialization is needed on next step,
-            # avoiding misleading delta due to using 0 (which implies collision distance).
-            self.previous_min_d_cpa[env_ids] = torch.nan
-
-    def _compute_discomfort_penalty(self, drone_state: torch.Tensor, 
-                                  traffic_positions: torch.Tensor,
-                                  traffic_velocities: torch.Tensor) -> torch.Tensor:
-        """计算不适距离惩罚
-        
-        Args:
-            drone_state: [N, 1, 13] drone状态
-            traffic_positions: [total_traffic, 3] traffic位置
-            traffic_velocities: [total_traffic, 3] traffic速度
-            
-        Returns:
-            discomfort_penalty: [N] 不适惩罚
-        """
-        if traffic_positions.numel() == 0:
-            return torch.zeros(drone_state.shape[0], device=self.device)
-        
-        robot_pos = drone_state[:, :, :2]  # [N, 1, 2]
-        traffic_pos_2d = traffic_positions[:, :2]  # [total_traffic, 2]
-        
-        # 计算所有环境与所有traffic的距离
-        # robot_pos: [N, 1, 2] -> [N, 1, 1, 2]
-        # traffic_pos_2d: [total_traffic, 2] -> [1, total_traffic, 2]
-        distances = torch.norm(
-            robot_pos.unsqueeze(2) - traffic_pos_2d.unsqueeze(0), 
-            dim=-1
-        )  # [N, 1, total_traffic]
-        
-        # 计算最小距离
-        min_distances = torch.min(distances, dim=-1)[0].squeeze(-1)  # [N]
-        
-        # 计算不适惩罚
-        robot_radius = self.cfg.safety_radius
-        traffic_radius = 1.0  # 假设traffic的安全半径
-        safe_distance = robot_radius + traffic_radius + self.discomfort_dist
-        
-        discomfort_mask = min_distances < safe_distance
-        penalty_ratio = torch.clamp(
-            (safe_distance - min_distances) / safe_distance, 
-            min=0.0, max=1.0
-        )
-        
-        discomfort_penalty = -self.discomfort_penalty_factor * penalty_ratio
-        discomfort_penalty = torch.where(discomfort_mask, discomfort_penalty, torch.zeros_like(discomfort_penalty))
-        
-        return discomfort_penalty
-    
- 
-    def _compute_future_collision_penalty_refactored(
-        self, 
-        drone_state: torch.Tensor,
-        traffic_future_traj: torch.Tensor,
-        traffic_safety_radius: torch.Tensor,
-        traffic_types: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        计算未来碰撞风险惩罚（向量化版本）。
-        逻辑对标 AirSim 版本的 "取最大风险" 模式。
-
-        Args:
-            drone_state: [num_envs, 1, 13] drone状态
-            obs_processor: 观测处理器，包含预计算的轨迹和属性
-
-        Returns:
-            future_penalty: [num_envs] 未来碰撞惩罚
-        """
         if (traffic_future_traj is None or 
             traffic_future_traj.numel() == 0):
             return torch.zeros(drone_state.shape[0], device=self.device)
@@ -659,7 +258,67 @@ class TrafficRewardCalculator(RewardCalculator):
 
         # 确保惩罚不会是正的
         return torch.min(future_penalty, torch.zeros_like(future_penalty))
-    
+
+class TTCRewardModule(RewardModule):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        # TTC-based reward parameters (reasonable defaults; can be overridden by cfg)
+        # R_risk = -alpha * exp(-TTC / beta), for TTC < threshold
+        self.ttc_threshold = getattr(cfg, 'rew_ttc_threshold', 10.0)
+        self.ttc_alpha = getattr(cfg, 'rew_ttc_alpha', 0.0)
+        self.ttc_beta = getattr(cfg, 'rew_ttc_beta', 5.0)
+        # Contextual potential: (1 - risk_factor) * R_potential - risk_factor * delta
+        self.ttc_idle_penalty = getattr(cfg, 'rew_ttc_idle_penalty', 0.01)
+        # Optional patience reward coefficient (omega). 0 disables this term.
+        self.patience_coeff = getattr(cfg, 'rew_patience_coeff', 0.0)
+        # Memory for patience reward (per-env). Initialized lazily on first use.
+        self.previous_min_d_cpa = None
+
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        reward = torch.zeros(state.num_envs, device=self.device)
+        use_ttc = abs(self.ttc_alpha) > 1e-4
+        drone_state = state.ego_drone.drone_state
+
+        if use_ttc:
+            # 7. 计算TTC/CPA指标（基于当前 traffic 的位置和速度）
+            robot_vel_2d = state.ego_drone.velocities[:, :, :2]
+            # Filter eVTOLs on the fly using traffic_types == 2
+            use_positions = None
+            if (state.traffic is not None and
+                state.traffic.traffic_positions is not None and state.traffic.traffic_positions.numel() > 0 and
+                state.traffic.traffic_velocities is not None and state.traffic.traffic_velocities.numel() > 0 and
+                state.traffic.traffic_safety_radius is not None and state.traffic.traffic_safety_radius.numel() > 0 and
+                state.traffic.traffic_types is not None and state.traffic.traffic_types.numel() > 0):
+                evtol_mask = (state.traffic.traffic_types == 2)
+                if evtol_mask.any():
+                    use_positions = state.traffic.traffic_positions[evtol_mask]
+                    use_velocities = state.traffic.traffic_velocities[evtol_mask]
+                    use_safety_radius = state.traffic.traffic_safety_radius[evtol_mask]
+
+            if use_positions is not None:
+                min_ttc, min_d_cpa = self._compute_ttc_metrics(
+                    drone_state,
+                    robot_vel_2d,
+                    use_positions,
+                    use_velocities,
+                    use_safety_radius
+                )
+            else:
+                # No traffic: TTC=+inf leads to no risk; CPA uses current distance surrogate
+                num_envs = drone_state.shape[0]
+                min_ttc = torch.full((num_envs,), float('inf'), device=self.device)
+                # use zeros for d_cpa so patience reward contributes 0
+                min_d_cpa = torch.zeros((num_envs,), device=self.device)
+
+            # 8. TTC风险惩罚 R_risk
+            ttc_risk_penalty = self._compute_ttc_risk_penalty(min_ttc)
+            reward += ttc_risk_penalty
+            # 10. 可选耐心奖励：仅在存在碰撞风险时鼓励增大与威胁的最近距离
+            if self.patience_coeff != 0.0:
+                patience_reward = self._compute_patience_reward(min_d_cpa, min_ttc)
+                reward += patience_reward
+
+        return reward
 
     def _compute_ttc_metrics(
         self,
@@ -787,105 +446,169 @@ class TrafficRewardCalculator(RewardCalculator):
         # delta is computed from the latest baseline, avoiding accumulation across safe periods.
         self.previous_min_d_cpa = min_d_cpa.clone()
         return patience
-
-
-class TrafficRewardCalculatorWithPath(TrafficRewardCalculator):
-    """支持横向误差奖励的交通环境奖励计算器"""
-    
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        
-        # 横向误差奖励系数
-        self.cross_track_reward_coeff = getattr(cfg, 'rew_cross_track_coeff', 0.0)
-        self.alpha = getattr(cfg, 'rew_cross_track_alpha', 1.0)
-        
-    def compute_reward(self, state: EnvState) -> torch.Tensor:
-        """计算包含横向误差的交通环境奖励
-        
-        Args:
-            state: 环境状态对象
-            
-        Returns:
-            reward: [num_envs] 奖励张量
-        """
-        # 调用父类的基础奖励计算
-        reward = super().compute_reward(state)
-        
-        # 添加横向误差奖励项
-        if self.cross_track_reward_coeff != 0.0 and state.navigation.cross_track_errors is not None:
-            cross_track_reward = self._compute_cross_track_reward(state)
-            reward += cross_track_reward
-            
-        return reward
-    
-    def _compute_cross_track_reward(self, state: EnvState) -> torch.Tensor:
-        """计算横向误差奖励
-        
-        Args:
-            state: 环境状态对象
-            
-        Returns:
-            cross_track_reward: [num_envs] 横向误差奖励
-        """
-        cross_track_errors = state.navigation.cross_track_errors  # [num_envs]
-        safety_radius = state.collision.safety_radius
-        
-        # 减去安全半径，如果小于安全半径则影响不大
-        effective_errors = torch.clamp(cross_track_errors - safety_radius, min=0.0)
-        
-        if self.cross_track_reward_coeff > 0:
-            # 正系数：奖励模式 - 距离越小奖励越大
-            # this value is in range [0, 1]
-            cross_track_reward = self.cross_track_reward_coeff * torch.exp(-self.alpha * effective_errors)
-        else:
-            # 负系数：惩罚模式 - 距离越大惩罚越大
-            # clamp this value to [0, 1]
-            cross_track_reward = self.cross_track_reward_coeff * torch.clamp(effective_errors**2, max=1.0)
-
-            
-        return cross_track_reward
-
-
-    def _compute_potential_reward(self, state: EnvState) -> torch.Tensor:
-        """计算势能奖励（基于距离变化）
-        
-        Args:
-            state: 环境状态对象
-            use dist along path for potential reward
-        Returns:
-            potential_reward: [N] 势能奖励
-        """
-        # 计算当前势能（负距离）
-
-        
-        # 计算2D距离（只考虑x,y）
-        current_distance = state.navigation.current_dist_along_path # [N]
-        current_potential = -current_distance  # [N]
-        
-        if self.previous_potential is None:
-            # 第一次调用，初始化previous_potential
-            self.previous_potential = current_potential.clone()
-            return torch.zeros_like(current_potential)
-        
-        # 计算势能变化
-        potential_reward = self.pot_factor * (current_potential - self.previous_potential)
-        
-        # 更新previous_potential
-        self.previous_potential = current_potential.clone()
-        
-        return potential_reward
     def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
-        """重置势能缓存"""
-        # 计算当前势能（负距离）
-        if env_ids is None or env_ids.shape[0] == 0:
-            return
-            
-        
-        # 计算2D距离（只考虑x,y）
-        current_distance = state.navigation.current_dist_along_path[env_ids] # [N]
-        current_potential = -current_distance  # [N]
-        if self.previous_potential is None:
-            # 第一次调用，初始化previous_potential
-            self.previous_potential = current_potential.clone()
+        # Reset patience memory for the specified envs
+        if self.previous_min_d_cpa is not None:
+            if self.previous_min_d_cpa.shape[0] < state.ego_drone.drone_state.shape[0]:
+                # Expand to full size if needed
+                full = torch.zeros(state.ego_drone.drone_state.shape[0], device=self.device)
+                full[: self.previous_min_d_cpa.shape[0]] = self.previous_min_d_cpa
+                self.previous_min_d_cpa = full
+            # Use NaN sentinel to indicate re-initialization is needed on next step,
+            # avoiding misleading delta due to using 0 (which implies collision distance).
+            self.previous_min_d_cpa[env_ids] = torch.nan
+
+
+class NavrlRewardModule(RewardModule):
+    """
+    复现NavRL项目
+    """
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.prev_vel_2d: torch.Tensor | None = None
+        self.lidar_range = getattr(cfg, 'lidar_range', 10.0)
+        self.dynamic_obstacle_num = getattr(cfg, 'dynamic_obstacle_num', 5)
+
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        num_envs = state.num_envs
+        reward = torch.zeros(num_envs, device=self.device)
+        # 1) 生存奖励 +1
+        reward = reward + 1.0
+        # 2) 速度沿目标方向分量
+        reward = reward + self._reward_vel(state)
+        # 3) 静态障碍安全 (LiDAR)
+        reward = reward + self._reward_safety_static(state)
+        # 4) 动态障碍安全 (最近K个)
+        reward = reward + self._reward_safety_dynamic(state)
+        # 5) 平滑性惩罚（系数 -0.1 已在函数内部体现）
+        reward = reward + self._penalty_smoothness(state)
+        return reward
+    def _reward_vel(self, state: EnvState) -> torch.Tensor:
+        # 计算速度在target上的点积分量，作为奖励
+        # 类似于reward_vel = (self.drone.vel_w[..., :3] * vel_direction).sum(-1)
+        drone_state = state.ego_drone.drone_state  # [N,1,13]
+        robot_vel_2d = state.ego_drone.velocities[:, :, :2]  # [N,1,2]
+        robot_pos_2d = drone_state[:, :, :2]  # [N,1,2]
+        target_pos_2d = state.navigation.target_positions[:, :, :2]  # [N,1,2]
+        if self.cfg.use_global_path:
+            target_pos_2d = state.navigation.local_goals[:, :, :2]
+        to_goal = target_pos_2d - robot_pos_2d  # [N,1,2]
+        to_goal_norm = torch.norm(to_goal, dim=-1, keepdim=True)  # [N,1,1]
+        # 单位方向
+        goal_dir = torch.where(to_goal_norm > 1e-6, to_goal / to_goal_norm, torch.zeros_like(to_goal))  # [N,1,2]
+        # 点积（2D速度在目标方向上的投影）
+        proj_speed = (robot_vel_2d * goal_dir).sum(dim=-1).squeeze(1)  # [N]
+        return proj_speed
+    def _reward_safety_static(self, state: EnvState) -> torch.Tensor:
+
+        lidar_scan = getattr(state.perception, 'lidar_scan', None)
+        if lidar_scan is None:
+            return torch.zeros(state.num_envs, device=self.device)
+        # 预期形状 [N, 1, H, W]，数值范围 [0, lidar_range] 且已取反（0安全，range危险）
+        # 扣除机器人安全半径的影响（简单减法后截断到[0, lidar_range]）
+        safety_radius = getattr(self.cfg, 'safety_radius', 0.0)
+        effective = (self.lidar_range - lidar_scan - safety_radius).clamp(min=1e-6, max=self.lidar_range)
+        # 对 H, W 维度做均值
+        rew = torch.log(effective).mean(dim=(2, 3))  # [N, 1]
+        return rew.squeeze(1)
+    def _reward_safety_dynamic(self, state: EnvState) -> torch.Tensor:
+        # reward_safety_dynamic = torch.log((closest_dyn_obs_distance_reward).clamp(min=1e-6, max=self.lidar_range)).mean(dim=-1, keepdim=True)
+        # 取最近的N个动态障碍物的最近距离，取log计算
+        # 不过这个最近距离需要减去robot和traffic的safety radius
+        if (state.traffic is None or
+            state.traffic.traffic_positions is None or state.traffic.traffic_positions.numel() == 0 or
+            state.traffic.traffic_safety_radius is None or state.traffic.traffic_safety_radius.numel() == 0):
+            return torch.zeros(state.num_envs, device=self.device)
+        drone_state = state.ego_drone.drone_state
+        robot_pos_2d = drone_state[:, :, :2]  # [N,1,2]
+        robot_radius = getattr(self.cfg, 'safety_radius', 0.0)
+        traffic_pos_2d = state.traffic.traffic_positions[:, :2]  # [T,2]
+        traffic_radii = state.traffic.traffic_safety_radius      # [T]
+        # 距离矩阵 [N,T]
+        rel = traffic_pos_2d.unsqueeze(0) - robot_pos_2d  # [N,1,2] broadcasting -> [N,T,2]
+        dists = torch.norm(rel, dim=-1)  # [N,T]
+        # 净距离（减安全半径）
+        net = dists - (robot_radius + traffic_radii.view(1, -1))  # [N,T]
+        # 选最近的K个
+        K = int(self.dynamic_obstacle_num)
+        if net.shape[1] >= K:
+            idx = torch.topk(net, k=K, largest=False, dim=1).indices  # [N,K]
+            nearest = torch.gather(net, 1, idx)  # [N,K]
         else:
-            self.previous_potential[env_ids] = current_potential.clone()   
+            nearest = net
+            # 不足K时右侧补零
+            pad = torch.zeros((state.num_envs, K - net.shape[1]), device=self.device)
+            nearest = torch.cat([nearest, pad], dim=1)
+        # 映射到正域并取log，再对K取均值
+        closest_reward = torch.log(nearest.clamp(min=1e-6, max=self.lidar_range))  # [N,K]
+        return closest_reward.mean(dim=-1)  # [N]
+    def _penalty_smoothness(self, state: EnvState) -> torch.Tensor:
+        # 计算前后两帧之间的2d速度差的norm, 系数是-0.1
+        vel_2d = state.ego_drone.velocities[:, :, :2].squeeze(1)  # [N,2]
+        if self.prev_vel_2d is None or self.prev_vel_2d.shape[0] != vel_2d.shape[0]:
+            self.prev_vel_2d = vel_2d.clone()
+            return torch.zeros(vel_2d.shape[0], device=self.device)
+        delta = torch.norm(vel_2d - self.prev_vel_2d, dim=-1)  # [N]
+        self.prev_vel_2d = vel_2d.clone()
+        return -0.1 * delta
+
+    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+        if self.prev_vel_2d is not None:
+            if self.prev_vel_2d.shape[0] < state.ego_drone.velocities.shape[0]:
+                # Expand to full size if needed
+                full = torch.zeros(state.ego_drone.velocities.shape[0], device=self.device)
+                full[: self.prev_vel_2d.shape[0]] = self.prev_vel_2d
+                self.prev_vel_2d = full
+            self.prev_vel_2d[env_ids] = state.ego_drone.velocities[env_ids, :, :2].clone()
+        else:
+            self.prev_vel_2d = state.ego_drone.velocities[:, :, :2].clone()
+# -------------------- Modular Reward Manager --------------------
+@configclass
+class RewardManagerCfg:
+    # names registered in REWARD_MODULES
+    modules: list[str] = ("nav", "cross_track")
+
+
+REWARD_MODULES: dict[str, type[RewardModule]] = {
+    "nav": NavRewardModule,
+    "cross_track": CrossTrackRewardModule,
+    "traffic_future": TrafficFutureRewardModule,
+    "ttc": TTCRewardModule,
+    "navrl": NavrlRewardModule,
+}
+
+
+class RewardManager:
+    def __init__(self, env_cfg, manager_cfg: RewardManagerCfg | None = None, device: str = "cuda"):
+        self.env_cfg = env_cfg
+        self.device = device
+        self.manager_cfg = manager_cfg or RewardManagerCfg()
+        self.modules: list[RewardModule] = []
+        # build modules by names
+        seen = set()
+        for name in self.manager_cfg.modules:
+            if name in seen:
+                continue
+            seen.add(name)
+            mod_cls = REWARD_MODULES.get(name)
+            if mod_cls is None:
+                continue
+
+            mod = mod_cls(env_cfg)
+            mod.device = device
+            self.modules.append(mod)
+
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        if not self.modules:
+            return torch.zeros(state.num_envs, device=self.device)
+        total = torch.zeros(state.num_envs, device=self.device)
+        for mod in self.modules:
+            r = mod.compute_reward(state)
+            if r is not None:
+                total = total + r
+        return total
+
+    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+        for mod in self.modules:
+            if hasattr(mod, "reset_potential"):
+                mod.reset_potential(state, env_ids)
