@@ -109,7 +109,8 @@ class UamEnv(DirectRLEnv):
 
     def _init_metrics(self):
         # 初始化 Metrics 管理器并注册模块
-        self.metrics = MetricsManager(num_envs=self.num_envs, device=self.device)
+        use_skrl = getattr(self.cfg, 'use_skrl', True)
+        self.metrics = MetricsManager(num_envs=self.num_envs, device=self.device, use_skrl=use_skrl)
         self.metrics.bind_env(self)
         self.metrics.register(FlagsModule())
         self.metrics.register(CrossTrackModule())

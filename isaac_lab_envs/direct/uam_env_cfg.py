@@ -32,6 +32,8 @@ class UamEnvCfg(DirectRLEnvCfg):
     debug_vis_num_envs = 10  # only visualize the first 5 environments
     is_training = True
 
+    use_skrl = True # if use skrl, metrics will be recorded in different way
+
     total_timesteps = 10000000
 
     viewer: ViewerCfg = field(default_factory=lambda: ViewerCfg(
@@ -290,7 +292,7 @@ class NavrlEnvCfg(UamEnvCfg):
                     size=(50, 50),
                     horizontal_scale=0.5,
                     vertical_scale=1.0,
-                    border_width=4.0,
+                    border_width=3.0,
                     num_obstacles=4,
                     obstacle_height_mode="fixed",
                     obstacle_width_range=(5, 12),
@@ -308,7 +310,7 @@ class NavrlEnvCfg(UamEnvCfg):
 
     traffic_sim: TrafficCfg = field(default_factory=lambda: TrafficCfg(
         num_drones=10,
-        num_evtols=1,
+        num_evtols=0,
         flight_height=20.0,
         area_bounds=AreaBoundsCfg(
             xmin=-80.0,
@@ -328,3 +330,4 @@ class NavrlEnvCfg(UamEnvCfg):
     arrival_threshold = -1.0 # navrl不会用到reach goal的termination, 所以这里设置为-1.0
 
     dynamic_obstacle_num = 5
+    use_global_path = False

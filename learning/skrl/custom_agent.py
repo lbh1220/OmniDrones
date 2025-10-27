@@ -7,6 +7,7 @@ from typing import Union, Tuple, Mapping, Any
 from skrl.models.torch import Model, CategoricalMixin, GaussianMixin, DeterministicMixin
 from networks.dynamic_traffic import AttentionFeaturesNetwork, CityFeaturesNetwork
 from skrl.utils.spaces.torch import unflatten_tensorized_space
+from networks.beta import BetaMixin
 # Shared model for continuous actions (following official SKRL pattern)
 class SharedAttentionContinuous(GaussianMixin, DeterministicMixin, Model):
     """
@@ -696,3 +697,120 @@ class SharedAttentionGRUDiscrete(CategoricalMixin, DeterministicMixin, Model):
             value_output = self.value_layer(critic_output)
             
             return value_output, {"rnn": [new_hidden_states]}
+
+# --- New Beta-based shared continuous model ---
+class SharedBetaContinuous(BetaMixin, DeterministicMixin, Model):
+    """
+    Shared model for continuous actions using attention mechanisms and Beta policy
+
+    Architecture:
+    - Shared: AttentionFeaturesNetwork (outputs features_dim)
+    - Separate Actor Network: [256, 256] -> action_dim (alpha, beta heads)
+    - Separate Critic Network: [256, 256] -> 1
+    """
+    def __init__(self, 
+                 observation_space, 
+                 action_space, 
+                 device: Union[str, torch.device] = None,
+                 features_dim: int = 128,
+                 net_arch: list = [256, 256],
+                 clip_actions=False,
+                 reduction="sum",
+                 features_extractor_cls=None,
+                 features_extractor_kwargs: dict = None,
+                 **kwargs):
+        
+        Model.__init__(self, observation_space, action_space, device)
+        BetaMixin.__init__(self, clip_actions, True, -20, 2, reduction)
+        DeterministicMixin.__init__(self, clip_actions)
+        
+        # Shared attention features extractor (like SB3 implementation)
+        if features_extractor_cls is None:
+            features_extractor_cls = AttentionFeaturesNetwork
+        if features_extractor_kwargs is None:
+            features_extractor_kwargs = {"features_dim": features_dim}
+        else:
+            if features_extractor_kwargs.get("features_dim") is None:
+                features_extractor_kwargs["features_dim"] = features_dim
+        self.features_extractor = features_extractor_cls(
+            observation_space, action_space, device, **features_extractor_kwargs
+        )
+        
+        # Actor network (separate from critic)
+        actor_layers = []
+        input_dim = features_dim
+        for hidden_dim in net_arch:
+            actor_layers.append(nn.Linear(input_dim, hidden_dim))
+            actor_layers.append(nn.Tanh())
+            input_dim = hidden_dim
+        self.actor_net = nn.Sequential(*actor_layers)
+        
+        # Policy heads for Beta (alpha and beta)
+        self.alpha_layer = nn.Linear(input_dim, self.num_actions)
+        self.beta_layer = nn.Linear(input_dim, self.num_actions)
+        
+        # Critic network (separate from actor)
+        critic_layers = []
+        input_dim = features_dim
+        for hidden_dim in net_arch:
+            critic_layers.append(nn.Linear(input_dim, hidden_dim))
+            critic_layers.append(nn.Tanh())
+            input_dim = hidden_dim
+        self.critic_net = nn.Sequential(*critic_layers)
+        
+        # Value head
+        self.value_layer = nn.Linear(input_dim, 1)
+        
+        # Initialize weights
+        self._initialize_weights()
+        
+        # For shared computation optimization
+        self._shared_features = None
+    
+    def _initialize_weights(self):
+        """Initialize network weights using orthogonal initialization"""
+        def init_weights(m):
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.constant_(m.bias, 0)
+        
+        self.actor_net.apply(init_weights)
+        self.critic_net.apply(init_weights)
+        self.alpha_layer.apply(init_weights)
+        self.beta_layer.apply(init_weights)
+        self.value_layer.apply(init_weights)
+        
+    def act(self, inputs, role):
+        """Act method following official SKRL pattern"""
+        if role == "policy":
+            return BetaMixin.act(self, inputs, role)
+        elif role == "value":
+            return DeterministicMixin.act(self, inputs, role)
+    
+    def compute(self, inputs: dict, role: str = "") -> Union[Tuple[torch.Tensor, torch.Tensor, dict], Tuple[torch.Tensor, dict]]:
+        """
+        Compute method following official SKRL pattern
+        
+        Only the features extraction is shared, actor and critic have separate networks
+        """
+        flat_states = inputs["states"]
+        unflattened_states = unflatten_tensorized_space(self.observation_space, flat_states)
+        if role == "policy":
+            # Extract shared features and pass through actor network
+            features = self.features_extractor.compute(unflattened_states)
+            self._shared_features = features  # Cache for potential value computation
+            actor_output = self.actor_net(features)
+            alpha_logits = self.alpha_layer(actor_output)
+            beta_logits = self.beta_layer(actor_output)
+            return alpha_logits, beta_logits, {}
+        elif role == "value":
+            # Reuse shared features if available, otherwise compute them
+            if self._shared_features is None:
+                features = self.features_extractor.compute(unflattened_states)
+            else:
+                features = self._shared_features
+                self._shared_features = None  # Reset for next iteration
+            
+            critic_output = self.critic_net(features)
+            value_output = self.value_layer(critic_output)
+            return value_output, {}

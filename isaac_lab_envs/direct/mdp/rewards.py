@@ -509,7 +509,9 @@ class NavrlRewardModule(RewardModule):
         safety_radius = getattr(self.cfg, 'safety_radius', 0.0)
         effective = (self.lidar_range - lidar_scan - safety_radius).clamp(min=1e-6, max=self.lidar_range)
         # 对 H, W 维度做均值
-        rew = torch.log(effective).mean(dim=(2, 3))  # [N, 1]
+        rew = torch.log(effective)
+        rew = rew.clamp(min=-1.0, max=1.0)
+        rew = rew.mean(dim=(2, 3))  # [N, 1]
         return rew.squeeze(1)
     def _reward_safety_dynamic(self, state: EnvState) -> torch.Tensor:
         # reward_safety_dynamic = torch.log((closest_dyn_obs_distance_reward).clamp(min=1e-6, max=self.lidar_range)).mean(dim=-1, keepdim=True)
@@ -535,12 +537,11 @@ class NavrlRewardModule(RewardModule):
             idx = torch.topk(net, k=K, largest=False, dim=1).indices  # [N,K]
             nearest = torch.gather(net, 1, idx)  # [N,K]
         else:
-            nearest = net
-            # 不足K时右侧补零
-            pad = torch.zeros((state.num_envs, K - net.shape[1]), device=self.device)
-            nearest = torch.cat([nearest, pad], dim=1)
-        # 映射到正域并取log，再对K取均值
-        closest_reward = torch.log(nearest.clamp(min=1e-6, max=self.lidar_range))  # [N,K]
+            # When T < K, do not pad zeros; use available obstacles only
+            nearest = net  # [N,T]
+        # Map to positive domain, take log, then average over the last dimension
+        closest_reward = torch.log(nearest.clamp(min=1e-6, max=self.lidar_range))  # [N,K] or [N,T]
+        closest_reward = closest_reward.clamp(min=-1.0, max=1.0)
         return closest_reward.mean(dim=-1)  # [N]
     def _penalty_smoothness(self, state: EnvState) -> torch.Tensor:
         # 计算前后两帧之间的2d速度差的norm, 系数是-0.1
@@ -559,9 +560,9 @@ class NavrlRewardModule(RewardModule):
                 full = torch.zeros(state.ego_drone.velocities.shape[0], device=self.device)
                 full[: self.prev_vel_2d.shape[0]] = self.prev_vel_2d
                 self.prev_vel_2d = full
-            self.prev_vel_2d[env_ids] = state.ego_drone.velocities[env_ids, :, :2].clone()
+            self.prev_vel_2d[env_ids] = 0.0
         else:
-            self.prev_vel_2d = state.ego_drone.velocities[:, :, :2].clone()
+            self.prev_vel_2d = state.ego_drone.velocities[:, :, :2].squeeze(1).clone()# [N,2]
 # -------------------- Modular Reward Manager --------------------
 @configclass
 class RewardManagerCfg:

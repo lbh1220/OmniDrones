@@ -446,7 +446,7 @@ class DynamicObstacleObservationModule(ObservationModule):
     def __init__(self, cfg):
         super().__init__(cfg)
         self.dynamic_obstacle_dim = 6
-        self.dynamic_obstacle_num = 5
+        self.dynamic_obstacle_num = getattr(cfg, 'dynamic_obstacle_num', 5)
         # 固定使用角度+距离编码，输出维度恒为6: [sin(theta), cos(theta), 1/(d+1), vel_x, vel_y, radius]
     def process_observation(self, state: EnvState) -> dict:
         device = state.device

@@ -45,10 +45,11 @@ class MetricsManager:
     - Published destination: extras['metrics'] as a flat dict of scalar metrics.
     """
 
-    def __init__(self, num_envs: int, device: torch.device, queue_size: int = 100):
+    def __init__(self, num_envs: int, device: torch.device, queue_size: int = 100, use_skrl: bool = True):
         self.num_envs = num_envs
         self.device = device
         self.modules: List[MetricModule] = []
+        self.use_skrl = use_skrl
 
         # Pointers to env/state will be set at initialization
         self.env = None
@@ -76,7 +77,25 @@ class MetricsManager:
         # Publish as flat keys to satisfy SB3 wrapper (no nested dicts except 'log')
         # Keys will be written as: "metrics/<name>"
         for name, value in merged.items():
-            self.env.extras[f"metrics/{name}"] = value
+            if self.use_skrl:
+                # self.env.extras需要有eposide这个key，并且这个key下必须是字典，每个subkey是一个tensor标量
+                # 只记录rolling的指标, episode的记录抖动会比较严重
+                if not name.startswith('rolling'):   
+                    continue
+                if 'episode' not in self.env.extras:
+                    self.env.extras['episode'] = {} 
+                # 将指标值转换为 [1] 形状的标量tensor（多元素取mean）
+                if isinstance(value, torch.Tensor):
+                    if value.numel() == 1:
+                        scalar = value.reshape(1)
+                    else:
+                        scalar = value.float().mean().reshape(1)
+                else:
+                    # 非tensor，转为tensor并放到manager设备
+                    scalar = torch.tensor([float(value)], device=self.device)
+                self.env.extras['episode'][name] = scalar
+            else:
+                self.env.extras[f"metrics/{name}"] = value
 
     def on_reset(self, env_ids: torch.Tensor):
         for m in self.modules:

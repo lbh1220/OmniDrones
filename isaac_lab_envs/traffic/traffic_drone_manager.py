@@ -171,6 +171,7 @@ class TrafficDroneManager:
         """Compute and write waypoint paths from current starts to targets using the global planner.
         Fallback to straight line if planner unavailable or path not found.
         """
+        # TODO：如果global path过长超过了max_waypoints，需要进行截断，并将截断后的last waypoint作为target position
         if self.state.target_positions.numel() == 0:
             return
         if drones_ids is None:

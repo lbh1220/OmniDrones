@@ -26,7 +26,7 @@ class NavRLFeaturesNetwork(Model):
             nn.Conv2d(in_channels=lidar_c, out_channels=4, kernel_size=[5, 3], padding=[2, 1]), nn.ELU(), 
             nn.Conv2d(in_channels=4, out_channels=16, kernel_size=[5, 3], stride=[2, 1], padding=[2, 1]), nn.ELU(),
             nn.Conv2d(in_channels=16, out_channels=16, kernel_size=[5, 3], stride=[2, 2], padding=[2, 1]), nn.ELU(),
-        )
+        ).to(self.device)
         
         # 1.b. 自动计算卷积输出 -> 全连接输入的维度
         # 我们在 __init__ 中只做一次，以避免使用 LazyLinear
@@ -46,7 +46,7 @@ class NavRLFeaturesNetwork(Model):
             Rearrange("n c w h -> n (c w h)"),
             # 替换 LazyLinear: 明确指定 in_features
             nn.Linear(lidar_fc_in_dim, 128), nn.LayerNorm(128),
-        )
+        ).to(self.device)
 
         # --- 2. 动态障碍物分支 ---
         # dyn: (C, N, 10), C=1
@@ -57,11 +57,11 @@ class NavRLFeaturesNetwork(Model):
             nn.LeakyReLU(), nn.LayerNorm(128),
             nn.Linear(128, 64),
             nn.LeakyReLU(), nn.LayerNorm(64),
-        )
+        ).to(self.device)
         
         # --- 3. 共享 MLP 分支 ---
         # 获取 state 维度 (例如: 8)
-        state_dim = self._robot_state_dim(observation_space)
+        state_dim = self._robot_node_dim(observation_space)
         
         # 最终融合: [lidar(128) + state(8) + dyn(64)]
         mlp_input_dim = 128 + 64 + state_dim
@@ -69,7 +69,7 @@ class NavRLFeaturesNetwork(Model):
         self.mlp = nn.Sequential(
             nn.Linear(mlp_input_dim, 256), nn.LeakyReLU(), nn.LayerNorm(256),
             nn.Linear(256, features_dim), nn.LeakyReLU(), nn.LayerNorm(features_dim),
-        )
+        ).to(self.device)
 
         # 初始化权重 (你提供的函数很好)
         self._initialize_weights()
@@ -78,9 +78,9 @@ class NavRLFeaturesNetwork(Model):
         # 计算 (C, N, D) 展平后的大小
         return int(np.prod(obs_space["dynamic_obstacle"].shape))
 
-    def _robot_state_dim(self, obs_space):
-        # 我将 "robot_state" 改为 "state" 以匹配 ppo.py
-        return obs_space["robot_state"].shape[-1]
+    def _robot_node_dim(self, obs_space):
+        # 我将 "robot_node" 改为 "state" 以匹配 ppo.py
+        return obs_space["robot_node"].shape[-1]
         
     def _initialize_weights(self):
         def init_weights(m):
@@ -104,8 +104,10 @@ class NavRLFeaturesNetwork(Model):
         dyn_feat = self.dyn_net(obs["dynamic_obstacle"])
         
         # 3. 获取状态: (B, 8)
-        # 同样, 我将 "robot_state" 改为 "state"
-        state_data = obs["robot_state"]
+        state_data = obs["robot_node"]
+        # state_date might be [B, 1, D], we need to flatten it to [B, D]
+        if state_data.dim() == 3:
+            state_data = state_data.squeeze(1)
         
         # 4. 拼接所有特征
         # (B, 128 + 8 + 64)
