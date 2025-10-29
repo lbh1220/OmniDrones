@@ -34,7 +34,7 @@ from tensordict.tensordict import TensorDict
 
 
 from isaac_lab_envs.direct.mdp.state import EnvState
-from isaac_lab_envs.direct.mdp.metrics import MetricsManager, CrossTrackModule, AccelerationModule, FlagsModule
+from isaac_lab_envs.direct.components.metrics import MetricsManager, CrossTrackModule, AccelerationModule, FlagsModule
 from isaac_lab_envs.direct.mdp.action import ActionManagerCfg, VelocityXYActionManager
 
 

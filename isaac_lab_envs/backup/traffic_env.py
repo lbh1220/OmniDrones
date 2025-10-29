@@ -50,7 +50,7 @@ from tensordict.tensordict import TensorDict
 from torchrl.data import CompositeSpec, UnboundedContinuousTensorSpec
 
 from isaac_lab_envs.direct.nav_env import NavEnvCfg, NavEnv
-from isaac_lab_envs.direct.mdp.metrics import MetricsManager, FlagsModule, CrossTrackModule, AccelerationModule, NearCollisionModule
+from isaac_lab_envs.direct.components.metrics import MetricsManager, FlagsModule, CrossTrackModule, AccelerationModule, NearCollisionModule
 from isaac_lab_envs.traffic import TrafficSimulator, TrafficCfg, TrafficEvtolCfg, TrafficDroneCfg, AreaBoundsCfg
 from isaac_lab_envs.traffic.cfg.config import OrcaCfg
 
