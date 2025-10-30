@@ -173,8 +173,8 @@ def generate_fix_traffic(
 ):
         # evtol在（0, 15) 速度（2，0），两个drones在（-15，-15）和（15，15），速度（1，0）
     flight_height = cfg.flight_height
-    positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
-    velocities = torch.tensor([[2.0, 0.0, 0], [1.0, 0.0, 0], [1.0, 0.0, 0]], device=device)
+    positions = torch.tensor([[0.0, 15.0, flight_height], [15.0, -15.0, flight_height], [-15.0, -15.0, flight_height]], device=device)
+    velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [1.0, 0.0, 0]], device=device)
     types = torch.tensor([2, 1, 1], dtype=torch.long, device=device)
     radii = torch.tensor([cfg.traffic_sim.evtol.safety_radius, cfg.traffic_sim.drone.safety_radius, cfg.traffic_sim.drone.safety_radius], device=device)
     return positions, velocities, types, radii
@@ -184,7 +184,7 @@ def main():
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Test trained SB3 model with vector-field visualization")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/future_penalty/u10e2/fu2e2",
+                        default="runs/traffic/future_penalty/u10e2_r8.0/split_attn/fu-2.0fe-2.0_nopath_1029_152311",
                        help="Path to the trained model directory")
     parser.add_argument("--model_name", type=str, default="final_model.zip", help="Model name")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
@@ -193,7 +193,6 @@ def main():
     # add args, drones_num and evtols_num, drone_future_penalty and evtol_future_penalty
     parser.add_argument("--drones_num", type=int, default=2, help="Number of drones")
     parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
-    parser.add_argument("--use_global_path", action="store_true", default=True, help="Use global path")
     parser.add_argument("--use_rnn", action="store_true", default=True, help="Use RNN-based recurrent policy")
     parser.add_argument("--video", action="store_true", default=True, help="Record video")
     parser.add_argument("--video_interval", type=int, default=1000, help="Video interval")
@@ -263,7 +262,6 @@ def main():
 
     cfg.scene = replace(cfg.scene, num_envs=1)
 
-    cfg.use_global_path = args.use_global_path
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
     # 从保存的配置中加载关键参数
@@ -302,6 +300,8 @@ def main():
     else:
         # Fallback to uniform grid
         grid_xy = build_grid(xmin, xmax, ymin, ymax, args.grid_res)  # [N,2]
+    # 测试30，30这个点
+    # grid_xy = np.array([[30.0, 30.0]], dtype=np.float32)
     num_envs = grid_xy.shape[0]
 
 
@@ -318,7 +318,6 @@ def main():
 
     algo_args.seed = args.seed
     cfg.seed = args.seed
-    cfg.use_global_path = args.use_global_path
     
 
 
@@ -415,6 +414,7 @@ def main():
     unit = torch.where(norm > eps, dir_xy / norm, torch.zeros_like(dir_xy))
     vel_xy_init = unit * float(base_env.cfg.max_speed)
     drone_state[:, 0, 7:9] = vel_xy_init
+    # drone_state[:, 0, 7:9] = 0.0
     drone_state[:, 0, 9] = 0.0
     
 

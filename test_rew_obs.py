@@ -5,7 +5,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.colors import LogNorm
-import seaborn as sns
 
 
 from omni.isaac.lab.app import AppLauncher
@@ -86,8 +85,9 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # 初始化配置和处理器
 cfg = TrafficEnvCfg()
 cfg.rew_drone_future_penalty = -1.0
-cfg.rew_evtol_future_penalty = -1.0
-cfg.rew_evtols_decay_factor = 1.0
+
+cfg.rew_evtol_future_penalty = -20.0
+cfg.rew_evtols_decay_factor = 0.9
 cfg.rew_evtols_threshold_factor = 1.5
 
 obs_processor = TrafficObservationProcessor(cfg, device)
@@ -192,10 +192,10 @@ for i in range(robot_node.shape[0]):
         for k in range(spatial_edges.shape[2]):  # 只显示前5个特征
             print(f"    Feature {k}: {spatial_edges[i, j, k].item():.4f}")
 
-    print("\n--- Detected Human Num ---")
-    detected_human_num = policy_obs['detected_human_num']
-    print(f"Shape: {detected_human_num.shape}")
-    print(f"Content: {detected_human_num[i, 0].item()}")
+    # print("\n--- Detected Human Num ---")
+    # detected_human_num = policy_obs['detected_human_num']
+    # print(f"Shape: {detected_human_num.shape}")
+    # print(f"Content: {detected_human_num[i, 0].item()}")
 
 print("\n--- Raw Data Check ---")
 print(f"Drone state shape: {drone_state.shape}")
@@ -244,6 +244,7 @@ def visualize_traffic_and_penalty():
     type_names = ['eVTOL', 'Drone']
     
     for i, (pos, vel, radius, aircraft_type) in enumerate(zip(positions, velocities, radii, types)):
+        aircraft_type -= 1  # 调整索引：1->0, 2->1
         color = colors[aircraft_type]
         
         # 画安全半径圆圈
@@ -334,6 +335,7 @@ def visualize_traffic_and_penalty():
     
     # 叠加traffic飞机位置
     for i, (pos, radius, aircraft_type) in enumerate(zip(positions, radii, types)):
+        aircraft_type -= 1  # 调整索引：1->0, 2->1
         color = colors[aircraft_type]
         
         # 画安全半径圆圈
@@ -387,6 +389,7 @@ def visualize_traffic_and_penalty():
 
     # 叠加traffic飞机位置与安全半径
     for i, (pos, radius, aircraft_type) in enumerate(zip(positions, radii, types)):
+        aircraft_type -= 1  # 调整索引：1->0, 2->1
         color = colors[aircraft_type]
         circle = patches.Circle((pos[0], pos[1]), radius, fill=False, edgecolor=color, linewidth=2)
         ax3.add_patch(circle)
@@ -403,6 +406,8 @@ def visualize_traffic_and_penalty():
     ax3.set_ylim(-30, 30)
 
     plt.tight_layout()
+    plt.savefig("traffic_future_penalty_visualization.png", dpi=300)
+    plt.savefig("traffic_future_penalty_visualization.svg")
     plt.show()
     
     # 打印一些统计信息

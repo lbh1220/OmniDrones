@@ -481,3 +481,321 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
         
         
         return {"policy": policy_obs}
+
+
+
+def transform_to_robot_frame_batch(
+    world_vectors: torch.Tensor,
+    robot_pos_world: torch.Tensor,
+    robot_yaw_world: torch.Tensor,
+) -> torch.Tensor:
+    """
+    将世界坐标系下的一批向量 (N, ..., 2) 转换到机器人局部坐标系。
+    
+    Args:
+        world_vectors: 世界坐标系下的向量 [N, ..., 2]。可以是相对位置或绝对速度。
+        robot_pos_world: 机器人在世界坐标系下的位置 [N, 1, 2] 或 [N, 2]。
+        robot_yaw_world: 机器人在世界坐标系下的朝向 (rad) [N, 1] 或 [N]。
+    """
+    if robot_pos_world.dim() > world_vectors.dim():
+        robot_pos_world = robot_pos_world.squeeze(1)
+    if robot_yaw_world.dim() > world_vectors.dim():
+        robot_yaw_world = robot_yaw_world.squeeze(1)
+
+    # 1. 计算相对位置（如果输入是绝对位置）
+    #    在 DRL-VO 中，我们通常传入的已经是相对位置 (rel_pos) 或绝对速度 (vel)
+    #    对于速度，我们只旋转它。对于相对位置，我们也只旋转它。
+    #    因此，这个函数假设 world_vectors 要么是 (traffic_pos - robot_pos)，要么是 traffic_vel。
+    
+    # 2. 旋转
+    # 我们要旋转到机器人坐标系，所以使用 -yaw
+    yaw = -robot_yaw_world
+    
+    # 扩展 yaw 以匹配 world_vectors 的维度
+    while yaw.dim() < world_vectors.dim():
+        yaw = yaw.unsqueeze(-1)
+        
+    cos_yaw = torch.cos(yaw)
+    sin_yaw = torch.sin(yaw)
+    
+    wx = world_vectors[..., 0]
+    wy = world_vectors[..., 1]
+    
+    rx = cos_yaw * wx - sin_yaw * wy
+    ry = sin_yaw * wx + cos_yaw * wy
+    
+    return torch.stack([rx, ry], dim=-1)
+
+
+class DrlVoObservationProcessor:
+    """
+    为 DRL-VO 算法生成观测数据的处理器。
+    遵循 Isaac Lab 的并行化（tensor-based）设计。
+    生成与 DRL-VO 论文  一致的观测数据。
+    """
+    def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
+        self.cfg = cfg
+        self.device = device
+        self.num_envs = cfg.num_envs
+
+        # DRL-VO 网格参数
+        self.grid_size = (80, 80)
+        self.grid_res = 1.0  # meters / cell
+        self.grid_shape_m = (80.0, 80.0)  # (x_range, y_range)
+
+        # DRL-VO 激光雷达历史参数 [cite: 205, 217]
+        self.lidar_history_len = 10  # 10 帧 @ 20Hz = 0.5s
+        
+        # 假设激光雷达点数
+        # 论文 [cite: 445] 提到 1080 个点 (UTM-30LX)。
+        # `cnn_data_pub.py` 使用 720 个点。
+        # `custom_cnn_full.py` 期望 6400 个值 (80*80)。
+        
+        # 论文中最合理的解释是 [cite: 212] "min+avg pooling" 
+        # 我们假设有 3200 个激光点。
+        # (Min(scans_over_time) [3200] + Avg(scans_over_time) [3200]) = 6400 -> 80x80
+        self.lidar_points = getattr(cfg, "lidar_points", 3200)
+        
+        # 初始化激光雷达历史缓冲区
+        self.lidar_history_buffer = torch.zeros(
+            (self.num_envs, self.lidar_history_len, self.lidar_points),
+            device=self.device
+        )
+        
+        # 用于行人网格“splatting”的坐标（处理半径）
+        # 我们将为每个行人创建一个小的核，而不是循环
+        self.max_radius_cells = int(np.ceil(cfg.traffic_sim.max_safety_radius / self.grid_res))
+        splat_range = torch.arange(-self.max_radius_cells, self.max_radius_cells + 1, device=self.device)
+        splat_xx, splat_yy = torch.meshgrid(splat_range, splat_range, indexing="ij")
+        self.splat_kernel_indices = torch.stack([splat_xx, splat_yy], dim=-1).view(1, 1, -1, 2)  # [1, 1, K*K, 2]
+        self.splat_kernel_size = self.splat_kernel_indices.shape[2]
+
+    def generate_policy_obs_dict(self) -> dict:
+        """
+        生成 DRL-VO 策略的观测空间字典。
+        我们将 `ped_map` 和 `scan_map` 组合成一个 `cnn_input`。
+        并将 `subgoal` 和 `robot_vel` 组合成一个 `vector_input`。
+        """
+        policy_space_dict = {
+            # 论文中 CNN 的输入是 3 通道 (2 ped + 1 lidar) [cite: 192, 175, 178]
+            "cnn_input": gym.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(3, self.grid_size[0], self.grid_size[1]), dtype=np.float32
+            ),
+            # (rel_subgoal_x, rel_subgoal_y) + (robot_vx, robot_vy)
+            "vector_input": gym.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32
+            ),
+        }
+        return policy_space_dict
+
+    def process_observation(self, state: EnvState) -> dict:
+        """
+        并行处理 num_envs 个环境的观测数据。
+        """
+        # 1. 计算行人/交通图 (ped_map)
+        ped_map = self._compute_ped_map(state)  # [N, 2, 80, 80]
+        
+        # 2. 计算激光雷达图 (scan_map)
+        scan_map = self._compute_scan_map(state)  # [N, 1, 80, 80]
+        
+        # 3. 计算向量输入 (subgoal, robot_vel)
+        vector_input = self._compute_vector_input(state)  # [N, 4]
+        
+        # 4. 组合 CNN 输入
+        # 论文 [cite: 192] (图2) 和代码 确认
+        # 3个通道被拼接 (cat) 在一起
+        cnn_input = torch.cat([ped_map, scan_map], dim=1)  # [N, 3, 80, 80]
+        
+        policy_obs = {
+            "cnn_input": cnn_input,
+            "vector_input": vector_input,
+        }
+        
+        return {"policy": policy_obs}
+
+    def _compute_ped_map(self, state: EnvState) -> torch.Tensor:
+        """
+        并行计算行人速度图 ( $2 \times 80 \times 80$ )。
+        """
+        num_envs = self.num_envs
+        # 假设 traffic.positions 是全局的 [total_traffic, 3]
+        # 并且 EnvState 提供了所有 traffic 的信息
+        if state.traffic.positions.numel() == 0:
+            return torch.zeros((num_envs, 2, 80, 80), device=self.device)
+
+        # 提取 ego 状态 (世界坐标系)
+        robot_pos = state.ego_drone.drone_state[:, :, :2]  # [N, 1, 2]
+        robot_yaw = state.ego_drone.drone_state[:, :, 6].unsqueeze(-1)  # [N, 1] (假设第6维是yaw)
+        
+        # 提取 traffic 状态 (世界坐标系)
+        # 扩展为 [1, M, 2] 以便与 [N, 1, 2] 广播
+        traffic_pos = state.traffic.positions[:, :2].unsqueeze(0)    # [1, M, 2]
+        traffic_vel = state.traffic.velocities[:, :2].unsqueeze(0)  # [1, M, 2]
+        traffic_radius = state.traffic.safety_radius.unsqueeze(0) # [1, M]
+
+        # 1. 转换到机器人局部坐标系
+        # 1.1 相对位置 (世界系)
+        rel_pos_world = traffic_pos - robot_pos  # [N, M, 2]
+        # 1.2 相对位置 (机器人系)
+        rel_pos_robot = transform_to_robot_frame_batch(rel_pos_world, 
+                                                       torch.zeros_like(robot_pos), 
+                                                       robot_yaw)  # [N, M, 2]
+        # 1.3 绝对速度 (机器人系)
+        vel_robot = transform_to_robot_frame_batch(traffic_vel, 
+                                                   torch.zeros_like(robot_pos), 
+                                                   robot_yaw)  # [N, M, 2]
+
+        # 2. 过滤在 DRL-VO 观测区外的 traffic
+        x_local = rel_pos_robot[..., 0]
+        y_local = rel_pos_robot[..., 1]
+        
+        mask = (x_local >= 0) & (x_local < self.grid_shape_m[0]) & \
+               (y_local >= -self.grid_shape_m[1] / 2) & (y_local < self.grid_shape_m[1] / 2)
+        # mask shape: [N, M]
+
+        # 3. 计算网格索引
+        # (r, c) 是网格坐标 (row, col)
+        # r 对应 x (前方), c 对应 y (侧方)
+        #
+        r_center = (x_local / self.grid_res).floor()  # [N, M]
+        c_center = (-(y_local - (self.grid_shape_m[1] / 2)) / self.grid_res).floor() # [N, M]
+        
+        # --- 处理行人半径 (你要求的功能) ---
+        # 我们将“splat” (扩展) 每个行人以覆盖其半径
+        radius_cells = (traffic_radius / self.grid_res).ceil().long() # [1, M]
+        
+        # 确保 radius_cells 不超过我们的 splatting 核大小
+        radius_cells = torch.clamp(radius_cells, 0, self.max_radius_cells) # [1, M]
+        
+        # 为每个行人创建其 splatting 索引
+        # [N, M, 1, 2] + [1, 1, K*K, 2] -> [N, M, K*K, 2]
+        center_indices = torch.stack([r_center, c_center], dim=-1).unsqueeze(2)
+        splat_indices = center_indices + self.splat_kernel_indices
+        
+        # [N, M, K*K, 2]
+        
+        # 过滤掉核中超出半径的单元
+        # [1, 1, K*K]
+        kernel_dist_sq = self.splat_kernel_indices[..., 0]**2 + self.splat_kernel_indices[..., 1]**2
+        # [1, M, 1]
+        radius_cells_sq = radius_cells.float().square().unsqueeze(-1)
+        
+        # [N, M, K*K]
+        radius_mask = (kernel_dist_sq <= radius_cells_sq).expand(num_envs, -1, -1)
+
+        # 4. 展平以便使用 scatter (或 index_put_)
+        
+        # 结合观测区域掩码和半径掩码
+        final_mask = mask.unsqueeze(-1) & radius_mask # [N, M, K*K]
+
+        # 展平所有东西
+        
+        # 批次索引 [N] -> [N, 1, 1] -> [N, M, K*K]
+        batch_idx = torch.arange(num_envs, device=self.device).view(num_envs, 1, 1).expand(-1, mask.shape[1], self.splat_kernel_size)
+        
+        flat_batch = batch_idx[final_mask] # [Num_Valid_Cells]
+        flat_r = splat_indices[..., 0][final_mask].long()
+        flat_c = splat_indices[..., 1][final_mask].long()
+
+        # 裁剪索引到网格边界 [0, 79]
+        flat_r = torch.clamp(flat_r, 0, self.grid_size[0] - 1)
+        flat_c = torch.clamp(flat_c, 0, self.grid_size[1] - 1)
+
+        # 准备速度值
+        vx_vals = vel_robot[..., 0].unsqueeze(-1).expand(-1, -1, self.splat_kernel_size) # [N, M, K*K]
+        vy_vals = vel_robot[..., 1].unsqueeze(-1).expand(-1, -1, self.splat_kernel_size) # [N, M, K*K]
+        
+        flat_vx = vx_vals[final_mask]
+        flat_vy = vy_vals[final_mask]
+
+        # 5. 写入网格 (使用 index_put_ 以便并行)
+        # 这种方法用最后一个写入的值覆盖 (与 DRL-VO 的原始实现行为一致)
+        ped_map_vx = torch.zeros((num_envs, 80, 80), device=self.device)
+        ped_map_vy = torch.zeros((num_envs, 80, 80), device=self.device)
+        
+        ped_map_vx[flat_batch, flat_r, flat_c] = flat_vx
+        ped_map_vy[flat_batch, flat_r, flat_c] = flat_vy
+
+        return torch.stack([ped_map_vx, ped_map_vy], dim=1) # [N, 2, 80, 80]
+
+
+    def _compute_scan_map(self, state: EnvState) -> torch.Tensor:
+        """
+        并行计算激光雷达历史图 ( $1 \times 80 \times 80$ )。
+        
+        注意：DRL-VO 论文/代码在如何从 10 帧扫描 [cite: 205] 得到 1x80x80 [cite: 178] 
+        方面存在矛盾。`custom_cnn_full.py` 期望 6400 个值，
+        而 `cnn_data_pub.py` 似乎发布了 7200 个值。
+        
+        我们将采用论文中 Fig. 3a [cite: 239-247] 和 文本 [cite: 212] 描述的最合乎逻辑的
+        高性能解释：
+        1. 随时间取 Min pooling
+        2. 随时间取 Avg pooling
+        3. 拼接 (Concatenate) 两个结果
+        4. Reshape 为 1x80x80
+        
+        这假设总点数 (self.lidar_points) 是 3200。
+        (3200_min + 3200_avg = 6400 = 80*80)
+        """
+        # 假设 state.lidar_data.scan 提供了当前帧 [N, num_points]
+        # (如果 state.lidar_data.scan_buffer 存在，可以直接使用)
+        current_scan = state.lidar_data.scan # [N, self.lidar_points]
+        
+        # 滚动缓冲区
+        self.lidar_history_buffer = torch.roll(self.lidar_history_buffer, shifts=-1, dims=1)
+        self.lidar_history_buffer[:, -1] = current_scan
+
+        # 1. 随时间 Min pooling [cite: 212]
+        min_scan, _ = torch.min(self.lidar_history_buffer, dim=1) # [N, 3200]
+        
+        # 2. 随时间 Avg pooling [cite: 212]
+        avg_scan = torch.mean(self.lidar_history_buffer, dim=1) # [N, 3200]
+        
+        # 3. 拼接
+        scan_features = torch.cat([min_scan, avg_scan], dim=1) # [N, 6400]
+        
+        # 4. Reshape
+        scan_map = scan_features.view(self.num_envs, 1, 80, 80) # [N, 1, 80, 80]
+        
+        return scan_map
+
+    def _compute_vector_input(self, state: EnvState) -> torch.Tensor:
+        """
+        计算非 CNN 的向量输入：(相对子目标, 机器人局部速度)
+        """
+        # 提取 ego 状态 (世界坐标系)
+        robot_pos = state.ego_drone.drone_state[:, :, :2].squeeze(1)  # [N, 2]
+        robot_vel = state.ego_drone.drone_state[:, :, 7:9].squeeze(1) # [N, 2] (假设 7,8 是 vx, vy)
+        robot_yaw = state.ego_drone.drone_state[:, :, 6]            # [N] (假设第6维是yaw)
+
+        # 1. 机器人局部速度
+        # 注意：DRL-VO 的动作空间是局部速度 [cite: 289]。
+        # 你的 `observations.py` > `TrafficObservationProcessor` 也使用 'temporal_edges': robot_vel
+        # 我们假设输入也应该是局部速度，以保持一致性。
+        robot_vel_local = transform_to_robot_frame_batch(robot_vel,
+                                                         torch.zeros_like(robot_pos),
+                                                         robot_yaw) # [N, 2]
+                                                         
+        # 2. 相对子目标 (Subgoal)
+        # DRL-VO 使用 "subgoal" [cite: 219]。
+        # 你的 `NavObservationProcessorWithPath` 包含 `local_goals`，
+        # 这在概念上是相同的。
+        local_goals = state.navigation.local_goals # [N, 1, 3]
+        if local_goals is None:
+            # 如果没有 local_goal，回退到最终目标
+            local_goals = state.navigation.target_positions # [N, 1, 3]
+            
+        local_goal_pos = local_goals[:, :, :2].squeeze(1) # [N, 2]
+        
+        # 2.1 相对子目标 (世界系)
+        rel_goal_world = local_goal_pos - robot_pos # [N, 2]
+        
+        # 2.2 相对子目标 (机器人系)
+        rel_goal_local = transform_to_robot_frame_batch(rel_goal_world,
+                                                        torch.zeros_like(robot_pos),
+                                                        robot_yaw) # [N, 2]
+                                                        
+        # 3. 拼接
+        vector_input = torch.cat([rel_goal_local, robot_vel_local], dim=1) # [N, 4]
+        
+        return vector_input

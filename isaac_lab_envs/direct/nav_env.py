@@ -246,6 +246,7 @@ class NavEnv(DirectRLEnv):
         from isaac_lab_envs.direct.mdp.rewards import NavRewardCalculator
         self.obs_processor = NavObservationProcessor(cfg)
         self.reward_calculator = NavRewardCalculator(cfg)
+        self.reward_calculator.bind_env(self)
 
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""

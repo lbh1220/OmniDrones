@@ -17,7 +17,9 @@ class NavRewardCalculator:
         
         # 势能缓存
         self.previous_potential = None
-    
+        self.env = None
+    def bind_env(self, env):
+        self.env = env
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         """计算基础导航奖励
         
@@ -95,6 +97,7 @@ class TrafficRewardCalculator:
     def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
         self.cfg = cfg
         self.device = device
+        self.env = None
         
         # 奖励配置参数
         self.collision_penalty = cfg.rew_collision
@@ -139,7 +142,8 @@ class TrafficRewardCalculator:
         self.drones_decay_factor = cfg.rew_drones_decay_factor
         self.evtols_threshold_factor = cfg.rew_evtols_threshold_factor
         self.evtols_decay_factor = cfg.rew_evtols_decay_factor
-        
+    def bind_env(self, env):
+        self.env = env
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         """计算复杂奖励
         
@@ -463,7 +467,7 @@ class TrafficRewardCalculator:
         # total_radii 形状 [total_traffic] -> [1, total_traffic, 1]
         collision_thresholds = (total_radii * threshold_factors).view(1, -1, 1) * time_decay
         # 确保阈值不小于基础安全距离
-        collision_thresholds = torch.max(collision_thresholds, total_radii.view(1, -1, 1)) # [1, total_traffic, num_steps]
+        collision_thresholds = torch.max(collision_thresholds, total_radii.view(1, -1, 1)*0.5) # [1, total_traffic, num_steps]
 
         # --- 4. 计算惩罚并找到最小惩罚（最大风险） ---
         # 计算距离与阈值的比率（旧版中的 tooclose_dist）
@@ -483,9 +487,11 @@ class TrafficRewardCalculator:
         # min over dim=2 (time), then min over dim=1 (traffic)
         future_penalty, _ = torch.min(reward_future_matrix, dim=2)
         future_penalty, _ = torch.min(future_penalty, dim=1) # 形状: [num_envs]
-
+        future_penalty = torch.min(future_penalty, torch.zeros_like(future_penalty))
         # 确保惩罚不会是正的
-        return torch.min(future_penalty, torch.zeros_like(future_penalty))
+        if self.env is not None:
+            self.env.extras["future_penalty"] = future_penalty
+        return future_penalty
     
 
     def _compute_ttc_metrics(

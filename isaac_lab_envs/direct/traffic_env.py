@@ -183,6 +183,7 @@ class TrafficEnv(NavEnv):
             from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
             self.obs_processor = TrafficObservationProcessor(cfg)
             self.reward_calculator = TrafficRewardCalculator(cfg)
+        self.reward_calculator.bind_env(self)
 
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""
