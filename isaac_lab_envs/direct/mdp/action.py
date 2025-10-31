@@ -123,8 +123,7 @@ class VelocityXYActionManager(ActionManager):
         if self.cfg.rl_action_frame == "world":
             return velocity_commands.unsqueeze(1) # [num_envs, 1, 2]
         elif self.cfg.rl_action_frame == "body":
-            drone_state = self.env.drone.get_state(env_frame=False)[..., :13]
-            robot_quat = drone_state[:, :, 3:7]
+            robot_quat = self.env.state.ego_drone.rotations
             robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]  # [N,1]
             cy = torch.cos(robot_yaw)
             sy = torch.sin(robot_yaw)
@@ -156,10 +155,13 @@ class VelocityXYActionManager(ActionManager):
 
     def apply_action(self) -> None:
         env = self.env
-        drone_state = env.drone.get_state(env_frame=False)[..., :13]
         if self.command_vel_xy is None:
             self.command_vel_xy = torch.zeros(env.num_envs, 1, 2, device=env.device)
             env.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
+        drone_state = env.drone.get_state(env_frame=False)[..., :13]
+        if torch.isnan(drone_state).any():
+            print(f"ActionManager: drone_state is nan: {drone_state}")
+            return
         target_height = env.cfg.flight_height * torch.ones(env.num_envs, 1, 1, device=env.device)
         rotor_commands = env.controller.compute(
             root_state=drone_state,

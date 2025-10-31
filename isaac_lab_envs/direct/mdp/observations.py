@@ -103,12 +103,11 @@ class RobotNodeObservationModule(ObservationModule):
         circle_radius = area_size / 2.0 * 1.4142135623730951
 
         device = state.device
-        drone_state = state.ego_drone.drone_state
         target_pos = state.navigation.target_positions
 
-        robot_pos = drone_state[:, :, :2]  # [N,1,2]
-        robot_vel_world = drone_state[:, :, 7:9]  # [N,1,2]
-        robot_quat = drone_state[:, :, 3:7]
+        robot_pos = state.ego_drone.positions[:, :, :2]  # [N,1,2]
+        robot_vel_world = state.ego_drone.velocities[:, :, :2]  # [N,1,2]
+        robot_quat = state.ego_drone.rotations # [N,1,4]
         robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]  # [N,1]
         cy = torch.cos(robot_yaw)
         sy = torch.sin(robot_yaw)
@@ -122,8 +121,8 @@ class RobotNodeObservationModule(ObservationModule):
                             use_angle_distance_obs, circle_radius, observation_norm_scale)
         vel_body = world_to_body(robot_vel_world, cy, sy)
 
-        robot_radius = torch.full((drone_state.shape[0], 1, 1), cfg.safety_radius, device=device)
-        robot_v_pref = torch.full((drone_state.shape[0], 1, 1), cfg.v_pref, device=device)
+        robot_radius = torch.full((state.ego_drone.positions.shape[0], 1, 1), cfg.safety_radius, device=device)
+        robot_v_pref = torch.full((state.ego_drone.positions.shape[0], 1, 1), cfg.v_pref, device=device)
 
         # [rel_goal(2/3), radius(1), v_pref(1), yaw(1), vel_body(2)]
         robot_node = torch.cat([
@@ -192,8 +191,7 @@ class TrafficStateObservationModule(ObservationModule):
         sensor_range = getattr(cfg, 'observation_radius', 1000.0)
 
         # Ego
-        drone_state = state.ego_drone.drone_state  # [N,1,13]
-        robot_pos = drone_state[:, :, :2]          # [N,1,2]
+        robot_pos = state.ego_drone.positions[:, :, :2]          # [N,1,2]
         # Traffic
         total_traffic_num = self.total_traffic_num
         state_output_dim = self.state_output_dim
@@ -228,7 +226,7 @@ class TrafficStateObservationModule(ObservationModule):
 
         # Relative to each env ego (broadcast)
         rel_pos = traffic_pos_2d.unsqueeze(0) - robot_pos  # [N, T, 2]
-        robot_quat = drone_state[:, :, 3:7]
+        robot_quat = state.ego_drone.rotations # [N,1,4]
         robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]  # [N,1]
         cy = torch.cos(robot_yaw)
         sy = torch.sin(robot_yaw)
@@ -288,9 +286,9 @@ class TrafficSpatialEdgesObservationModule(ObservationModule):
 
         """使用缓存的轨迹数据计算空间边观测
         Returns:
-            spatial_edges: [num_envs, total_traffic_num, spatial_dim]
+            traffic_states: [num_envs, total_traffic_num, spatial_dim]
             visible_masks: [num_envs, total_traffic_num]
-            spatial_types: [num_envs, total_traffic_num] (1=drone, 2=evtol；0=dummy)
+            traffic_types: [num_envs, total_traffic_num] (1=drone, 2=evtol；0=dummy)
         """
         cfg = self.cfg
         predict_steps = getattr(cfg, 'predict_steps', 5)
@@ -312,11 +310,10 @@ class TrafficSpatialEdgesObservationModule(ObservationModule):
         num_envs = state.num_envs
         device = state.device
 
-        drone_state = state.ego_drone.drone_state
-        robot_pos = drone_state[:, :, :2] 
-        robot_vel = drone_state[:, :, 7:9]
+        robot_pos = state.ego_drone.positions[:, :, :2] 
+        robot_vel = state.ego_drone.velocities[:, :, :2]  # [N,1,2]
         traffic_future_traj = state.traffic.traffic_future_traj
-        robot_quat = drone_state[:, :, 3:7]
+        robot_quat = state.ego_drone.rotations # [N,1,4]
         robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]  # [N,1]
         cy = torch.cos(robot_yaw)
         sy = torch.sin(robot_yaw)
@@ -328,12 +325,12 @@ class TrafficSpatialEdgesObservationModule(ObservationModule):
         spatial_dim_output = spatial_point_dim * (predict_steps + 1) + 1 # add 1 dim for safety radius
         
         if traffic_future_traj is None or traffic_future_traj.numel() == 0:
-            spatial_edges = torch.zeros(
+            traffic_states = torch.zeros(
                 (num_envs, total_traffic_num, spatial_dim_output), device=device
             )
             visible_masks = torch.zeros((num_envs, total_traffic_num), device=device)
-            spatial_types = torch.zeros((num_envs, total_traffic_num), dtype=torch.long, device=device)
-            return {'spatial_edges': spatial_edges, 'visible_masks': visible_masks, 'spatial_types': spatial_types}
+            traffic_types = torch.zeros((num_envs, total_traffic_num), dtype=torch.long, device=device)
+            return {'traffic_states': traffic_states, 'visible_masks': visible_masks, 'traffic_types': traffic_types}
         
         # 计算相对位置 [num_envs, total_traffic, predict_steps+1, 2]
         traffic_pos_2d = traffic_future_traj[:, :, :2]  # [total_traffic, predict_steps+1, 2]
@@ -361,8 +358,8 @@ class TrafficSpatialEdgesObservationModule(ObservationModule):
         predicted_flat = torch.cat([predicted_flat, expanded_radius], dim=-1) # [num_envs, total_traffic, spatial_dim+1]
         
         # 1. 创建一个包含所有有效数据的基础张量
-        #    注意：我们不再需要预先用 'inf' 填充 spatial_edges
-        base_spatial_edges = predicted_flat
+        #    注意：我们不再需要预先用 'inf' 填充 traffic_states
+        base_traffic_states = predicted_flat
 
         # 2. 准备掩码用于广播
         #    in_range_mask 的形状是 [num_envs, total_traffic_num]
@@ -371,36 +368,36 @@ class TrafficSpatialEdgesObservationModule(ObservationModule):
         mask_expanded = in_range_mask.unsqueeze(-1) # 形状变为: [num_envs, total_traffic_num, 1]
 
         # 3. 使用 torch.where() 进行优雅的条件赋值
-        spatial_edges = torch.where(
+        traffic_states = torch.where(
             mask_expanded,
-            base_spatial_edges,
-            torch.zeros_like(base_spatial_edges)
+            base_traffic_states,
+            torch.zeros_like(base_traffic_states)
         )
-        # spatial_edges的维度是 [num_envs, current_traffic_num, spatial_dim+1]
+        # traffic_states的维度是 [num_envs, current_traffic_num, spatial_dim+1]
         # 但是可能小于total_traffic_num，所以需要cat
-        pad_count = total_traffic_num - spatial_edges.shape[1]
+        pad_count = total_traffic_num - traffic_states.shape[1]
         if pad_count > 0:
-            fill_spatial_edges = torch.zeros((num_envs, pad_count, spatial_dim_output), device=device)
-            spatial_edges = torch.cat([spatial_edges, fill_spatial_edges], dim=1)
+            fill_traffic_states = torch.zeros((num_envs, pad_count, spatial_dim_output), device=device)
+            traffic_states = torch.cat([traffic_states, fill_traffic_states], dim=1)
 
-        # 生成spatial_types并pad（1=drone, 2=evtol；0=dummy）
+        # 生成traffic_types并pad（1=drone, 2=evtol；0=dummy）
         base_types = state.traffic.traffic_types  # [total_traffic]
         if base_types is None or base_types.numel() == 0:
-            spatial_types = torch.zeros((num_envs, total_traffic_num), dtype=torch.long, device=device)
+            traffic_types = torch.zeros((num_envs, total_traffic_num), dtype=torch.long, device=device)
         else:
             expanded_types = base_types.view(1, -1).expand(num_envs, -1).to(device=device)
             if pad_count > 0:
                 fill_types = torch.zeros((num_envs, pad_count), dtype=torch.long, device=device)
-                spatial_types = torch.cat([expanded_types, fill_types], dim=1)
+                traffic_types = torch.cat([expanded_types, fill_types], dim=1)
             else:
-                spatial_types = expanded_types
+                traffic_types = expanded_types
         
         # 生成visible_masks并pad
         visible_masks = in_range_mask
         if pad_count > 0:
             fill_masks = torch.zeros((num_envs, pad_count), dtype=visible_masks.dtype, device=device)
             visible_masks = torch.cat([visible_masks, fill_masks], dim=1)
-        return {'spatial_edges': spatial_edges, 'visible_masks': visible_masks, 'spatial_types': spatial_types}
+        return {'traffic_states': traffic_states, 'visible_masks': visible_masks, 'traffic_types': traffic_types}
 
     def get_observation_space(self) -> dict:
         cfg = self.cfg
@@ -414,9 +411,9 @@ class TrafficSpatialEdgesObservationModule(ObservationModule):
         evtol_num = getattr(cfg.traffic_sim, 'num_evtols', 0)
         total_traffic_num = max(drone_num + evtol_num, 20)
         return {
-                'spatial_edges': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(total_traffic_num, spatial_dim_output), dtype=np.float32),
+                'traffic_states': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(total_traffic_num, spatial_dim_output), dtype=np.float32),
                 'visible_masks': gym.spaces.Box(low=0.0, high=1.0, shape=(total_traffic_num,), dtype=np.float32),
-                'spatial_types': gym.spaces.Box(low=0, high=2, shape=(total_traffic_num,), dtype=np.int64),
+                'traffic_types': gym.spaces.Box(low=0, high=2, shape=(total_traffic_num,), dtype=np.int64),
                 }
 
 class LidarObservationModule(ObservationModule):
@@ -428,10 +425,10 @@ class LidarObservationModule(ObservationModule):
         lidar_range = getattr(cfg, 'lidar_range', 10.0)
         lidar_resolution = getattr(cfg, 'lidar_resolution', (36, 4))
         if state.perception.lidar_scan is not None:
-            lidar_scan = state.perception.lidar_scan / lidar_range
+            lidar_scan = state.perception.lidar_scan.clamp(min=0.0, max=lidar_range) / lidar_range
         else:
             h, w = lidar_resolution
-            lidar_scan = torch.zeros(state.ego_drone.drone_state.shape[0], 1, h, w, device=state.device)
+            lidar_scan = torch.zeros(state.num_envs, 1, h, w, device=state.device)
         return {'lidar': lidar_scan}
 
 
@@ -453,16 +450,15 @@ class DynamicObstacleObservationModule(ObservationModule):
         K = int(self.dynamic_obstacle_num)
 
         # Ego
-        drone_state = state.ego_drone.drone_state  # [N,1,13]
-        robot_pos = drone_state[:, :, :2]          # [N,1,2]
-        robot_quat = drone_state[:, :, 3:7]
+        robot_pos = state.ego_drone.positions[:, :, :2]          # [N,1,2]
+        robot_quat = state.ego_drone.rotations # [N,1,4]
         robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]  # [N,1]
         cy = torch.cos(robot_yaw)
         sy = torch.sin(robot_yaw)
 
         # Traffic empty -> zeros
         if state.traffic is None:
-            return {'dynamic_obstacle': torch.zeros((state.num_envs, 1, K, self.dynamic_obstacle_dim), device=device)}
+            return {'traffic_states': torch.zeros((state.num_envs, 1, K, self.dynamic_obstacle_dim), device=device)}
 
         traffic_pos = state.traffic.traffic_positions  # [T,3]
         traffic_vel = state.traffic.traffic_velocities # [T,3]
@@ -470,7 +466,7 @@ class DynamicObstacleObservationModule(ObservationModule):
         if (traffic_pos is None or traffic_pos.numel() == 0 or
             traffic_vel is None or traffic_vel.numel() == 0 or
             traffic_rad is None or traffic_rad.numel() == 0):
-            return {'dynamic_obstacle': torch.zeros((state.num_envs, 1, K, self.dynamic_obstacle_dim), device=device)}
+            return {'traffic_states': torch.zeros((state.num_envs, 1, K, self.dynamic_obstacle_dim), device=device)}
 
         # Shapes and relative/body-frame features
         N = state.num_envs
@@ -505,12 +501,12 @@ class DynamicObstacleObservationModule(ObservationModule):
             gathered = torch.zeros((N, K, feats.shape[-1]), device=device)
 
         dynamic_obs = gathered.unsqueeze(1)  # [N,1,K,6]
-        return {'dynamic_obstacle': dynamic_obs}
+        return {'traffic_states': dynamic_obs}
 
     def get_observation_space(self) -> dict:
 
         return {
-                'dynamic_obstacle': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.dynamic_obstacle_num, self.dynamic_obstacle_dim), dtype=np.float32),
+                'traffic_states': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.dynamic_obstacle_num, self.dynamic_obstacle_dim), dtype=np.float32),
                 }
 
 
@@ -523,7 +519,7 @@ class ObservationManagerCfg:
 OBSERVATION_MODULES: dict[str, type[ObservationModule]] = {
     "robot_node": RobotNodeObservationModule,
     "traffic_state": TrafficStateObservationModule,
-    "traffic_spatial_edges": TrafficSpatialEdgesObservationModule,
+    "traffic_spatial_state": TrafficSpatialEdgesObservationModule,
     "lidar": LidarObservationModule,
     "dynamic_obstacle": DynamicObstacleObservationModule,
 }

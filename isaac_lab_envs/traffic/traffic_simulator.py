@@ -147,6 +147,7 @@ class TrafficSimulator:
         Execute one simulation step.
         this one is deprecated
         """
+        raise NotImplementedError("TrafficSimulator.step is deprecated")
         # if not self.is_initialized:
         #     self.initialize()
 
@@ -162,12 +163,13 @@ class TrafficSimulator:
         
         # self.step_count += 1
 
-        self._pre_physics_step(dt)
-        self._apply_actions()
-        self._post_physics_step()
+        # self._pre_physics_step(dt)
+        # self._apply_actions()
+        # self._post_physics_step()
     
     def get_aircraft_states(self) -> Dict[str, torch.Tensor]:
         """Get states of all traffic aircraft."""
+        raise NotImplementedError("TrafficSimulator.get_aircraft_states is not safe")
         states = {}
         
         # Get drone states

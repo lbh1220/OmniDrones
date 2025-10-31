@@ -344,6 +344,9 @@ class TrafficDroneManager:
 
     def _apply_actions(self):
         drone_state = self.drone.get_state(env_frame=False)[..., :13]
+        if torch.isnan(drone_state).any():
+            print(f"TrafficDroneManager: drone_state is nan: {drone_state}")
+            return
         target_vel_xy = self.state.velocity_commands.unsqueeze(0)
         target_vel_xy = target_vel_xy[:, :, :2]
         target_yaws = torch.zeros(1, self.num_drones, 1, device=self.device)
@@ -359,7 +362,10 @@ class TrafficDroneManager:
         
     def _post_physics_step(self):
         # 更新state的内容，用于提供observations
-        self._update_state_manager()
+        need_reset = self._update_state_manager()
+        if need_reset: # 有nan值，直接reset整个drone manager
+            self.reset()
+            return
         collided = self.detect_collision()
         # 对发生碰撞的无人机，重新生成目标并规划路径，同时暂时将速度指令清零以稳定
         if torch.any(collided):
@@ -408,34 +414,28 @@ class TrafficDroneManager:
         return collided
 
     def get_positions(self) -> torch.Tensor:
-        """Get positions of all drones.
-        
-        Returns:
-            Tensor of shape [1, N, 3] containing drone positions
-        """
-        if self.drone is None:
-            return torch.empty(1, 0, 3, device=self.device)
-        return self.drone.pos
+        """获取无人机位置 [1, N, 3]"""
+        return self.state.positions.unsqueeze(0)
     
     def get_velocities(self) -> torch.Tensor:
-        """Get velocities of all drones.
-        
-        Returns:
-            Tensor of shape [1, N, 3] containing drone linear velocities
-        """
-        if self.drone is None:
-            return torch.empty(1, 0, 3, device=self.device)
-        return self.drone.vel[:, :, :3]  # Get only linear velocities
+        """获取无人机速度 [1, N, 3]"""
+        return self.state.velocities.unsqueeze(0)
     
+    def get_rotations(self) -> torch.Tensor:
+        """获取无人机姿态 [1, N, 4]"""
+        return self.state.rotations.unsqueeze(0)
+
     def get_states(self) -> torch.Tensor:
-        """Get full states of all drones.
+        """获取完整状态 [1, N, 13]"""
+        # 将位置、姿态、速度、角速度拼接成13维状态
+        states = torch.cat([
+            self.state.positions,          # [N, 3]
+            self.state.rotations,          # [N, 4]
+            self.state.velocities,         # [N, 3]
+            self.state.angular_velocities  # [N, 3]
+        ], dim=-1)  # [N, 13]
         
-        Returns:
-            Tensor of shape [1, N, 13] containing full drone states
-        """
-        if self.drone is None:
-            return torch.empty(1, 0, 13, device=self.device)
-        return self.drone.get_state(env_frame=False)
+        return states.unsqueeze(0)  # [1, N, 13]
     
     def get_targets(self) -> torch.Tensor:
         """Get current targets for all drones.
@@ -447,9 +447,15 @@ class TrafficDroneManager:
     
     def _update_state_manager(self):
         """更新状态管理器中的运动状态"""
+        need_reset = False
         if self.drone is None:
-            return
-        self.drone.get_state(env_frame=False)
+            need_reset = True
+            return need_reset
+        drone_state = self.drone.get_state(env_frame=False)
+        if torch.isnan(drone_state).any():
+            print(f"TrafficDroneManager: drone_state is nan: {drone_state}")
+            need_reset = True
+            return need_reset
         # 直接更新state中的运动状态
         self.state.positions = self.drone.pos.squeeze(0)  # [1, N, 3] -> [N, 3]
         self.state.velocities = self.drone.vel[:, :, :3].squeeze(0)  # [1, N, 3] -> [N, 3] 
@@ -532,14 +538,15 @@ class TrafficDroneManager:
         
         self.reset_drones()
         # 重置速度参数为配置值
+        # 初始化状态管理器, 防止有nan值被继续传递
+        names = [f"traffic_drone_{i}" for i in range(self.num_drones)]
+        aircraft_types = ["drone"] * self.num_drones
         safety_radius = [self.safety_radius] * self.num_drones
         max_speed = [self.max_speed] * self.num_drones
         min_speed = [self.min_speed] * self.num_drones
         v_pref = [self.v_pref] * self.num_drones
-        self.state.max_speed = torch.tensor(max_speed, device=self.device)
-        self.state.min_speed = torch.tensor(min_speed, device=self.device)
-        self.state.v_pref = torch.tensor(v_pref, device=self.device)
-        self.state.safety_radius = torch.tensor(safety_radius, device=self.device)
+        self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, min_speed, v_pref, self.device)
+
         self.random_attributes(self.config.drone.random_speed, self.config.drone.random_safety_radius)
 
 

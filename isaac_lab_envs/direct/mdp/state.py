@@ -15,7 +15,7 @@ class EgoDroneNamespace:
     drone_state: torch.Tensor = None         # 完整的无人机状态 [num_envs, 1, 13+]
     positions: torch.Tensor = None           # 位置 [num_envs, 1, 3]
     velocities: torch.Tensor = None          # 速度 [num_envs, 1, 3] 
-    rotations: torch.Tensor = None           # 旋转四元数 [num_envs, 1, 4]
+    rotations: torch.Tensor = None           # 旋转四元数 [num_envs, 1, 4], w,x,y,z
     angular_velocities: torch.Tensor = None  # 角速度 [num_envs, 1, 3]
     
     # 控制相关
@@ -217,15 +217,15 @@ class EnvState:
     def update_ego_drone_state(self, drone_state: torch.Tensor):
         """更新自车无人机状态"""
         self.ego_drone.drone_state = drone_state
+        if torch.isnan(drone_state).any():
+            print(f"drone_state is nan: {drone_state}")
+            return
+        if drone_state.shape[-1] > 13:
         # 从完整状态中提取各个组件
-        self.ego_drone.positions = drone_state[:, :, :3]
-
-        if self.ego_drone.velocities is not None:
-            self.ego_drone.previous_velocities = self.ego_drone.velocities.clone()
-        self.ego_drone.velocities = drone_state[:, :, 7:10] if drone_state.shape[-1] > 10 else None
-
-        
-        # 可以根据需要提取更多组件
+            self.ego_drone.positions = drone_state[:, :, :3].clone()
+            self.ego_drone.velocities = drone_state[:, :, 7:10].clone()
+            self.ego_drone.rotations = drone_state[:, :, 3:7].clone()
+            self.ego_drone.angular_velocities = drone_state[:, :, 10:13].clone()
         
     def update_navigation_distances(self):
         """更新导航距离信息"""
@@ -381,6 +381,7 @@ class EnvState:
         scan = lidar_range - (
             (hits - origins.unsqueeze(1)).norm(dim=-1).clamp_max(lidar_range)
         )
+        scan = scan.clamp(min=0.0, max=lidar_range)
         scan = scan.reshape(self.num_envs, 1, lidar_resolution[0], lidar_resolution[1])
         self.perception.lidar_scan = scan
     def update_navigation_state_vectorized(self, lookahead_distance: float = 10.0, env_ids: torch.Tensor | None = None):

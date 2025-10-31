@@ -262,12 +262,13 @@ class UamEnv(DirectRLEnv):
         """
         # 如果放在apply action之后，那更新太频繁了
         # 暂时放在get dones之前和reset_idx之后
+        # 应该先更新traffic, 这样方便ego drone的collision detection
         if self.traffic_sim is not None:
             self.traffic_sim._post_physics_step()
             self.traffic_sim.update_traffic_for_env(self.state)
             self.state.traffic.traffic_future_traj = self.traffic_sim.predict_future_positions(self.cfg.predict_steps, self.cfg.pred_timestep)
         
-        # TODO: 更新traffic的观测处理器
+        
 
         # 更新状态对象
         drone_state = self.drone.get_state(env_frame=False)  # [num_envs, 1, 25]
