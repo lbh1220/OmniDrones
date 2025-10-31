@@ -1,0 +1,18 @@
+defaults:
+  - env: navrl
+  - algo: ppo
+  - model: navrl_features
+  - train: default
+  - eval: default
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+project:
+  save_dir_base: runs/city_skrl
+  experiment_name: null   # null -> auto timestamped
+
+

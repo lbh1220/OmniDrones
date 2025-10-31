@@ -1,0 +1,16 @@
+num_episodes: 10
+deterministic: true
+device: cuda
+
+app:
+  headless: false
+  enable_cameras: true
+
+video:
+  enabled: true
+  interval: 1
+  length: 1000
+
+checkpoint_path: null  # required when running eval
+
+

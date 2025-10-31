@@ -1,0 +1,8 @@
+model_class: learning.skrl.custom_agent.SharedAttentionContinuous
+features_extractor_class: learning.skrl.networks.navrl.NavRLFeaturesNetwork
+
+features_dim: 256
+net_arch: [256, 256]
+log_std_init: 0.0
+
+
