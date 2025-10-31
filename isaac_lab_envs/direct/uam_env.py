@@ -289,7 +289,11 @@ class UamEnv(DirectRLEnv):
         observations = self.obs_processor.process_observation(self.state)
         # write to mdp state for cross-component access
         self.state.set_observations(observations)
-        
+        # 逐个key检查是否存在nan值, 这种nan会引起RL的崩溃，是所以必须停止训练
+        for key, value in observations["policy"].items():
+            if torch.isnan(value).any():
+                print(f"UamEnv: {key} is nan: {value}")
+                raise ValueError(f"UamEnv: {key} is nan: {value}")
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
@@ -298,6 +302,9 @@ class UamEnv(DirectRLEnv):
         reward = self.reward_calculator.compute_reward(self.state)
         # write to mdp state
         self.state.set_reward(reward)
+        if torch.isnan(reward).any():
+            print(f"RewardManager: reward is nan: {reward}")
+            raise ValueError(f"RewardManager: reward is nan: {reward}")
         
         return reward
 
@@ -320,6 +327,9 @@ class UamEnv(DirectRLEnv):
         
         # 4. NaN检测
         hasnan = torch.isnan(self.state.ego_drone.drone_state).any(dim=(1, 2))
+        if hasnan.any():
+            # 这种nan可以修复，这里仅打印提醒，不终止训练
+            print(f"UamEnv: hasnan: {hasnan}")
         
         # 终止条件：到达目标、碰撞、高度异常或NaN
         terminated = reached_target_mask | collision_mask | height_abnormal | hasnan

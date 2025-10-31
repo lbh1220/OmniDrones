@@ -163,8 +163,8 @@ class TrafficDroneManager:
             from isaac_lab_envs.utils.map_utils import get_convex_hulls_from_grid
             # 这里需要使用no_extended_grid, 因为ORCA算法本身有safety_space的考虑，如果用extended_grid, 会让行为变得非常保守
             hulls = get_convex_hulls_from_grid(no_extended_grid, bounds, grid_size)
-            from isaac_lab_envs.utils.map_utils import plot_convex_hulls
-            plot_convex_hulls(hulls, "static_obstacles.png")
+            # from isaac_lab_envs.utils.map_utils import plot_convex_hulls
+            # plot_convex_hulls(hulls, "static_obstacles.png")
             self.policy.set_static_obstacles(hulls)
 
     def update_global_path(self, drones_ids: torch.Tensor | None = None):

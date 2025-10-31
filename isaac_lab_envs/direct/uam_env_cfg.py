@@ -325,9 +325,30 @@ class NavrlEnvCfg(UamEnvCfg):
 
     reward_cfg: RewardManagerCfg = RewardManagerCfg(modules=["navrl"])
     observation_cfg: ObservationManagerCfg = ObservationManagerCfg(modules=["robot_node", "lidar", "dynamic_obstacle"])
-    
+    # observation_cfg: ObservationManagerCfg = ObservationManagerCfg(modules=["robot_node", "lidar", "traffic_spatial_state"])
 
     arrival_threshold = -1.0 # navrl不会用到reach goal的termination, 所以这里设置为-1.0
 
     dynamic_obstacle_num = 5
     use_global_path = False
+
+
+    rew_success = 15.0
+    rew_collision = -16.0
+    rew_potential = 0.5
+    rew_action_penalty = -0.0
+    rew_evtol_future_penalty = -0.0
+    rew_drone_future_penalty = -0.0
+    rew_time_penalty = 0.0
+    rew_drones_threshold_factor = 2.0
+    rew_drones_decay_factor = 0.667
+    rew_evtols_threshold_factor = 1.5
+    rew_evtols_decay_factor = 1.0
+    ## drones in previous, 2.0, 0.667; evtols in previous, 1.5, 0.9
+    rew_cross_track_coeff = 0.0
+
+    rew_ttc_threshold = 10.0
+    rew_ttc_alpha = 0.0
+    rew_ttc_beta = 5.0
+    rew_ttc_idle_penalty = 0.0
+    rew_patience_coeff = 0.0

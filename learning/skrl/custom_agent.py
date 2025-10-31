@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from typing import Union, Tuple, Mapping, Any
 
 from skrl.models.torch import Model, CategoricalMixin, GaussianMixin, DeterministicMixin
-from networks.dynamic_traffic import AttentionFeaturesNetwork, CityFeaturesNetwork
 from skrl.utils.spaces.torch import unflatten_tensorized_space
 from networks.beta import BetaMixin
 # Shared model for continuous actions (following official SKRL pattern)
@@ -41,14 +40,14 @@ class SharedAttentionContinuous(GaussianMixin, DeterministicMixin, Model):
         
         # Shared attention features extractor (like SB3 implementation)
         if features_extractor_cls is None:
-            features_extractor_cls = AttentionFeaturesNetwork
+            features_extractor_cls = nn.Module
         if features_extractor_kwargs is None:
             features_extractor_kwargs = {"features_dim": features_dim}
         else:
             if features_extractor_kwargs.get("features_dim") is None:
                 features_extractor_kwargs["features_dim"] = features_dim
         self.features_extractor = features_extractor_cls(
-            observation_space, action_space, device, **features_extractor_kwargs
+            observation_space, **features_extractor_kwargs
         )
         
         # Actor network (separate from critic)
@@ -88,7 +87,7 @@ class SharedAttentionContinuous(GaussianMixin, DeterministicMixin, Model):
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 nn.init.constant_(m.bias, 0)
-        
+        self.features_extractor.apply(init_weights)
         self.actor_net.apply(init_weights)
         self.critic_net.apply(init_weights)
         self.mean_layer.apply(init_weights)
@@ -111,7 +110,7 @@ class SharedAttentionContinuous(GaussianMixin, DeterministicMixin, Model):
         unflattened_states = unflatten_tensorized_space(self.observation_space, flat_states)
         if role == "policy":
             # Extract shared features and pass through actor network
-            features = self.features_extractor.compute(unflattened_states)
+            features = self.features_extractor(unflattened_states)
             self._shared_features = features  # Cache for potential value computation
             actor_output = self.actor_net(features)
             mean_actions = self.mean_layer(actor_output)
@@ -119,7 +118,7 @@ class SharedAttentionContinuous(GaussianMixin, DeterministicMixin, Model):
         elif role == "value":
             # Reuse shared features if available, otherwise compute them
             if self._shared_features is None:
-                features = self.features_extractor.compute(unflattened_states)
+                features = self.features_extractor(unflattened_states)
             else:
                 features = self._shared_features
                 self._shared_features = None  # Reset for next iteration
@@ -157,7 +156,7 @@ class SharedAttentionDiscrete(CategoricalMixin, DeterministicMixin, Model):
         
         # Shared attention features extractor (like SB3 implementation)
         if features_extractor_cls is None:
-            features_extractor_cls = AttentionFeaturesNetwork
+            features_extractor_cls = nn.Module
         if features_extractor_kwargs is None:
             features_extractor_kwargs = {"features_dim": features_dim}
         else:
@@ -203,7 +202,7 @@ class SharedAttentionDiscrete(CategoricalMixin, DeterministicMixin, Model):
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 nn.init.constant_(m.bias, 0)
-        
+        self.features_extractor.apply(init_weights)
         self.actor_net.apply(init_weights)
         self.critic_net.apply(init_weights)
         self.logits_layer.apply(init_weights)
@@ -226,7 +225,7 @@ class SharedAttentionDiscrete(CategoricalMixin, DeterministicMixin, Model):
         unflattened_states = unflatten_tensorized_space(self.observation_space, flat_states)
         if role == "policy":
             # Extract shared features and pass through actor network
-            features = self.features_extractor.compute(unflattened_states)
+            features = self.features_extractor(unflattened_states)
             self._shared_features = features  # Cache for potential value computation
             actor_output = self.actor_net(features)
             logits = self.logits_layer(actor_output)
@@ -234,7 +233,7 @@ class SharedAttentionDiscrete(CategoricalMixin, DeterministicMixin, Model):
         elif role == "value":
             # Reuse shared features if available, otherwise compute them
             if self._shared_features is None:
-                features = self.features_extractor.compute(unflattened_states)
+                features = self.features_extractor(unflattened_states)
             else:
                 features = self._shared_features
                 self._shared_features = None  # Reset for next iteration
@@ -288,7 +287,7 @@ class SharedAttentionGRUContinuous(GaussianMixin, DeterministicMixin, Model):
         # Shared attention features extractor
         # Shared attention features extractor (like SB3 implementation)
         if features_extractor_cls is None:
-            features_extractor_cls = AttentionFeaturesNetwork
+            features_extractor_cls = nn.Module
         if features_extractor_kwargs is None:
             features_extractor_kwargs = {"features_dim": features_dim}
         else:
@@ -353,7 +352,7 @@ class SharedAttentionGRUContinuous(GaussianMixin, DeterministicMixin, Model):
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 nn.init.constant_(m.bias, 0)
-        
+        self.features_extractor.apply(init_weights)
         self.actor_net.apply(init_weights)
         self.critic_net.apply(init_weights)
         self.mean_layer.apply(init_weights)
@@ -436,7 +435,7 @@ class SharedAttentionGRUContinuous(GaussianMixin, DeterministicMixin, Model):
         
         if role == "policy":
             # Extract attention features
-            attention_features = self.features_extractor.compute(unflattened_states)
+            attention_features = self.features_extractor(unflattened_states)
             
             # Process through GRU
             gru_features, new_hidden_states = self._process_gru_sequence(
@@ -463,7 +462,7 @@ class SharedAttentionGRUContinuous(GaussianMixin, DeterministicMixin, Model):
                 self._shared_hidden_states = None
             else:
                 # Compute fresh if not cached
-                attention_features = self.features_extractor.compute(unflattened_states)
+                attention_features = self.features_extractor(unflattened_states)
                 gru_features, new_hidden_states = self._process_gru_sequence(
                     attention_features, hidden_states, terminated
                 )
@@ -513,7 +512,7 @@ class SharedAttentionGRUDiscrete(CategoricalMixin, DeterministicMixin, Model):
         # Shared attention features extractor
         # Shared attention features extractor (like SB3 implementation)
         if features_extractor_cls is None:
-            features_extractor_cls = AttentionFeaturesNetwork
+            features_extractor_cls = nn.Module
         if features_extractor_kwargs is None:
             features_extractor_kwargs = {"features_dim": features_dim}
         else:
@@ -577,7 +576,8 @@ class SharedAttentionGRUDiscrete(CategoricalMixin, DeterministicMixin, Model):
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 nn.init.constant_(m.bias, 0)
-        
+
+        self.features_extractor.apply(init_weights)
         self.actor_net.apply(init_weights)
         self.critic_net.apply(init_weights)
         self.logits_layer.apply(init_weights)
@@ -660,7 +660,7 @@ class SharedAttentionGRUDiscrete(CategoricalMixin, DeterministicMixin, Model):
         
         if role == "policy":
             # Extract attention features
-            attention_features = self.features_extractor.compute(unflattened_states)
+            attention_features = self.features_extractor(unflattened_states)
             
             # Process through GRU
             gru_features, new_hidden_states = self._process_gru_sequence(
@@ -687,7 +687,7 @@ class SharedAttentionGRUDiscrete(CategoricalMixin, DeterministicMixin, Model):
                 self._shared_hidden_states = None
             else:
                 # Compute fresh if not cached
-                attention_features = self.features_extractor.compute(unflattened_states)
+                attention_features = self.features_extractor(unflattened_states)
                 gru_features, new_hidden_states = self._process_gru_sequence(
                     attention_features, hidden_states, terminated
                 )
@@ -726,7 +726,7 @@ class SharedBetaContinuous(BetaMixin, DeterministicMixin, Model):
         
         # Shared attention features extractor (like SB3 implementation)
         if features_extractor_cls is None:
-            features_extractor_cls = AttentionFeaturesNetwork
+            features_extractor_cls = nn.Module
         if features_extractor_kwargs is None:
             features_extractor_kwargs = {"features_dim": features_dim}
         else:
@@ -773,7 +773,7 @@ class SharedBetaContinuous(BetaMixin, DeterministicMixin, Model):
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 nn.init.constant_(m.bias, 0)
-        
+        self.features_extractor.apply(init_weights)
         self.actor_net.apply(init_weights)
         self.critic_net.apply(init_weights)
         self.alpha_layer.apply(init_weights)
@@ -797,7 +797,7 @@ class SharedBetaContinuous(BetaMixin, DeterministicMixin, Model):
         unflattened_states = unflatten_tensorized_space(self.observation_space, flat_states)
         if role == "policy":
             # Extract shared features and pass through actor network
-            features = self.features_extractor.compute(unflattened_states)
+            features = self.features_extractor(unflattened_states)
             self._shared_features = features  # Cache for potential value computation
             actor_output = self.actor_net(features)
             alpha_logits = self.alpha_layer(actor_output)
@@ -806,7 +806,7 @@ class SharedBetaContinuous(BetaMixin, DeterministicMixin, Model):
         elif role == "value":
             # Reuse shared features if available, otherwise compute them
             if self._shared_features is None:
-                features = self.features_extractor.compute(unflattened_states)
+                features = self.features_extractor(unflattened_states)
             else:
                 features = self._shared_features
                 self._shared_features = None  # Reset for next iteration

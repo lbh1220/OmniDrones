@@ -12,6 +12,8 @@ import time
 from datetime import datetime
 import yaml
 import torch
+torch.autograd.set_detect_anomaly(True)
+import numpy as np
 
 # SKRL imports
 from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
@@ -43,16 +45,18 @@ def create_env(cfg, headless=True, record_video=False, video_kwargs=None):
 def create_agent(env, device, args, experient_cfg):
     """创建简化的 PPO agent，复用 SharedAttentionContinuous + CityFeaturesNetwork"""
     from learning.skrl.custom_agent import SharedAttentionContinuous
-    from learning.skrl.networks.navrl import NavRLFeaturesNetwork
+    from learning.skrl.networks.navrl import NavRLFeaturesNetwork, DynamicTrafficNavRLFeaturesNetwork
 
     models = {}
+    features_extractor_cls = DynamicTrafficNavRLFeaturesNetwork if args.use_dynamic_traffic else NavRLFeaturesNetwork
+    # features_extractor_cls = NavRLFeaturesNetwork
     shared_model = SharedAttentionContinuous(
         env.observation_space,
         env.action_space,
         device,
         features_dim=256,
         net_arch=[256, 256],
-        features_extractor_cls=NavRLFeaturesNetwork
+        features_extractor_cls=features_extractor_cls
     )
 
     models["policy"] = shared_model
@@ -108,10 +112,10 @@ def main():
     parser = argparse.ArgumentParser(description="Train City Navigation Environment with SKRL (simplified)")
 
     # Environment parameters
-    parser.add_argument("--num_envs", type=int, default=128)
+    parser.add_argument("--num_envs", type=int, default=512)
 
     # Training parameters
-    parser.add_argument("--total_timesteps", type=int, default=5000000, help="Total timesteps")
+    parser.add_argument("--total_timesteps", type=int, default=100000000, help="Total timesteps")
     parser.add_argument("--learning_rate", type=float, default=4e-5, help="Learning rate")
     parser.add_argument("--n_steps", type=int, default=128, help="Number of steps per update")
     parser.add_argument("--num_mini_batch", type=int, default=32, help="Number of mini batches")
@@ -124,18 +128,20 @@ def main():
     # Experiment parameters
     # drones num, evtols num
     parser.add_argument("--drones_num", type=int, default=10, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
+    parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
     # arrival threshold
     parser.add_argument("--arrival_threshold", type=float, default=None, help="Arrival threshold")
     # Normalization
     parser.add_argument("--norm_obs", action="store_true", help="Normalize observations")
     parser.add_argument("--norm_reward", action="store_true", default=True, help="Normalize rewards")
 
+
+    parser.add_argument("--use_dynamic_traffic", action="store_true", default=False, help="Use dynamic traffic")
     # Device
     parser.add_argument("--device", type=str, default="cuda")
 
     # Video recording
-    parser.add_argument("--video", action="store_true", default=True, help="Record videos")
+    parser.add_argument("--video", action="store_true", default=False, help="Record videos")
     parser.add_argument("--video_interval", type=int, default=10000, help="Video interval (steps)")
     parser.add_argument("--video_length", type=int, default=500, help="Video length (frames)")
     parser.add_argument("--experiment_name", type=str, default=None, help="Experiment name")
@@ -161,6 +167,7 @@ def main():
     from omni.isaac.lab.envs.common import ViewerCfg
 
     # Build env cfg
+    set_seed(args.seed, deterministic=True)
     cfg = NavrlEnvCfg()
     cfg.seed = args.seed
     cfg.scene.num_envs = args.num_envs
@@ -175,11 +182,24 @@ def main():
     cfg.action_manager.action_space_type = "gaussian"
     cfg.action_manager.action_mode = "velocity_components"
 
+    if args.arrival_threshold is not None:
+        cfg.arrival_threshold = args.arrival_threshold
+    # mdp configuration
+    if args.use_dynamic_traffic:
+        cfg.observation_cfg.modules = ["robot_node", "lidar", "traffic_spatial_state"]
+        cfg.reward_cfg.modules = ["nav", "traffic_future"]
+        cfg.rew_evtol_future_penalty = -2.0
+        cfg.rew_drone_future_penalty = -2.0
+        cfg.arrival_threshold = 2.0 # dynamic traffic will use arrival threshold 2.0
+        cfg.predict_steps = 5
+    else:
+        cfg.observation_cfg.modules = ["robot_node", "lidar", "dynamic_obstacle"]
+        cfg.reward_cfg.modules = ["navrl"]
+
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
 
-    if args.arrival_threshold is not None:
-        cfg.arrival_threshold = args.arrival_threshold
+
 
 
     if args.experiment_name is None:
@@ -201,7 +221,7 @@ def main():
 
     # Set device and seed
     device = torch.device(args.device)
-    set_seed(args.seed)
+    
 
     # Video config
     video_kwargs = None
@@ -250,19 +270,19 @@ def main():
     timesteps = args.total_timesteps // args.num_envs
     cfg_trainer = {"timesteps": timesteps, "headless": True}
     trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
-
+    # try:
     print("start training...")
     start_time = time.time()
     trainer.train()
     end_time = time.time()
-
     # Save final model
     agent.save(os.path.join(save_dir, "final_model.pt"))
 
     print(f"\ntraining completed! time: {(end_time - start_time) / 3600:.2f} hours")
-
-    env.close()
-    simulation_app.close()
+    # except会吞掉我的异常，我只需要finally来清理环境
+    # finally:
+    #     env.close()
+    #     simulation_app.close()
 
 
 if __name__ == "__main__":

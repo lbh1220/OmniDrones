@@ -468,20 +468,31 @@ class NavrlRewardModule(RewardModule):
         self.prev_vel_2d: torch.Tensor | None = None
         self.lidar_range = getattr(cfg, 'lidar_range', 10.0)
         self.dynamic_obstacle_num = getattr(cfg, 'dynamic_obstacle_num', 5)
-
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         num_envs = state.num_envs
         reward = torch.zeros(num_envs, device=self.device)
         # 1) 生存奖励 +1
         reward = reward + 1.0
         # 2) 速度沿目标方向分量
-        reward = reward + self._reward_vel(state)
+        reward_vel = self._reward_vel(state)
         # 3) 静态障碍安全 (LiDAR)
-        reward = reward + self._reward_safety_static(state)
+        reward_static = self._reward_safety_static(state)
         # 4) 动态障碍安全 (最近K个)
-        reward = reward + self._reward_safety_dynamic(state)
+        reward_dynamic = self._reward_safety_dynamic(state)
         # 5) 平滑性惩罚（系数 -0.1 已在函数内部体现）
-        reward = reward + self._penalty_smoothness(state)
+        reward_smooth = self._penalty_smoothness(state)
+        reward = reward + reward_vel + reward_static + reward_dynamic + reward_smooth
+        # 检查reward中是否存在nan
+        if torch.isnan(reward).any():
+            print("!!! NaN Reward Detected - Breaking Point !!!")
+            print(f"Total Reward: {reward}")
+            print(f"Components: Vel={reward_vel}, Static={reward_static}, Dynamic={reward_dynamic}, Smooth={reward_smooth}")
+            # 你可以在下面这一行设置断点
+            # (如果你在VS Code中，只需点击行号左侧的红点)
+            pass # <--- 在这里设置你的断点
+            
+            # 或者，如果你不在调试器中运行，可以取消下面这行的注释来强制程序暂停
+            # import pdb; pdb.set_trace()
         return reward
     def _reward_vel(self, state: EnvState) -> torch.Tensor:
         # 计算速度在target上的点积分量，作为奖励
@@ -498,6 +509,7 @@ class NavrlRewardModule(RewardModule):
         goal_dir = torch.where(to_goal_norm > 1e-6, to_goal / to_goal_norm, torch.zeros_like(to_goal))  # [N,1,2]
         # 点积（2D速度在目标方向上的投影）
         proj_speed = (robot_vel_2d * goal_dir).sum(dim=-1).squeeze(1)  # [N]
+        proj_speed = proj_speed.clamp(min=-1.0, max=1.0)
         return proj_speed
     def _reward_safety_static(self, state: EnvState) -> torch.Tensor:
 
@@ -550,6 +562,7 @@ class NavrlRewardModule(RewardModule):
             self.prev_vel_2d = vel_2d.clone()
             return torch.zeros(vel_2d.shape[0], device=self.device)
         delta = torch.norm(vel_2d - self.prev_vel_2d, dim=-1)  # [N]
+        delta = delta.clamp(min=0.0, max=1.0)
         self.prev_vel_2d = vel_2d.clone()
         return -0.1 * delta
 
