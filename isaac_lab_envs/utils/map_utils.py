@@ -369,3 +369,4 @@ def plot_convex_hulls(
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"Hull visualization saved to {output_path}")
+

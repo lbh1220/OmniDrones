@@ -5,10 +5,10 @@ from isaac_lab_envs.utils.path_planner import GlobalPathPlannerCfg
 # 1. 为每一个子配置定义一个独立的 configclass
 @configclass
 class AreaBoundsCfg:
-    xmin: float = -50.0
-    xmax: float = 50.0
-    ymin: float = -50.0
-    ymax: float = 50.0
+    xmin: float = -80.0
+    xmax: float = 80.0
+    ymin: float = -80.0
+    ymax: float = 80.0
     grid_size: float = 1.0
 
 @configclass

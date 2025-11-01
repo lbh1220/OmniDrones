@@ -1,0 +1,22 @@
+name: navrl_attn
+defaults:
+  - /env/dynamic_city@env    # <--- 加载 conf/env/dynamic_city.yaml 到 "env" 键
+  - /model/navrl_attn@model       # <--- 加载 conf/model/navrl.yaml 到 "model" 键
+  - /algo/ppo_skrl@algo      # <--- 加载 conf/algo/ppo_skrl.yaml 到 "algo" 键
+
+# --- 覆盖 ---
+env:
+  observation_cfg:
+    modules: ["robot_node", "lidar", "traffic_spatial_state"] #
+  reward_cfg:
+    modules: ["nav", "traffic_future"] #
+  # ... (其他 env 覆盖)
+  arrival_threshold: 2.0
+  use_global_path: False
+  dynamic_obstacle_num: 5
+  traffic_sim:
+    num_drones: 10
+    num_evtols: 0
+  predict_steps: 5
+  rew_evtol_future_penalty: -2.0
+  rew_drone_future_penalty: -2.0

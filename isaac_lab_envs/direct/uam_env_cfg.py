@@ -13,15 +13,16 @@ from isaac_lab_envs.direct.mdp.action import ActionManagerCfg
 from isaac_lab_envs.direct.mdp.rewards import RewardManagerCfg, RewardManager
 from isaac_lab_envs.direct.mdp.observations import ObservationManagerCfg, ObservationManager
 from isaac_lab_envs.direct.components.map import MapManagerCfg
+from isaac_lab_envs.direct.components.map import UrbanTerrainCfg
 from isaac_lab_envs.utils.path_planner import GlobalPathPlannerCfg
 from isaac_lab_envs.traffic.cfg.config import AreaBoundsCfg, TrafficCfg, OrcaCfg, TrafficEvtolCfg, TrafficDroneCfg
 
 @configclass
 class UamEnvCfg(DirectRLEnvCfg):
     """Configuration for the UAM navigation environment."""
-
+    name: str = "uam_env"
     seed = 42
-    
+    num_envs = 128
     # environment settings
     episode_length_s = 300.0
     decimation = 10  # env step every 1 sim steps
@@ -55,6 +56,7 @@ class UamEnvCfg(DirectRLEnvCfg):
         ),
     )
 
+    urban_terrain: UrbanTerrainCfg = UrbanTerrainCfg()
     terrain: TerrainImporterCfg = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="plane",
@@ -129,11 +131,28 @@ class UamEnvCfg(DirectRLEnvCfg):
     predict_steps: int = 5
     pred_timestep: float = 2.0
 
-    # reward
+
+    dynamic_obstacle_num = 5 # for navrl
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
+    rew_action_penalty = -0.0
+    rew_evtol_future_penalty = -0.0
+    rew_drone_future_penalty = -0.0
+    rew_time_penalty = 0.0
+    rew_drones_threshold_factor = 2.0
+    rew_drones_decay_factor = 0.667
+    rew_evtols_threshold_factor = 1.5
+    rew_evtols_decay_factor = 1.0
+    ## drones in previous, 2.0, 0.667; evtols in previous, 1.5, 0.9
     rew_cross_track_coeff = 0.0
+
+    rew_ttc_threshold = 10.0
+    rew_ttc_alpha = 0.0
+    rew_ttc_beta = 5.0
+    rew_ttc_idle_penalty = 0.0
+    rew_patience_coeff = 0.0
+
 
 @configclass
 class CityUamEnvCfg(UamEnvCfg):
@@ -352,3 +371,4 @@ class NavrlEnvCfg(UamEnvCfg):
     rew_ttc_beta = 5.0
     rew_ttc_idle_penalty = 0.0
     rew_patience_coeff = 0.0
+

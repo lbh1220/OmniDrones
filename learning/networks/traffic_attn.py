@@ -155,6 +155,7 @@ class DynamicTrafficFeaturesExtractor(nn.Module):
     """
     def __init__(self, observation_space: spaces.Dict, features_dim: int = 128, use_type_split: bool = True):
         super().__init__()
+        self.features_dim = features_dim
         
         self.attention_size = 64               # From config: attention_size
         self.use_type_split = use_type_split

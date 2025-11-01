@@ -163,8 +163,8 @@ class TrafficDroneManager:
             from isaac_lab_envs.utils.map_utils import get_convex_hulls_from_grid
             # 这里需要使用no_extended_grid, 因为ORCA算法本身有safety_space的考虑，如果用extended_grid, 会让行为变得非常保守
             hulls = get_convex_hulls_from_grid(no_extended_grid, bounds, grid_size)
-            # from isaac_lab_envs.utils.map_utils import plot_convex_hulls
-            # plot_convex_hulls(hulls, "static_obstacles.png")
+            from isaac_lab_envs.utils.map_utils import plot_convex_hulls
+            plot_convex_hulls(hulls, "static_obstacles.png")
             self.policy.set_static_obstacles(hulls)
 
     def update_global_path(self, drones_ids: torch.Tensor | None = None):
@@ -205,7 +205,8 @@ class TrafficDroneManager:
                 speed = self.state.v_pref[i].clamp(min=self.state.min_speed[i], max=self.state.max_speed[i]).item() if self.state.v_pref.numel() else self.v_pref
                 waypoints[i, :n, 3] = float(speed)
             waypoint_lengths[i] = n
-
+        # from isaac_lab_envs.utils.map_utils import visualize_paths_on_grid
+        # visualize_paths_on_grid(self.state.extended_occupancy_grid, waypoints, waypoint_lengths, self.state.grid_bounds, self.state.grid_size, "traffic_planned_paths.png")
 
 
     def set_targets_for_drones(self, drones_ids: torch.Tensor | None = None):
@@ -529,14 +530,6 @@ class TrafficDroneManager:
         
         if self.num_drones <= 0:
             return
-        
-        self.target_generator.initialize_targets(self.config.drone.target_num)
-        # Generate new positions for all drones (batch)
-        positions_batch = self._generate_random_position(self.num_drones)  # [N, 3]
-        self.reset_positions(positions_batch)
-        self.state.start_positions = positions_batch.clone()
-        
-        self.reset_drones()
         # 重置速度参数为配置值
         # 初始化状态管理器, 防止有nan值被继续传递
         names = [f"traffic_drone_{i}" for i in range(self.num_drones)]
@@ -548,6 +541,14 @@ class TrafficDroneManager:
         self.state.initialize_aircraft(names, aircraft_types, safety_radius, max_speed, min_speed, v_pref, self.device)
 
         self.random_attributes(self.config.drone.random_speed, self.config.drone.random_safety_radius)
+
+        self.target_generator.initialize_targets(self.config.drone.target_num)
+        # Generate new positions for all drones (batch)
+        positions_batch = self._generate_random_position(self.num_drones)  # [N, 3]
+        self.reset_positions(positions_batch)
+        self.state.start_positions = positions_batch.clone()
+        
+        self.reset_drones()
 
 
         # Assign new targets using internal target generator

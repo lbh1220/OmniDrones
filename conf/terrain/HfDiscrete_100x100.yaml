@@ -1,0 +1,31 @@
+# 这是一个可复用的 TerrainGenerator 配置片段
+# 对应 DyanmicUamEnvCfg 中的 terrain.terrain_generator
+
+# 【关键】使用 _target_ 来告诉 Hydra/OmegaConf
+# 当这个片段被加载时，它应该被实例化为什么 Python @configclass
+_target_: omni.isaac.lab.terrains.TerrainGeneratorCfg
+
+# 引用全局种子（${seed}）或硬编码一个值
+seed: ${seed}
+size: [50.0, 50.0]
+border_width: 0.0
+num_rows: 2
+num_cols: 2
+horizontal_scale: 0.5
+vertical_scale: 1.0
+slope_threshold: 0.75
+use_cache: False
+sub_terrains:
+  obstacles:
+    # 嵌套的配置也需要 _target_
+    _target_: omni.isaac.lab.terrains.height_field.hf_terrains_cfg.HfDiscreteObstaclesTerrainCfg
+    size: [50.0, 50.0]
+    horizontal_scale: 0.5
+    vertical_scale: 1.0
+    border_width: 4.0
+    num_obstacles: 4
+    obstacle_height_mode: "fixed"
+    # YAML 中使用列表 [...] 来表示 Python 的元组 (...)
+    obstacle_width_range: [5.0, 12.0]
+    obstacle_height_range: [25.0, 40.0]
+    platform_width: 0.0

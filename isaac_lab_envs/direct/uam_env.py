@@ -68,6 +68,13 @@ class UamEnv(DirectRLEnv):
         if cfg.seed is not None:
             self.seed(cfg.seed)
         # 初始化观测和奖励处理器
+        # debug visualization
+        range_x = cfg.area_bounds.xmax - cfg.area_bounds.xmin
+        cfg.viewer = ViewerCfg(
+            resolution=(1080, 1080),
+            eye=(0, 0.0, range_x*1.75),
+            lookat=(0., 0., 1.)
+        )
 
         self._init_mdp_components(cfg)
         
@@ -95,7 +102,7 @@ class UamEnv(DirectRLEnv):
             self.visualization_manager = VisualizationManager(self)
         self._init_metrics()
 
-        # debug visualization
+
         self.set_debug_vis(self.cfg.debug_vis)
 
     def _init_mdp_components(self, cfg):
@@ -116,6 +123,15 @@ class UamEnv(DirectRLEnv):
         self.metrics.register(CrossTrackModule())
         self.metrics.register(AccelerationModule())
 
+    def _setup_terrain(self):
+        if hasattr(self.cfg, 'urban_terrain'):
+            from isaac_lab_envs.direct.components.map import convert_urban_terrain_cfg_to_terrain_importer_cfg
+            self.cfg.terrain = convert_urban_terrain_cfg_to_terrain_importer_cfg(self.cfg.urban_terrain, self.cfg.seed)
+        # 3. 设置地形
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""
 
@@ -134,13 +150,9 @@ class UamEnv(DirectRLEnv):
             self.traffic_sim = TrafficSimulator(self.cfg.traffic_sim, self.device)
             self.traffic_sim.create_traffic_prim()
 
-        # 3. 设置地形
-        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
-        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
 
         
-
+        self._setup_terrain()
         # 4. 设置传感器（在克隆之前）
         self._setup_lidar()
         
@@ -196,7 +208,7 @@ class UamEnv(DirectRLEnv):
 
         self.map_manager = None
         self.global_path_planner = None
-        if self.cfg.map_cfg is not None:
+        if self.cfg.map_cfg is not None and self.cfg.terrain.terrain_generator is not None:
             self.map_manager = MapManager(self.cfg.map_cfg, self)
             self.map_manager.create_global_point_cloud()
             self.map_manager.create_occupancy_grid()

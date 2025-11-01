@@ -12,6 +12,69 @@ class MapManagerCfg:
     point_cloud_top_z: float = 200.0      # ray start Z
     point_cloud_margin: float = 0.0       # optional margin added around terrain bounds
 
+@configclass
+class UrbanTerrainCfg:
+    terrain_type: str = "plane" # plane, hfdiscrete or some mesh in the future
+    prim_path: str = "/World/ground"
+    size: tuple[float, float] = (50.0, 50.0)
+    num_rows: int = 2
+    num_cols: int = 2
+    obstacle_width_range: tuple[float, float] = (5.0, 12.0)
+    obstacle_height_range: tuple[float, float] = (25.0, 40.0)
+    platform_width: float = 0.0
+    num_obstacles: int = 4
+    border_width: float = 3.0
+
+def convert_urban_terrain_cfg_to_terrain_importer_cfg(input_cfg: UrbanTerrainCfg, seed: int):
+    from omni.isaac.lab.terrains import TerrainImporterCfg, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
+    import omni.isaac.lab.sim as sim_utils
+    if input_cfg.terrain_type == "plane":
+        return TerrainImporterCfg(
+            prim_path=input_cfg.prim_path,
+            terrain_type="plane",
+            collision_group=-1,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                friction_combine_mode="multiply",
+                restitution_combine_mode="multiply",
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=0.0,
+                )
+            )
+    elif input_cfg.terrain_type == "hfdiscrete":
+        return TerrainImporterCfg(
+            prim_path=input_cfg.prim_path,
+            terrain_type="generator",
+            terrain_generator=TerrainGeneratorCfg(
+                seed=seed,
+                size=tuple(input_cfg.size),
+                border_width=0.0,
+                num_rows=input_cfg.num_rows,
+                num_cols=input_cfg.num_cols,
+                horizontal_scale=0.5,
+                vertical_scale=1.0,
+                slope_threshold=0.75,
+                use_cache=False,
+                sub_terrains={"obstacles": HfDiscreteObstaclesTerrainCfg(
+                    size=input_cfg.size,
+                    horizontal_scale=0.5,
+                    vertical_scale=1.0,
+                    border_width=input_cfg.border_width,
+                    num_obstacles=input_cfg.num_obstacles,
+                    obstacle_height_mode="fixed",
+                    obstacle_width_range=tuple(input_cfg.obstacle_width_range),
+                    obstacle_height_range=tuple(input_cfg.obstacle_height_range),
+                    platform_width=input_cfg.platform_width,
+
+                )},
+            ),
+            max_init_terrain_level=5,
+            collision_group=-1,
+            debug_vis=False,
+        )
+    else:
+        raise ValueError(f"Invalid terrain type: {input_cfg.terrain_type}")
+
 
 class MapManager(ABC):
     def __init__(self, cfg: MapManagerCfg, env):

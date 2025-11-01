@@ -1,0 +1,15 @@
+name: navrl_attn
+
+# 1. 【关键】只替换了特征提取器的【类路径】
+features_extractor_cls: "learning.networks.navrl.DynamicTrafficNavRLFeaturesNetwork"
+
+# 2. 主模型参数 (保持不变)
+features_dim: 256
+net_arch: [256, 256]
+
+# 未来如果我要use_rnn, 需要在这里添加
+# 在train的时候，第一步先读了use_rnn, 然后pop了他
+
+# 3. (可选) 特征提取器的参数
+features_extractor_kwargs:
+  {}

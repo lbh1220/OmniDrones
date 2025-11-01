@@ -1,0 +1,7 @@
+name: sac_skrl
+framework: skrl
+
+# SAC 超参数...
+batch_size: 256
+learning_rate: 3e-4
+# ...

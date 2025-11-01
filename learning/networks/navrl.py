@@ -144,7 +144,7 @@ class DynamicTrafficNavRLFeaturesNetwork(nn.Module):
         # 在原始代码中, C (通道数) = 1
         lidar_shape = observation_space["lidar"].shape
         self.lidar_extractor = LidarFeatureExtractor(lidar_shape, lidar_fc_in_dim=128)
-        from networks.dynamic_traffic import DynamicTrafficFeaturesExtractor
+        from .traffic_attn import DynamicTrafficFeaturesExtractor
 
         self.traffic_extractor = DynamicTrafficFeaturesExtractor(observation_space, features_dim=128, use_type_split=True)
         

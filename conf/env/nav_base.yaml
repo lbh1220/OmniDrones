@@ -1,0 +1,41 @@
+# file: conf/env/nav_base.yaml
+
+_target_: isaac_lab_envs.direct.uam_env_cfg.UamEnvCfg
+name: nav_base
+
+
+num_envs: ${num_envs}
+
+drone_model: "hummingbird"
+controller: "PlanarSpeedController"
+flight_height: 20.0
+safety_radius: 1.0
+arrival_threshold: 2.0
+max_speed: 1.0
+min_speed: 0.0
+v_pref: 1.0
+area_bounds:
+  _target_: isaac_lab_envs.traffic.cfg.config.AreaBoundsCfg
+  xmin: -50.0
+  xmax: 50.0
+  ymin: -50.0
+  ymax: 50.0
+  grid_size: 1.0
+
+urban_terrain:
+  _target_: isaac_lab_envs.direct.components.map.UrbanTerrainCfg
+  terrain_type: "plane"
+
+
+# action manager和aera_bounds都在cfg中实例化了，所以不需要_target_
+action_manager:
+  _target_: isaac_lab_envs.direct.mdp.action.ActionManagerCfg
+  action_space_type: "gaussian"
+  action_mode: "velocity_components"
+
+reward_cfg:
+  _target_: isaac_lab_envs.direct.mdp.rewards.RewardManagerCfg
+  modules: ["nav"]
+observation_cfg:
+  _target_: isaac_lab_envs.direct.mdp.observations.ObservationManagerCfg
+  modules: ["robot_node"]

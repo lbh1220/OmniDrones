@@ -1,18 +1,25 @@
-defaults:
-  - env: navrl
-  - algo: ppo
-  - model: navrl_features
-  - train: default
-  - eval: default
-  - _self_
 
+env: ${experiment.env}
+algo: ${experiment.algo}
+model: ${experiment.model}
+# --- 全局变量 ---
+seed: 42
+total_steps: 100_000_000
+device: "cuda:0"
+headless: True
+num_envs: 64
+
+record_video: True
+video_interval: 10000
+video_length: 500
+
+# --- Hydra 配置 ---
 hydra:
   run:
-    dir: .
-  output_subdir: null
-
-project:
-  save_dir_base: runs/city_skrl
-  experiment_name: null   # null -> auto timestamped
-
-
+    dir: outputs/${experiment.name}/${model.name}_${now:%Y%m%d_%H%M}
+  job:
+      chdir: True
+  verbose: []
+defaults:
+  - experiment: debug
+  - _self_                # 4. 【【关键】】加载本文件中的所有其他键

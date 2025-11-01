@@ -1,0 +1,48 @@
+defaults:
+  # 2. 加载 nav_base.yaml 的所有内容
+  # 3. 使用 '@_here_' 将其内容“合并”到当前级别
+  - /env/nav_base@_here_
+  - _self_
+name: dynamic_city
+
+map_cfg:
+  _target_: isaac_lab_envs.direct.components.map.MapManagerCfg
+  point_cloud_resolution: 1.0
+  point_cloud_top_z: 200.0
+  point_cloud_margin: 0.0
+
+urban_terrain:
+  terrain_type: "hfdiscrete"
+  size: [50.0, 50.0]
+  num_rows: 2
+  num_cols: 2
+  obstacle_width_range: [5.0, 12.0]
+  obstacle_height_range: [25.0, 40.0]
+  platform_width: 0.0
+  num_obstacles: 4
+  border_width: 4.0
+
+
+# 启用 traffic_sim (之前是 null)
+traffic_sim:
+  _target_: isaac_lab_envs.traffic.cfg.config.TrafficCfg
+  num_drones: 10
+  num_evtols: 1
+  flight_height: ${env.flight_height}
+  evtol:
+    _target_: isaac_lab_envs.traffic.cfg.config.TrafficEvtolCfg
+    safety_radius: 5.0
+  drone:
+    _target_: isaac_lab_envs.traffic.cfg.config.TrafficDroneCfg
+    safety_radius: 1.0
+  # ... (evtol, drone 的 safety_radius 等) ...
+
+# 指定此环境所需的 MDP 管理器
+reward_cfg:
+  modules: ["nav", "traffic_future", "cross_track"]
+observation_cfg:
+  modules: ["robot_node", "lidar", "traffic_spatial_edges"]
+
+# 指定此环境的奖励参数
+rew_evtol_future_penalty: -2.0
+rew_drone_future_penalty: -2.0

@@ -1,0 +1,19 @@
+name: ppo_skrl
+framework: skrl
+
+# SKRL PPO_DEFAULT_CONFIG 对应的参数
+rollouts: 128            # 对应 n_steps
+learning_epochs: 4       # 对应 n_epochs
+mini_batches: 32         # 对应 num_mini_batch
+discount_factor: 0.99    # 对应 gamma
+lambda: 0.95
+learning_rate: 4e-5
+ratio_clip: 0.1          # 对应 clip_range
+value_clip: 0.1
+entropy_loss_scale: 0.01   # 对应 ent_coef
+value_loss_scale: 0.5
+kl_threshold: 0.0
+clip_predicted_values: True
+# 归一化设置
+norm_obs: False
+norm_reward: True

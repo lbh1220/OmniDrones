@@ -1,0 +1,13 @@
+name: navrl
+
+# 1. 【关键】要传递给主模型的特征提取器【类路径】
+features_extractor_cls: "learning.skrl.networks.navrl.NavRLFeaturesNetwork"
+
+# 2. 【关键】主模型的 __init__ 参数 (来自 train_navrl.py)
+features_dim: 256
+net_arch: [256, 256]
+
+# 3. (可选) 特征提取器的 __init__ 参数
+#    (如果您的 SharedAttentionContinuous __init__ 接受 features_extractor_kwargs)
+features_extractor_kwargs:
+  {} # 如果 NavRLFeaturesNetwork 需要参数, 在这里填写

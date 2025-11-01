@@ -136,7 +136,7 @@ def main():
     parser.add_argument("--norm_reward", action="store_true", default=True, help="Normalize rewards")
 
 
-    parser.add_argument("--use_dynamic_traffic", action="store_true", default=False, help="Use dynamic traffic")
+    parser.add_argument("--use_dynamic_traffic", action="store_true", default=True, help="Use dynamic traffic")
     # Device
     parser.add_argument("--device", type=str, default="cuda")
 
@@ -151,7 +151,7 @@ def main():
     args = parser.parse_args()
 
     # Force headless for training
-    args.headless = True
+    args.headless = False
     # Enable cameras only when recording
     if args.video:
         args.enable_cameras = True
@@ -167,7 +167,8 @@ def main():
     from omni.isaac.lab.envs.common import ViewerCfg
 
     # Build env cfg
-    set_seed(args.seed, deterministic=True)
+    set_seed(args.seed, deterministic=False)
+    # torch.use_deterministic_algorithms(True)会报错
     cfg = NavrlEnvCfg()
     cfg.seed = args.seed
     cfg.scene.num_envs = args.num_envs

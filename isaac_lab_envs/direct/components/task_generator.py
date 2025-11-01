@@ -144,7 +144,7 @@ class CrossTaskGenerator(TaskGenerator):
                 waypoint_lengths=waypoints_length,
                 bounds=bounds,
                 grid_size=grid_size,
-                output_path="planned_paths.png",
+                output_path="runs/figure/planned_paths.png",
                 max_trajs=min(10, num_env),
             )
             self._paths_viz_done = True
