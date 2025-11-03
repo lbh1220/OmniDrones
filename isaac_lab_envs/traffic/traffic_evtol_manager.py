@@ -216,7 +216,7 @@ class TrafficEVTOLManager:
             self.state.target_positions[i] = torch.tensor([smooth_waypoints[-1].x, smooth_waypoints[-1].y, smooth_waypoints[-1].z], device=self.device)
             self.state.start_positions[i] = torch.tensor([smooth_waypoints[0].x, smooth_waypoints[0].y, smooth_waypoints[0].z], device=self.device)
     
-        self.evtol.reset_positions(self.state.positions.unsqueeze(0), self.state.rotations.unsqueeze(0))
+        self.evtol.reset_positions(self.state.positions, self.state.rotations)
         
         
     
