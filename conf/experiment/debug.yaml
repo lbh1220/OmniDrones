@@ -1,29 +1,19 @@
-name: intent_attn
+name: navrl_baseline
 defaults:
-  - /env/open_air@env    
-  - /model/dynamic_traffic_features@model  
-  - /algo/ppo_skrl@algo    
+  - /env/dynamic_city@env    # <--- 加载 conf/env/dynamic_city.yaml 到 "env" 键
+  - /model/navrl@model       # <--- 加载 conf/model/navrl.yaml 到 "model" 键
+  - /algo/ppo_skrl@algo      # <--- 加载 conf/algo/ppo_skrl.yaml 到 "algo" 键
 
 # --- 覆盖 ---
 env:
   observation_cfg:
-    modules: ["robot_node", "traffic_spatial_state"] #
+    modules: ["robot_node", "lidar", "dynamic_obstacle"] #
   reward_cfg:
-    modules: ["nav", "traffic_future", "cross_track"] #
+    modules: ["navrl"] #
   # ... (其他 env 覆盖)
-  arrival_threshold: 2.0
-  use_global_path: True
+  arrival_threshold: -1.0
+  use_global_path: False
+  dynamic_obstacle_num: 5
   traffic_sim:
     num_drones: 10
-    num_evtols: 1
-    evtol:
-      safety_radius: 8.0
-  predict_steps: 5
-  rew_evtol_future_penalty: -2.0
-  rew_drone_future_penalty: -2.0
-  rew_cross_track_coeff: -0.1
-
-algo:
-  rollouts: 128
-  mini_batches: 32
-  learning_rate: 4e-5
+    num_evtols: 0

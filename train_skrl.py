@@ -21,7 +21,7 @@ logging.getLogger("PIL").setLevel(logging.INFO)
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
 
-@hydra.main(config_path="conf", config_name="config", version_base=None)
+@hydra.main(config_path="conf", config_name="train", version_base=None)
 def main(cfg: DictConfig):
     
     # --- 1. 启动 Isaac Sim ---

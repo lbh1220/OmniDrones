@@ -62,27 +62,38 @@ class NavRLFeaturesNetwork(nn.Module):
     - 该实现不依赖 action_space 或 device；如需放到 GPU，请在外部调用 .to(device)。
     - 输入参数仅需 observation_space 与 features_dim。
     """
-    def __init__(self, observation_space, features_dim: int = 256, **kwargs):
+    def __init__(self, observation_space, features_dim: int = 256, disable_lidar: bool = False, disable_dyn: bool = False, **kwargs):
         super().__init__()
         self.features_dim = features_dim
 
         # --- 1. LiDAR 分支 ---
         # 从 obs_space 获取 lidar 形状 (C, H, V)
         # 在原始代码中, C (通道数) = 1
-        lidar_shape = observation_space["lidar"].shape
-        self.lidar_extractor = LidarFeatureExtractor(lidar_shape, lidar_fc_in_dim=128)
+        if not disable_lidar:
+            lidar_shape = observation_space["lidar"].shape
+            self.lidar_extractor = LidarFeatureExtractor(lidar_shape, lidar_fc_in_dim=128)
+        else:
+            self.lidar_extractor = None
 
         # --- 2. 动态障碍物分支 ---
         # dyn: (C, N, 10), C=1
-        dyn_shape = observation_space["traffic_states"].shape
-        self.dyn_extractor = DynamicObstacleFeatureExtractor(dyn_shape, dyn_fc_in_dim=64)
+        if not disable_dyn:
+            dyn_shape = observation_space["traffic_states"].shape
+            self.dyn_extractor = DynamicObstacleFeatureExtractor(dyn_shape, dyn_fc_in_dim=64)
+        else:
+            self.dyn_extractor = None
         
         # --- 3. 共享 MLP 分支 ---
         # 获取 state 维度 (例如: 8)
         state_dim = observation_space["robot_node"].shape[-1]
         
         # 最终融合: [lidar(128) + state(8) + dyn(64)]
-        mlp_input_dim = 128 + 64 + state_dim
+        mlp_input_dim = 0
+        if not disable_lidar:
+            mlp_input_dim += 128
+        if not disable_dyn:
+            mlp_input_dim += 64
+        mlp_input_dim += state_dim
         
         self.mlp = nn.Sequential(
             nn.Linear(mlp_input_dim, 256), nn.LeakyReLU(), nn.LayerNorm(256),
@@ -109,19 +120,21 @@ class NavRLFeaturesNetwork(nn.Module):
         Returns:
             features: (B, features_dim)
         """
-        # 1. LiDAR 分支: (B, C, H, V) -> (B, 128)
-        lidar_feat = self.lidar_extractor(obs["lidar"])
-
-        # 2. 动态障碍分支: (B, C, N, D) -> (B, 64)
-        dyn_feat = self.dyn_extractor(obs["traffic_states"])
-
         # 3. 机器人状态: (B, D)
         state_data = obs["robot_node"]
         if state_data.dim() == 3:
             state_data = state_data.squeeze(1)
+        combined_feat = state_data
+        # 1. LiDAR 分支: (B, C, H, V) -> (B, 128)
+        if self.lidar_extractor is not None:
+            lidar_feat = self.lidar_extractor(obs["lidar"])
+            combined_feat = torch.cat([combined_feat, lidar_feat], dim=-1)
 
-        # 4. 融合
-        combined_feat = torch.cat([lidar_feat, state_data, dyn_feat], dim=-1)
+
+        # 2. 动态障碍分支: (B, C, N, D) -> (B, 64)
+        if self.dyn_extractor is not None:
+            dyn_feat = self.dyn_extractor(obs["traffic_states"])
+            combined_feat = torch.cat([combined_feat, dyn_feat], dim=-1)
 
         # 5. 共享 MLP
         features = self.mlp(combined_feat)
