@@ -424,7 +424,6 @@ class TrafficSimulator:
         #    广播后，相当于将初始位置加到每一个时间戳的预测位置上
         #    predicted_positions 的形状变为 [predict_steps + 1, N, 3]
         predicted_positions = current_positions + displacement
-        
+        predicted_positions = predicted_positions.permute(1, 0, 2) # [N, predict_steps+1, 3]
 
-        # predicted_positions.premute(1, 0, 2) # [N, predict_steps+1, 3]
         return predicted_positions

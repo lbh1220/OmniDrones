@@ -231,7 +231,7 @@ def main():
     parser.add_argument("--rew_cross_track_coeff", type=float, default=0.0, help="Cross track coeff")
     parser.add_argument("--rew_cross_track_alpha", type=float, default=1.0, help="Cross track alpha")
 
-    parser.add_argument("--action_space_type", type=str, default="discrete", help="Action space type")
+    parser.add_argument("--action_space_type", type=str, default="gaussian", help="Action space type")
     parser.add_argument("--action_space_num_per_dim", type=int, default=7, help="Action space num per dim")
     parser.add_argument("--action_mode", type=str, default="velocity_components", help="Action mode")
 
@@ -248,10 +248,11 @@ def main():
     parser.add_argument("--log_interval", type=int, default=1, help="Log interval")
     
     # Video recording
-    parser.add_argument("--video", action="store_true", help="Record videos")
-    parser.add_argument("--video_interval", type=int, default=2500, help="Video interval")
-    parser.add_argument("--video_length", type=int, default=250, help="Video length")
-    
+    parser.add_argument("--video", action="store_true", default=False, help="Record video")
+    parser.add_argument("--video_interval", type=int, default=10000, help="Video interval")
+    parser.add_argument("--video_length", type=int, default=1000, help="Video length")
+
+    parser.add_argument("--drlvo", action="store_true",  default=True, help="test drlvo")
     # Wandb
     parser.add_argument("--use_wandb", action="store_true", help="Use wandb logging")
     parser.add_argument("--wandb_project", type=str, default="traffic_skrl", help="Wandb project")
@@ -323,7 +324,14 @@ def main():
     cfg.action_space_type = args.action_space_type
     cfg.action_mode = args.action_mode
     cfg.action_space_num_per_dim = args.action_space_num_per_dim
-    
+
+
+
+    if args.drlvo:
+        cfg.use_drl_vo = True
+        cfg.predict_steps = 0
+        cfg.rew_drone_future_penalty = -2.0
+        cfg.rew_evtol_future_penalty = -2.0
     # Set experiment name
     if args.experiment_name is None:
         timestamp = datetime.now().strftime("%m%d_%H%M%S")

@@ -121,8 +121,8 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_time_penalty = 0.0
     rew_drones_threshold_factor = 2.0
     rew_drones_decay_factor = 0.667
-    rew_evtols_threshold_factor = 2.0
-    rew_evtols_decay_factor = 0.9
+    rew_evtols_threshold_factor = 1.5
+    rew_evtols_decay_factor = 1.0
     ## drones in previous, 2.0, 0.667; evtols in previous, 1.5, 0.9
     rew_cross_track_coeff = 0.0
 
@@ -131,6 +131,8 @@ class TrafficEnvCfg(NavEnvCfg):
     rew_ttc_beta = 5.0
     rew_ttc_idle_penalty = 0.0
     rew_patience_coeff = 0.0
+
+    use_drl_vo = False
     
 
 class TrafficEnvWithCurriculumCfg(TrafficEnvCfg):
@@ -183,6 +185,9 @@ class TrafficEnv(NavEnv):
             from isaac_lab_envs.direct.mdp.rewards import TrafficRewardCalculator
             self.obs_processor = TrafficObservationProcessor(cfg)
             self.reward_calculator = TrafficRewardCalculator(cfg)
+        if cfg.use_drl_vo:
+            from isaac_lab_envs.direct.mdp.observations import DrlVoObservationProcessor
+            self.obs_processor = DrlVoObservationProcessor(cfg=cfg)
         self.reward_calculator.bind_env(self)
 
     def _setup_scene(self):
@@ -422,10 +427,8 @@ class TrafficEnv(NavEnv):
         self.state.traffic.traffic_safety_radius = traffic_safety_radius
         
         # 同时更新观测处理器的缓存（保持兼容性）
-        self.obs_processor.predict_traffic_trajectory(
-            traffic_positions, traffic_velocities, traffic_types, traffic_safety_radius
-        )
-        self.state.traffic.traffic_future_traj = self.obs_processor.traffic_future_traj.clone()
+
+        self.state.traffic.traffic_future_traj = self.traffic_sim.predict_future_positions(self.cfg.predict_steps, self.cfg.pred_timestep)
 
         # 不再在state中维护eVTOL专用视图，使用时按类型筛选
 

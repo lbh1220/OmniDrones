@@ -30,6 +30,7 @@ from omni.isaac.lab.app import AppLauncher
 
 # Import our custom features extractor and GRU policy
 from rl.sb3.attention_features_extractor import AttentionFeaturesExtractor
+from rl.sb3.drl_vo_cnn import CustomCNNExtractor
 from rl.sb3.gru_recurrent_policy import GRUMultiInputActorCriticPolicy
 from sb3_contrib.ppo_recurrent.policies import MultiInputLstmPolicy
 # Wandb support
@@ -65,8 +66,8 @@ def main():
     
     # Environment parameters
     parser.add_argument("--num_envs", type=int, default=128, help="Number of environments")
-    parser.add_argument("--drones_num", type=int, default=10, help="Number of drones")
-    parser.add_argument("--evtols_num", type=int, default=0, help="Number of evtols")
+    parser.add_argument("--drones_num", type=int, default=20, help="Number of drones")
+    parser.add_argument("--evtols_num", type=int, default=1, help="Number of evtols")
     parser.add_argument("--evtol_radius", type=float, default=10.0, help="Evtol radius")
     parser.add_argument("--predict_steps", type=int, default=5, help="Prediction steps")
     
@@ -117,9 +118,11 @@ def main():
     parser.add_argument("--log_interval", type=int, default=1, help="Log interval")
     
     # Video recording
-    parser.add_argument("--video", action="store_true", help="Record videos")
-    parser.add_argument("--video_interval", type=int, default=2500, help="Video interval")
-    parser.add_argument("--video_length", type=int, default=250, help="Video length")
+    parser.add_argument("--video", action="store_true", default=False, help="Record video")
+    parser.add_argument("--video_interval", type=int, default=10000, help="Video interval")
+    parser.add_argument("--video_length", type=int, default=1000, help="Video length")
+
+    parser.add_argument("--drlvo", action="store_true",  default=True, help="test drlvo")
     
     # Wandb
     parser.add_argument("--use_wandb", action="store_true", help="Use wandb logging")
@@ -219,27 +222,7 @@ def main():
     if args.use_rnn:
         print(f"- shared_gru: {args.shared_gru}")
     
-    # Save environment and training configurations
-    from omni.isaac.lab.utils.io import dump_yaml
-    dump_yaml(os.path.join(save_dir, "env_config.yaml"), cfg)
-    
-    # Save training arguments as YAML for human readability
-    args_dict = vars(args)
-    # Convert any non-serializable objects to strings
-    serializable_args = {}
-    for key, value in args_dict.items():
-        try:
-            yaml.dump({key: value})  # Test if serializable
-            serializable_args[key] = value
-        except:
-            serializable_args[key] = str(value)  # Convert to string if not serializable
-    
-    with open(os.path.join(save_dir, "training_args.yaml"), 'w') as f:
-        yaml.dump(serializable_args, f, default_flow_style=False, indent=2)
-    
-    print(f"configuration files saved:")
-    print(f"- env_config: {os.path.join(save_dir, 'env_config.yaml')}")
-    print(f"- training_args: {os.path.join(save_dir, 'training_args.yaml')}")
+
     
     # Initialize wandb
     if args.use_wandb and WANDB_AVAILABLE:
@@ -262,6 +245,11 @@ def main():
             "video_length": args.video_length,
             "disable_logger": True,
         }
+    if args.drlvo:
+        cfg.use_drl_vo = True
+        cfg.predict_steps = 0
+        cfg.rew_drone_future_penalty = -2.0
+        cfg.rew_evtol_future_penalty = -2.0
     
     env = create_env(cfg, headless=True, record_video=args.video, video_kwargs=video_kwargs)
     
@@ -285,13 +273,20 @@ def main():
     
     # Configure policy with our attention features extractor
     # Matching original network architecture from selfAttn_srnn_temp_node.py
-    policy_kwargs = dict(
-        features_extractor_class=AttentionFeaturesExtractor,
-        features_extractor_kwargs=dict(features_dim=128),  # concat robot_states and hidden_attn_weighted
-        net_arch=dict(pi=[256, 256], vf=[256, 256]),       # Same as original actor/critic
-        activation_fn=nn.ReLU,  
-        ortho_init=True,
-    )
+    if args.drlvo:
+        policy_kwargs = dict(
+            features_extractor_class=CustomCNNExtractor,
+            features_extractor_kwargs=dict(features_dim=256),  # concat robot_states and hidden_attn_weighted
+            net_arch=[dict(pi=[256], vf=[128])]       # Same as drlvo
+        )
+    else:    
+        policy_kwargs = dict(
+            features_extractor_class=AttentionFeaturesExtractor,
+            features_extractor_kwargs=dict(features_dim=128),  # concat robot_states and hidden_attn_weighted
+            net_arch=dict(pi=[256, 256], vf=[256, 256]),       # Same as original actor/critic
+            activation_fn=nn.ReLU,  
+            ortho_init=True,
+        )
     
     # Add GRU-specific configuration if using GRU
     if args.use_rnn:
@@ -380,37 +375,59 @@ def main():
     model.logger.info(f"n_epochs: {args.n_epochs}")
     if args.use_rnn:
         model.logger.info(f"shared_gru: {args.shared_gru}")
+
+    # Save environment and training configurations
+    from omni.isaac.lab.utils.io import dump_yaml
+    dump_yaml(os.path.join(save_dir, "env_config.yaml"), cfg)
     
-    # Start training
-    start_time = time.time()
-    model.learn(
-        total_timesteps=args.total_timesteps,
-        callback=callbacks,
-        log_interval=getattr(args, 'log_interval', 10)
-    )
-    end_time = time.time()
+    # Save training arguments as YAML for human readability
+    args_dict = vars(args)
+    # Convert any non-serializable objects to strings
+    serializable_args = {}
+    for key, value in args_dict.items():
+        try:
+            yaml.dump({key: value})  # Test if serializable
+            serializable_args[key] = value
+        except:
+            serializable_args[key] = str(value)  # Convert to string if not serializable
     
-    # Save final model
-    model_path = os.path.join(save_dir, "final_model")
-    model.save(model_path)
-    model.get_vec_normalize_env().save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
+    with open(os.path.join(save_dir, "training_args.yaml"), 'w') as f:
+        yaml.dump(serializable_args, f, default_flow_style=False, indent=2)
     
-    # Save normalization parameters if used
-    if hasattr(env, 'save'):
-        env.save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
-    
-    print(f"\ntraining completed!")
-    print(f"training time: {(end_time - start_time) / 3600:.2f} hours")
-    print(f"final model saved to: {model_path}")
-    
-    # Finish wandb run
-    if args.use_wandb and WANDB_AVAILABLE:
-        wandb.save(model_path + ".zip")
-        wandb.finish()
+    print(f"configuration files saved:")
+    print(f"- env_config: {os.path.join(save_dir, 'env_config.yaml')}")
+    print(f"- training_args: {os.path.join(save_dir, 'training_args.yaml')}")
+    try:
+        # Start training
+        start_time = time.time()
+        model.learn(
+            total_timesteps=args.total_timesteps,
+            callback=callbacks,
+            log_interval=getattr(args, 'log_interval', 10)
+        )
+        end_time = time.time()
         
-    # Clean up
-    env.close()
-    simulation_app.close()
+        # Save final model
+        model_path = os.path.join(save_dir, "final_model")
+        model.save(model_path)
+        model.get_vec_normalize_env().save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
+        
+        # Save normalization parameters if used
+        if hasattr(env, 'save'):
+            env.save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
+        
+        print(f"\ntraining completed!")
+        print(f"training time: {(end_time - start_time) / 3600:.2f} hours")
+        print(f"final model saved to: {model_path}")
+        
+        # Finish wandb run
+        if args.use_wandb and WANDB_AVAILABLE:
+            wandb.save(model_path + ".zip")
+            wandb.finish()
+    finally:
+        # Clean up
+        env.close()
+        simulation_app.close()
 
 
 if __name__ == "__main__":

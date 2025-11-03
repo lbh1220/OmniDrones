@@ -345,7 +345,13 @@ class SharedAttentionContinuous(GaussianMixin, DeterministicMixin, Model):
         DeterministicMixin.__init__(self, clip_actions)
         
         # Shared attention features extractor (like SB3 implementation)
-        self.features_extractor = AttentionFeaturesNetwork(
+
+        
+        # self.features_extractor = AttentionFeaturesNetwork(
+        #     observation_space, action_space, device, features_dim, **kwargs
+        # )
+        from drl_vo_cnn import DrlVoModel
+        self.features_extractor = DrlVoModel(
             observation_space, action_space, device, features_dim, **kwargs
         )
         

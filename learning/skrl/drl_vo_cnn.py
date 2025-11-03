@@ -17,8 +17,8 @@ import numpy.matlib
 
 # import stable baseline3 modules:
 import gym
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-
+from skrl.models.torch import Model
+from typing import Union
 # import modules:
 #
 import os
@@ -126,7 +126,7 @@ class Bottleneck(nn.Module):
 
 # define the PyTorch MLP model
 #
-class CustomCNNExtractor(BaseFeaturesExtractor):
+class CustomCNNExtractor(nn.Module):
 
     # function: init
     #
@@ -148,10 +148,7 @@ class CustomCNNExtractor(BaseFeaturesExtractor):
         width_per_group=64
         replace_stride_with_dilation=None
         norm_layer=None
-
-        # inherit the superclass properties/methods
-        #
-        super(CustomCNNExtractor, self).__init__(observation_space, features_dim)
+        super(CustomCNNExtractor, self).__init__()
         # define the model
         #
         ################## ped_pos net model: ###################
@@ -322,6 +319,18 @@ class CustomCNNExtractor(BaseFeaturesExtractor):
     # end of method
 #
 # end of class
+class DrlVoModel(Model):
+    def __init__(self, 
+                 observation_space, 
+                 action_space, 
+                 device: Union[str, torch.device] = None,
+                 features_dim: int = 256,
+                 **kwargs):
+        
+        Model.__init__(self, observation_space, action_space, device, **kwargs)
+        self.features_dim = features_dim
 
-#
+        self.feature_extractor = CustomCNNExtractor(observation_space, features_dim)
+    def compute(self, inputs: dict, role: str = "") -> torch.Tensor:
+        return self.feature_extractor(inputs)
 # end of file

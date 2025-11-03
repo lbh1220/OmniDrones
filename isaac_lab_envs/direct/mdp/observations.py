@@ -149,13 +149,14 @@ class TrafficObservationProcessor:
         self.total_traffic_num = max(self.drone_num+self.evtol_num, 20)
         if (self.drone_num == 0):
             self.total_traffic_num = self.drone_num + self.evtol_num
-        
+        self.add_speed_obs = getattr(cfg, 'add_speed_obs', False)
         # 传感器感知范围（使用NavEnv的observation_radius）
         self.sensor_range = cfg.observation_radius
         # 单步空间特征维度：旧模式为2，新模式为3
         self.spatial_point_dim = 3 if self.use_angle_distance_obs else 2
         self.spatial_dim = self.spatial_point_dim * (self.predict_steps + 1) + 1 
-
+        if self.add_speed_obs:
+            self.spatial_dim += 2  # 添加速度观测维度
         self.robot_node_dim = 5
         if self.use_angle_distance_obs:
             self.robot_node_dim += 1
@@ -291,6 +292,11 @@ class TrafficObservationProcessor:
         ], dim=-1)
         
         # 计算空间边观测（使用预计算的轨迹）
+        self.traffic_future_traj = state.traffic.traffic_future_traj
+        self.traffic_positions = state.traffic.traffic_positions
+        self.traffic_velocities = state.traffic.traffic_velocities
+        self.traffic_types = state.traffic.traffic_types
+        self.traffic_safety_radius = state.traffic.traffic_safety_radius
         spatial_edges, visible_masks, spatial_types = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
         
         
@@ -320,7 +326,7 @@ class TrafficObservationProcessor:
         num_envs = robot_pos.shape[0]
         spatial_dim_xy = 2 * (self.predict_steps + 1)
         spatial_dim_encoded = self.spatial_point_dim * (self.predict_steps + 1)
-        
+    
         if self.traffic_future_traj is None or self.traffic_future_traj.numel() == 0:
             spatial_edges = torch.zeros(
                 (num_envs, self.total_traffic_num, self.spatial_dim), device=self.device
@@ -353,6 +359,11 @@ class TrafficObservationProcessor:
         radius_with_feature_dim = self.traffic_safety_radius.unsqueeze(-1) #  [total_traffic, 1]
         expanded_radius = radius_with_feature_dim.expand(num_envs, -1, -1) # [num_envs, total_traffic, 1]
         predicted_flat = torch.cat([predicted_flat, expanded_radius], dim=-1) # [num_envs, total_traffic, spatial_dim+1]
+        if self.add_speed_obs:
+            # 添加速度观测
+            traffic_vel_2d = self.traffic_velocities[:, :2]  # [total_traffic, 2]
+            expanded_vel = traffic_vel_2d.unsqueeze(0).expand(num_envs, -1, -1)  # [num_envs, total_traffic, 2]
+            predicted_flat = torch.cat([predicted_flat, expanded_vel], dim=-1)  # [num_envs, total_traffic, spatial_dim+1+2]
         
         # 1. 创建一个包含所有有效数据的基础张量
         #    注意：我们不再需要预先用 'inf' 填充 spatial_edges
@@ -486,7 +497,6 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
 
 def transform_to_robot_frame_batch(
     world_vectors: torch.Tensor,
-    robot_pos_world: torch.Tensor,
     robot_yaw_world: torch.Tensor,
 ) -> torch.Tensor:
     """
@@ -494,13 +504,8 @@ def transform_to_robot_frame_batch(
     
     Args:
         world_vectors: 世界坐标系下的向量 [N, ..., 2]。可以是相对位置或绝对速度。
-        robot_pos_world: 机器人在世界坐标系下的位置 [N, 1, 2] 或 [N, 2]。
         robot_yaw_world: 机器人在世界坐标系下的朝向 (rad) [N, 1] 或 [N]。
     """
-    if robot_pos_world.dim() > world_vectors.dim():
-        robot_pos_world = robot_pos_world.squeeze(1)
-    if robot_yaw_world.dim() > world_vectors.dim():
-        robot_yaw_world = robot_yaw_world.squeeze(1)
 
     # 1. 计算相对位置（如果输入是绝对位置）
     #    在 DRL-VO 中，我们通常传入的已经是相对位置 (rel_pos) 或绝对速度 (vel)
@@ -510,19 +515,23 @@ def transform_to_robot_frame_batch(
     # 2. 旋转
     # 我们要旋转到机器人坐标系，所以使用 -yaw
     yaw = -robot_yaw_world
-    
-    # 扩展 yaw 以匹配 world_vectors 的维度
-    while yaw.dim() < world_vectors.dim():
+    if yaw.dim() == 1:
         yaw = yaw.unsqueeze(-1)
-        
-    cos_yaw = torch.cos(yaw)
-    sin_yaw = torch.sin(yaw)
-    
+
+    cy = torch.cos(yaw)
+    sy = torch.sin(yaw)
+
     wx = world_vectors[..., 0]
     wy = world_vectors[..., 1]
+    num_extra_dims = wx.dim() - cy.dim()
+    if num_extra_dims > 0:
+        # 在 cy 和 sy 的末尾添加所需的 singleton 维度
+        cy = cy.view(cy.shape + (1,) * num_extra_dims)
+        sy = sy.view(sy.shape + (1,) * num_extra_dims)
+
     
-    rx = cos_yaw * wx - sin_yaw * wy
-    ry = sin_yaw * wx + cos_yaw * wy
+    rx = cy * wx - sy * wy
+    ry = sy * wx + cy * wy
     
     return torch.stack([rx, ry], dim=-1)
 
@@ -536,7 +545,7 @@ class DrlVoObservationProcessor:
     def __init__(self, cfg: TrafficEnvCfg, device: str = "cuda"):
         self.cfg = cfg
         self.device = device
-        self.num_envs = cfg.num_envs
+        self.num_envs = cfg.scene.num_envs
 
         # DRL-VO 网格参数
         self.grid_size = (80, 80)
@@ -564,7 +573,7 @@ class DrlVoObservationProcessor:
         
         # 用于行人网格“splatting”的坐标（处理半径）
         # 我们将为每个行人创建一个小的核，而不是循环
-        self.max_radius_cells = int(np.ceil(cfg.traffic_sim.max_safety_radius / self.grid_res))
+        self.max_radius_cells = int(np.ceil(cfg.traffic_sim.evtol.safety_radius / self.grid_res))
         splat_range = torch.arange(-self.max_radius_cells, self.max_radius_cells + 1, device=self.device)
         splat_xx, splat_yy = torch.meshgrid(splat_range, splat_range, indexing="ij")
         self.splat_kernel_indices = torch.stack([splat_xx, splat_yy], dim=-1).view(1, 1, -1, 2)  # [1, 1, K*K, 2]
@@ -578,8 +587,8 @@ class DrlVoObservationProcessor:
         """
         policy_space_dict = {
             # 论文中 CNN 的输入是 3 通道 (2 ped + 1 lidar) [cite: 192, 175, 178]
-            "cnn_input": gym.spaces.Box(
-                low=-np.inf, high=np.inf, shape=(3, self.grid_size[0], self.grid_size[1]), dtype=np.float32
+            "ped_map": gym.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(2, self.grid_size[0], self.grid_size[1]), dtype=np.float32
             ),
             # (rel_subgoal_x, rel_subgoal_y) + (robot_vx, robot_vy)
             "vector_input": gym.spaces.Box(
@@ -594,9 +603,10 @@ class DrlVoObservationProcessor:
         """
         # 1. 计算行人/交通图 (ped_map)
         ped_map = self._compute_ped_map(state)  # [N, 2, 80, 80]
+        # visualize_ped_map(ped_map=ped_map)
         
         # 2. 计算激光雷达图 (scan_map)
-        scan_map = self._compute_scan_map(state)  # [N, 1, 80, 80]
+        # scan_map = self._compute_scan_map(state)  # [N, 1, 80, 80]
         
         # 3. 计算向量输入 (subgoal, robot_vel)
         vector_input = self._compute_vector_input(state)  # [N, 4]
@@ -604,10 +614,10 @@ class DrlVoObservationProcessor:
         # 4. 组合 CNN 输入
         # 论文 [cite: 192] (图2) 和代码 确认
         # 3个通道被拼接 (cat) 在一起
-        cnn_input = torch.cat([ped_map, scan_map], dim=1)  # [N, 3, 80, 80]
+        # cnn_input = torch.cat([ped_map, scan_map], dim=1)  # [N, 3, 80, 80]
         
         policy_obs = {
-            "cnn_input": cnn_input,
+            "ped_map": ped_map,
             "vector_input": vector_input,
         }
         
@@ -620,29 +630,28 @@ class DrlVoObservationProcessor:
         num_envs = self.num_envs
         # 假设 traffic.positions 是全局的 [total_traffic, 3]
         # 并且 EnvState 提供了所有 traffic 的信息
-        if state.traffic.positions.numel() == 0:
+        if state.traffic.traffic_positions.numel() == 0:
             return torch.zeros((num_envs, 2, 80, 80), device=self.device)
 
         # 提取 ego 状态 (世界坐标系)
         robot_pos = state.ego_drone.drone_state[:, :, :2]  # [N, 1, 2]
         robot_yaw = state.ego_drone.drone_state[:, :, 6].unsqueeze(-1)  # [N, 1] (假设第6维是yaw)
+        robot_yaw = torch.zeros((self.num_envs,), device=self.device) # 这个版本里没办法用body系的速度
         
         # 提取 traffic 状态 (世界坐标系)
         # 扩展为 [1, M, 2] 以便与 [N, 1, 2] 广播
-        traffic_pos = state.traffic.positions[:, :2].unsqueeze(0)    # [1, M, 2]
-        traffic_vel = state.traffic.velocities[:, :2].unsqueeze(0)  # [1, M, 2]
-        traffic_radius = state.traffic.safety_radius.unsqueeze(0) # [1, M]
+        traffic_pos = state.traffic.traffic_positions[:, :2].unsqueeze(0)    # [1, M, 2]
+        traffic_vel = state.traffic.traffic_velocities[:, :2].unsqueeze(0)  # [1, M, 2]
+        traffic_radius = state.traffic.traffic_safety_radius.unsqueeze(0) # [1, M]
 
         # 1. 转换到机器人局部坐标系
         # 1.1 相对位置 (世界系)
         rel_pos_world = traffic_pos - robot_pos  # [N, M, 2]
         # 1.2 相对位置 (机器人系)
         rel_pos_robot = transform_to_robot_frame_batch(rel_pos_world, 
-                                                       torch.zeros_like(robot_pos), 
                                                        robot_yaw)  # [N, M, 2]
         # 1.3 绝对速度 (机器人系)
         vel_robot = transform_to_robot_frame_batch(traffic_vel, 
-                                                   torch.zeros_like(robot_pos), 
                                                    robot_yaw)  # [N, M, 2]
 
         # 2. 过滤在 DRL-VO 观测区外的 traffic
@@ -766,36 +775,134 @@ class DrlVoObservationProcessor:
         # 提取 ego 状态 (世界坐标系)
         robot_pos = state.ego_drone.drone_state[:, :, :2].squeeze(1)  # [N, 2]
         robot_vel = state.ego_drone.drone_state[:, :, 7:9].squeeze(1) # [N, 2] (假设 7,8 是 vx, vy)
-        robot_yaw = state.ego_drone.drone_state[:, :, 6]            # [N] (假设第6维是yaw)
+        # robot_yaw = state.ego_drone.drone_state[:, :, 6]            # 
+        robot_yaw = torch.zeros((self.num_envs,), device=self.device) # 这个版本里没办法用body系的速度
 
         # 1. 机器人局部速度
         # 注意：DRL-VO 的动作空间是局部速度 [cite: 289]。
         # 你的 `observations.py` > `TrafficObservationProcessor` 也使用 'temporal_edges': robot_vel
         # 我们假设输入也应该是局部速度，以保持一致性。
-        robot_vel_local = transform_to_robot_frame_batch(robot_vel,
-                                                         torch.zeros_like(robot_pos),
+        robot_vel_local = transform_to_robot_frame_batch(robot_vel.unsqueeze(1), # [N,1,2]
                                                          robot_yaw) # [N, 2]
+        robot_vel_local = robot_vel_local.squeeze(1) # [N,2]
                                                          
         # 2. 相对子目标 (Subgoal)
         # DRL-VO 使用 "subgoal" [cite: 219]。
         # 你的 `NavObservationProcessorWithPath` 包含 `local_goals`，
         # 这在概念上是相同的。
-        local_goals = state.navigation.local_goals # [N, 1, 3]
-        if local_goals is None:
-            # 如果没有 local_goal，回退到最终目标
+        if self.cfg.use_global_path:
+            local_goals = state.navigation.local_goals # [N, 1, 3]
+        else:
             local_goals = state.navigation.target_positions # [N, 1, 3]
             
         local_goal_pos = local_goals[:, :, :2].squeeze(1) # [N, 2]
         
         # 2.1 相对子目标 (世界系)
         rel_goal_world = local_goal_pos - robot_pos # [N, 2]
+
+        # 定义你希望的最大目标距离
+        MAX_GOAL_DIST = 10.0
+        
+        # 1. 计算当前相对目标的距离 (L2 范数)
+        #    使用 keepdim=True 保持形状为 [N, 1] 以便广播
+        #    增加一个小的 epsilon 避免在距离为0时除以0
+        dist = torch.norm(rel_goal_world, dim=-1, keepdim=True) + 1e-8 
+        
+        # 2. 计算缩放因子
+        #    我们希望最终距离是 min(dist, 10.0)
+        #    因此，缩放因子 = min(dist, 10.0) / dist
+        #    使用 torch.clamp(max=...) 来高效计算 min(dist, 10.0)
+        scaled_dist = torch.clamp(dist, max=MAX_GOAL_DIST)
+        scale_factor = scaled_dist / dist  # [N, 1]
+        
+        # 3. 应用缩放
+        #    如果 dist = 5,  scale_factor = 5 / 5 = 1.0 (不变)
+        #    如果 dist = 20, scale_factor = 10 / 20 = 0.5 (缩放到10米)
+        rel_goal_world_scaled = rel_goal_world * scale_factor
         
         # 2.2 相对子目标 (机器人系)
-        rel_goal_local = transform_to_robot_frame_batch(rel_goal_world,
-                                                        torch.zeros_like(robot_pos),
+        rel_goal_local = transform_to_robot_frame_batch(rel_goal_world_scaled.unsqueeze(1),
                                                         robot_yaw) # [N, 2]
+        rel_goal_local = rel_goal_local.squeeze(1)
                                                         
         # 3. 拼接
         vector_input = torch.cat([rel_goal_local, robot_vel_local], dim=1) # [N, 4]
         
         return vector_input
+    
+def visualize_ped_map(ped_map, save_path: str = "pedestrian_map_visualization.png"):
+    """
+    可视化 DRL-VO 观测字典中的行人速度图 (ped_pos)。
+
+    它会抓取批次中的第一个样本，并绘制 cnn_input 的前两个通道 (Vx 和 Vy)。
+
+    Args:
+        observation_dict: 从 DrlVoObservationProcessor 获得的观测字典。
+        save_path: 保存图像的文件路径。
+    """
+    print("开始生成行人速度图可视化...")
+    import matplotlib.pyplot as plt
+    import os
+    try:
+        # 1. 从观测字典中提取 cnn_input
+        # 预期的形状: [N, 3, 80, 80] (N=批次大小)
+        cnn_input = ped_map
+
+        # 2. 选择批次中的第一个样本
+        # .detach() 是一个好习惯，以防张量T附带梯度
+        first_sample = cnn_input[0].detach() # 形状: [3, 80, 80]
+
+        # 3. 将数据移动到 CPU 并转换为 NumPy
+        # Channel 0 是 Vx, Channel 1 是 Vy
+        # 3. Move data to CPU and convert to NumPy
+        # Channel 0 is Vx, Channel 1 is Vy
+        sample_vx = first_sample[0].cpu().numpy() # Shape: [80, 80]
+        sample_vy = first_sample[1].cpu().numpy() # Shape: [80, 80]
+
+        print(f"  Extracted data (Vx): shape={sample_vx.shape}, min={sample_vx.min():.2f}, max={sample_vx.max():.2f}")
+        print(f"  Extracted data (Vy): shape={sample_vy.shape}, min={sample_vy.min():.2f}, max={sample_vy.max():.2f}")
+
+        # 4. Set up Matplotlib plot
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+        fig.suptitle('DRL-VO Pedestrian Velocity Map - Sample 0', fontsize=16)
+
+        # 5. Determine a symmetrical color range
+        # This is important for velocity maps so 0 is the neutral color
+        v_abs_max = np.max([np.abs(sample_vx).max(), np.abs(sample_vy).max()])
+        if v_abs_max < 1e-6: # If the map is all zeros
+            v_abs_max = 1.0 # Set a default range
+        
+        vmin, vmax = -v_abs_max, v_abs_max
+        cmap = 'coolwarm' # Blue for negative, Red for positive
+
+        # 6. Plot Channel 0 (Vx - Forward Velocity)
+        im1 = ax1.imshow(sample_vx, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax1.set_title(f"Channel 0: $V_x$ (Forward Velocity)\nMax: {sample_vx.max():.2f}, Min: {sample_vx.min():.2f}")
+        ax1.set_xlabel("Grid Y (Lateral) [c]")
+        ax1.set_ylabel("Grid X (Forward) [r]")
+        fig.colorbar(im1, ax=ax1, orientation='vertical', label='Velocity (m/s)')
+        
+        # Annotate coordinate system (for DRL-VO grid)
+        ax1.text(0.5, -0.1, "(0, -10m)", transform=ax1.transAxes, ha='center', fontsize=9)
+        ax1.text(1.0, -0.1, "(0, +10m)", transform=ax1.transAxes, ha='right', fontsize=9)
+        ax1.text(-0.1, 0.0, "(0m, y)", transform=ax1.transAxes, ha='right', fontsize=9)
+        ax1.text(-0.1, 1.0, "(+20m, y)", transform=ax1.transAxes, ha='right', fontsize=9)
+
+        # 7. Plot Channel 1 (Vy - Lateral Velocity)
+        im2 = ax2.imshow(sample_vy, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+        ax2.set_title(f"Channel 1: $V_y$ (Lateral Velocity)\nMax: {sample_vy.max():.2f}, Min: {sample_vy.min():.2f}")
+        ax2.set_xlabel("Grid Y (Lateral) [c]")
+        ax2.set_ylabel("Grid X (Forward) [r]")
+        fig.colorbar(im2, ax=ax2, orientation='vertical', label='Velocity (m/s)')
+
+        # 8. Adjust layout and save
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig(save_path)
+        plt.close(fig) # Close the figure to free up memory
+
+        print(f"Visualization image successfully saved to: {os.path.abspath(save_path)}")
+
+    except KeyError as e:
+        print(f"错误: 观测字典中未找到键 'policy' 或 'cnn_input'。请检查观测字典结构。 {e}")
+    except Exception as e:
+        print(f"生成可视化时发生错误: {e}")
