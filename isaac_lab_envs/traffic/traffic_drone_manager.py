@@ -346,7 +346,7 @@ class TrafficDroneManager:
     def _apply_actions(self):
         drone_state = self.drone.get_state(env_frame=False)[..., :13]
         if torch.isnan(drone_state).any():
-            print(f"TrafficDroneManager: drone_state is nan: {drone_state}")
+            logging.warning(f"TrafficDroneManager: drone_state is nan: {drone_state}")
             return
         target_vel_xy = self.state.velocity_commands.unsqueeze(0)
         target_vel_xy = target_vel_xy[:, :, :2]
@@ -454,7 +454,7 @@ class TrafficDroneManager:
             return need_reset
         drone_state = self.drone.get_state(env_frame=False)
         if torch.isnan(drone_state).any():
-            print(f"TrafficDroneManager: drone_state is nan: {drone_state}")
+            logging.warning(f"TrafficDroneManager: drone_state is nan: {drone_state}")
             need_reset = True
             return need_reset
         # 直接更新state中的运动状态

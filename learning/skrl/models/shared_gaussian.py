@@ -178,7 +178,7 @@ class SharedGaussianMixinGRU(GaussianMixin, DeterministicMixin, Model):
             if features_extractor_kwargs.get("features_dim") is None:
                 features_extractor_kwargs["features_dim"] = features_dim
         self.features_extractor = features_extractor_cls(
-            observation_space, action_space, device, **features_extractor_kwargs
+            observation_space, **features_extractor_kwargs
         )
         
         # GRU layer (applied after features extraction)

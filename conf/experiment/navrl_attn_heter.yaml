@@ -1,4 +1,4 @@
-name: navrl_attn
+name: navrl_attn_heter
 defaults:
   - /env/dynamic_city@env    # <--- 加载 conf/env/dynamic_city.yaml 到 "env" 键
   - /model/navrl_attn@model       # <--- 加载 conf/model/navrl.yaml 到 "model" 键

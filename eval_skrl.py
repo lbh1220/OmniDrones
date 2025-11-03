@@ -4,25 +4,30 @@ import argparse
 import torch
 from omegaconf import OmegaConf, DictConfig
 from hydra.utils import get_class, instantiate
-
+from dataclasses import replace
 # SKRL imports
-from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
+from skrl.agents.torch.ppo import PPO, PPO_RNN, PPO_DEFAULT_CONFIG
 from skrl.memories.torch import RandomMemory
-from skrl.utils.model_instantiators import deterministic_model
 from skrl.resources.preprocessors.torch import RunningStandardScaler
-
+from datetime import datetime
 # Isaac Lab imports
 from omni.isaac.lab.app import AppLauncher
-from omni.isaac.lab_tasks.utils.wrappers.skrl import SkrlVecEnvWrapper
-from omni.isaac.lab.utils.io import load_yaml # <--- 使用 load_yaml
+
 
 # 导入您的环境
-from isaac_lab_envs.direct.uam_env import UamEnv
-from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg
+
 from learning.skrl.models.utils import select_skrl_model
+MODEL_LIST = [
+    "final_model.pt",
+    "best_model.pt",
+    "best_model_1.pt",
+    "best_model_2.pt",
+    "best_model_3.pt",
+    "best_model_4.pt",
+    "best_model_5.pt",
+]
 
-
-def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False):
+def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False, num_envs: int = 10, record_video: bool = False):
     """
     加载已训练的 PPO agent，并在环境中运行评估。
 
@@ -31,31 +36,47 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
         num_episodes (int): 要运行的评估 episode 数量。
         headless (bool): 是否在无头模式下运行。
     """
+    # --- 2. 启动 Isaac Sim ---
+    print("Launching Isaac Sim...")
+    app_launcher = AppLauncher(headless=headless, enable_cameras=record_video)
+    simulation_app = app_launcher.app
     
     # --- 1. 加载配置 ---
     print(f"Loading configuration from: {experiment_path}")
     
     # a. 加载已保存的纯字典配置
+    from omni.isaac.lab.utils.io import load_yaml
     cfg_dict = load_yaml(os.path.join(experiment_path, "hydra_config.yaml"))
     
     # b. 将纯字典转回 OmegaConf 对象，以便我们可以使用 instantiate
     #    这是为了完美复现训练时的实例化过程
     cfg = OmegaConf.create(cfg_dict)
 
-    # --- 2. 启动 Isaac Sim ---
-    print("Launching Isaac Sim...")
-    app_launcher = AppLauncher(headless=headless)
-    simulation_app = app_launcher.app
-    
+    save_dir = os.path.join(experiment_path, f"test_{datetime.now().strftime('%Y%m%d_%H%M')}")
     # --- 3. 实例化环境 ---
     #    (这与 train_skrl.py 中的逻辑完全相同)
     print("Instantiating environment...")
     env_cfg_instance = instantiate(cfg.env)
-    
-    # (您可以在此处添加或修改 cfg 以进行评估，例如更改相机)
+    env_cfg_instance.num_envs = num_envs
+    env_cfg_instance.scene = replace(env_cfg_instance.scene, num_envs=num_envs)
+    env_cfg_instance.arrival_threshold = 2.0 # 测试时必须可以到达终点才行
+    video_kwargs = None
+    if record_video:
+        video_kwargs = {
+            "video_folder": os.path.join(save_dir, "videos"),
+            "step_trigger": (lambda step: step % cfg.video_interval == 0),
+            "video_length": cfg.video_length,
+            "disable_logger": True,
+        }
+        env_cfg_instance.debug_vis = True    # (您可以在此处添加或修改 cfg 以进行评估，例如更改相机)
     # env_cfg_instance.viewer = ViewerCfg(...)
-    
-    env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if not headless else None)
+    from isaac_lab_envs.direct.uam_env import UamEnv
+    from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg
+    env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None) #
+    if video_kwargs is not None:
+        import gymnasium as gym
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
+    from omni.isaac.lab_tasks.utils.wrappers.skrl import SkrlVecEnvWrapper
     env = SkrlVecEnvWrapper(env)
     env.seed(cfg.seed) #
 
@@ -67,11 +88,16 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     models = {}
     model_params = OmegaConf.to_container(cfg.model, resolve=True) #
     model_params.pop("name", None)
+    use_rnn = model_params.pop("use_rnn", False)
     feat_ext_cls_path = model_params.pop("features_extractor_cls")
     FeatureExtractorClass = get_class(feat_ext_cls_path)
     feat_ext_kwargs = model_params.pop("features_extractor_kwargs", {})
-    MainModelClass = select_skrl_model(env.cfg.action_manager.action_space_type, use_rnn=False)
-    
+    MainModelClass = select_skrl_model(env.cfg.action_manager.action_space_type, use_rnn=use_rnn)
+    if use_rnn:
+        if "num_envs" not in model_params:
+            model_params["num_envs"] = env.num_envs
+        if "sequence_length" not in model_params:
+            model_params["sequence_length"] = cfg.algo["rollouts"]
     shared_model = MainModelClass(
         observation_space=env.observation_space,
         action_space=env.action_space,
@@ -83,8 +109,7 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     models["policy"] = shared_model
     models["value"] = shared_model
     
-    # b. 实例化确定性模型（用于评估）
-    deterministic_model(models["policy"]) # SKRL 辅助函数，将策略转为确定性
+
 
     # c. 准备 PPO 配置
     ppo_cfg = PPO_DEFAULT_CONFIG.copy()
@@ -101,7 +126,8 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     ppo_cfg.update(ppo_hyperparams)
 
     # d. 实例化 Agent
-    agent = PPO(
+    rl_class = PPO_RNN if use_rnn else PPO
+    agent = rl_class(
         models=models,
         memory=None,  # 评估时不需要 memory
         cfg=ppo_cfg,
@@ -113,35 +139,27 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     # --- 5. 加载模型权重 ---
     model_path = os.path.join(experiment_path, "final_model.pt") #
     print(f"Loading model weights from: {model_path}")
+    agent.init()
     agent.load(model_path) #
+    agent.set_running_mode("eval")
 
     # --- 6. 运行评估 ---
     print(f"Running evaluation for {num_episodes} episodes...")
-    episode_rewards = []
-    
-    for episode in range(num_episodes):
-        obs, _ = env.reset()
-        terminated = torch.tensor([False] * env.num_envs, device=cfg.device)
-        truncated = torch.tensor([False] * env.num_envs, device=cfg.device)
-        total_reward = 0
-        
-        while not (terminated.any() or truncated.any()):
-            # 1. Agent 采取行动 (使用 .act() 进行评估)
-            actions = agent.act(obs, role="policy")[0]
-            
-            # 2. 环境步进
-            obs, reward, terminated, truncated, info = env.step(actions)
-            
-            total_reward += reward[0].item() # 假设我们只关心第一个 env 的奖励
-        
-        episode_rewards.append(total_reward)
-        print(f"Episode {episode + 1} finished with reward: {total_reward:.2f}")
+    from learning.skrl.evaluate_agent import evaluate_policy
+    eval_results = evaluate_policy(agent, env, num_envs, num_episodes)
+    # save 这个json的result
+    eval_summary = {
+        "test_config": {
+            "model_dir": model_path,
+            "num_episodes": num_episodes,
+            "num_envs": num_envs
+        },
+        "results": eval_results
+    }
+    import json
 
-    # --- 7. 报告结果和清理 ---
-    mean_reward = sum(episode_rewards) / num_episodes
-    print("\n--- Evaluation Finished ---")
-    print(f"Mean reward over {num_episodes} episodes: {mean_reward:.2f}")
-    
+    with open(os.path.join(save_dir, "eval_results.json"), "w") as f:
+        json.dump(eval_summary, f, indent=2)
     env.close()
     simulation_app.close()
     print("Done.")
@@ -149,10 +167,11 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("path", type=str, help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
-    parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to run.")
-    parser.add_argument("--headless", action="store_true", help="Run in headless mode (no UI).")
-    
+    parser.add_argument("--path", type=str, default="outputs/intent_attn/dynamic_traffic_features_20251103_0543", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
+    parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
+    parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
+    parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
     args = parser.parse_args()
     
-    run_evaluation(args.path, args.episodes, args.headless)
+    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video)

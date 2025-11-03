@@ -9,7 +9,7 @@ from omni.isaac.lab.app import AppLauncher
 
 
 # SKRL imports
-from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
+from skrl.agents.torch.ppo import PPO, PPO_RNN, PPO_DEFAULT_CONFIG
 from skrl.memories.torch import RandomMemory
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
@@ -80,7 +80,7 @@ def main(cfg: DictConfig):
     #    (使用 OmegaConf.to_container 确保我们得到的是 Python 字典和列表, 而不是 OmegaConf 对象)
     model_params = OmegaConf.to_container(cfg.model, resolve=True)
     model_params.pop("name", None) # 移除 name, 它不是 __init__ 参数
-
+    use_rnn = model_params.pop("use_rnn", False)
     # b. 解析特征提取器【类】
     feat_ext_cls_path = model_params.pop("features_extractor_cls")
     FeatureExtractorClass = get_class(feat_ext_cls_path)
@@ -90,9 +90,15 @@ def main(cfg: DictConfig):
 
     # d. 【您的 IF 逻辑】根据动作空间选择主模型类
     from learning.skrl.models.utils import select_skrl_model
-    MainModelClass = select_skrl_model(env.cfg.action_manager.action_space_type, use_rnn=False)
+    MainModelClass = select_skrl_model(env.cfg.action_manager.action_space_type, use_rnn=use_rnn)
     # e. 实例化主模型
     #    model_params 现在只包含 net_arch, features_dim, log_std_init 等...
+    if use_rnn:
+        if "num_envs" not in model_params:
+            model_params["num_envs"] = env.num_envs
+        if "sequence_length" not in model_params:
+            model_params["sequence_length"] = cfg.algo["rollouts"]
+
     shared_model = MainModelClass(
         observation_space=env.observation_space,
         action_space=env.action_space,
@@ -124,14 +130,15 @@ def main(cfg: DictConfig):
         "directory": os.path.dirname(save_dir), # 父目录, e.g., "outputs/"
         "experiment_name": os.path.basename(save_dir), # Hydra 生成的唯一目录名
         "write_interval": 100, # (可以从 cfg.log_interval 获取)
-        "checkpoint_interval": 1000, # (可以从 cfg.checkpoint_interval 获取)
+        "checkpoint_interval": 10000, # (可以从 cfg.checkpoint_interval 获取)
     }
 
     # d. 实例化 Memory
     memory = RandomMemory(memory_size=ppo_cfg["rollouts"], num_envs=env.num_envs, device=cfg.device)
 
     # e. 实例化 Agent
-    agent = PPO(
+    rl_class = PPO_RNN if use_rnn else PPO
+    agent = rl_class(
         models=models,
         memory=memory,
         cfg=ppo_cfg,
