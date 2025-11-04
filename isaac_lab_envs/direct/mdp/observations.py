@@ -548,8 +548,8 @@ class DrlVoObservationProcessor:
         self.num_envs = cfg.scene.num_envs
 
         # DRL-VO 网格参数
-        self.grid_size = (80, 80)
-        self.grid_res = 1.0  # meters / cell
+        self.grid_size = (20, 20)
+        self.grid_res = 4.0  # meters / cell
         self.grid_shape_m = (80.0, 80.0)  # (x_range, y_range)
 
         # DRL-VO 激光雷达历史参数 [cite: 205, 217]
@@ -603,7 +603,7 @@ class DrlVoObservationProcessor:
         """
         # 1. 计算行人/交通图 (ped_map)
         ped_map = self._compute_ped_map(state)  # [N, 2, 80, 80]
-        # visualize_ped_map(ped_map=ped_map)
+        visualize_ped_map(ped_map=ped_map, vis_idx=5065)
         
         # 2. 计算激光雷达图 (scan_map)
         # scan_map = self._compute_scan_map(state)  # [N, 1, 80, 80]
@@ -627,16 +627,16 @@ class DrlVoObservationProcessor:
         """
         并行计算行人速度图 ( $2 \times 80 \times 80$ )。
         """
-        num_envs = self.num_envs
+        num_envs = state.num_envs
         # 假设 traffic.positions 是全局的 [total_traffic, 3]
         # 并且 EnvState 提供了所有 traffic 的信息
         if state.traffic.traffic_positions.numel() == 0:
-            return torch.zeros((num_envs, 2, 80, 80), device=self.device)
+            return torch.zeros((num_envs, 2, self.grid_size[0], self.grid_size[1]), device=self.device)
 
         # 提取 ego 状态 (世界坐标系)
         robot_pos = state.ego_drone.drone_state[:, :, :2]  # [N, 1, 2]
         robot_yaw = state.ego_drone.drone_state[:, :, 6].unsqueeze(-1)  # [N, 1] (假设第6维是yaw)
-        robot_yaw = torch.zeros((self.num_envs,), device=self.device) # 这个版本里没办法用body系的速度
+        robot_yaw = torch.zeros((num_envs,), device=self.device) # 这个版本里没办法用body系的速度
         
         # 提取 traffic 状态 (世界坐标系)
         # 扩展为 [1, M, 2] 以便与 [N, 1, 2] 广播
@@ -719,8 +719,8 @@ class DrlVoObservationProcessor:
 
         # 5. 写入网格 (使用 index_put_ 以便并行)
         # 这种方法用最后一个写入的值覆盖 (与 DRL-VO 的原始实现行为一致)
-        ped_map_vx = torch.zeros((num_envs, 80, 80), device=self.device)
-        ped_map_vy = torch.zeros((num_envs, 80, 80), device=self.device)
+        ped_map_vx = torch.zeros((num_envs, self.grid_size[0], self.grid_size[1]), device=self.device)
+        ped_map_vy = torch.zeros((num_envs, self.grid_size[0], self.grid_size[1]), device=self.device)
         
         ped_map_vx[flat_batch, flat_r, flat_c] = flat_vx
         ped_map_vy[flat_batch, flat_r, flat_c] = flat_vy
@@ -748,6 +748,7 @@ class DrlVoObservationProcessor:
         """
         # 假设 state.lidar_data.scan 提供了当前帧 [N, num_points]
         # (如果 state.lidar_data.scan_buffer 存在，可以直接使用)
+        num_envs = state.num_envs
         current_scan = state.lidar_data.scan # [N, self.lidar_points]
         
         # 滚动缓冲区
@@ -764,7 +765,7 @@ class DrlVoObservationProcessor:
         scan_features = torch.cat([min_scan, avg_scan], dim=1) # [N, 6400]
         
         # 4. Reshape
-        scan_map = scan_features.view(self.num_envs, 1, 80, 80) # [N, 1, 80, 80]
+        scan_map = scan_features.view(num_envs, 1, 80, 80) # [N, 1, 80, 80]
         
         return scan_map
 
@@ -773,10 +774,11 @@ class DrlVoObservationProcessor:
         计算非 CNN 的向量输入：(相对子目标, 机器人局部速度)
         """
         # 提取 ego 状态 (世界坐标系)
+        num_envs = state.num_envs
         robot_pos = state.ego_drone.drone_state[:, :, :2].squeeze(1)  # [N, 2]
         robot_vel = state.ego_drone.drone_state[:, :, 7:9].squeeze(1) # [N, 2] (假设 7,8 是 vx, vy)
         # robot_yaw = state.ego_drone.drone_state[:, :, 6]            # 
-        robot_yaw = torch.zeros((self.num_envs,), device=self.device) # 这个版本里没办法用body系的速度
+        robot_yaw = torch.zeros((num_envs,), device=self.device) # 这个版本里没办法用body系的速度
 
         # 1. 机器人局部速度
         # 注意：DRL-VO 的动作空间是局部速度 [cite: 289]。
@@ -830,7 +832,7 @@ class DrlVoObservationProcessor:
         
         return vector_input
     
-def visualize_ped_map(ped_map, save_path: str = "pedestrian_map_visualization.png"):
+def visualize_ped_map(ped_map,vis_idx=0, save_path: str = "pedestrian_map_visualization.png"):
     """
     可视化 DRL-VO 观测字典中的行人速度图 (ped_pos)。
 
@@ -850,7 +852,7 @@ def visualize_ped_map(ped_map, save_path: str = "pedestrian_map_visualization.pn
 
         # 2. 选择批次中的第一个样本
         # .detach() 是一个好习惯，以防张量T附带梯度
-        first_sample = cnn_input[0].detach() # 形状: [3, 80, 80]
+        first_sample = cnn_input[vis_idx].detach() # 形状: [3, 80, 80]
 
         # 3. 将数据移动到 CPU 并转换为 NumPy
         # Channel 0 是 Vx, Channel 1 是 Vy

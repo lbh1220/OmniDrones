@@ -15,6 +15,7 @@ from learning.rl.sb3.config import ArgsConfig
 import torch
 from stable_baselines3.common.logger import configure
 from learning.rl.sb3.custom_ppo import CustomPPO
+from stable_baselines3.ppo import PPO
 from learning.rl.sb3.vec_normalize import VecNormalize
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
@@ -174,7 +175,7 @@ def generate_fix_traffic(
         # evtol在（0, 15) 速度（2，0），两个drones在（-15，-15）和（15，15），速度（1，0）
     flight_height = cfg.flight_height
     positions = torch.tensor([[0.0, 15.0, flight_height], [15.0, -15.0, flight_height], [-15.0, -15.0, flight_height]], device=device)
-    velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [1.0, 0.0, 0]], device=device)
+    velocities = torch.tensor([[2.0, 0.0, 0], [0.0, 1.0, 0], [1.0, 0.0, 0]], device=device)
     types = torch.tensor([2, 1, 1], dtype=torch.long, device=device)
     radii = torch.tensor([cfg.traffic_sim.evtol.safety_radius, cfg.traffic_sim.drone.safety_radius, cfg.traffic_sim.drone.safety_radius], device=device)
     return positions, velocities, types, radii
@@ -184,7 +185,7 @@ def main():
     # 创建参数解析器
     parser = argparse.ArgumentParser(description="Test trained SB3 model with vector-field visualization")
     parser.add_argument("--model_dir", type=str, 
-                        default="runs/traffic/future_penalty/u10e2_r8.0/split_attn/fu-2.0fe-2.0_nopath_1029_152311",
+                        default="runs/traffic_standard/drlvo/u10e0_r8.0_1103_205401",
                        help="Path to the trained model directory")
     parser.add_argument("--model_name", type=str, default="final_model.zip", help="Model name")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
@@ -270,6 +271,8 @@ def main():
         for key in loaded_keys:
             if hasattr(yaml_cfg, key):
                 setattr(cfg, key, getattr(yaml_cfg, key))
+    if "use_drl_vo" in yaml_cfg.__dict__:
+        cfg.use_drl_vo = yaml_cfg.use_drl_vo
     # traffic：所有 env 共享同一组 traffic（位置/速度/类型/半径）
     traffic_pos, traffic_vel, traffic_types, traffic_radii = generate_fix_traffic(
         cfg,
@@ -353,12 +356,15 @@ def main():
         # 测试时不更新归一化统计
         env.training = False
         env.norm_reward = False
+    if cfg.use_drl_vo:
+        pass
+    else:
+        algo_args.robot_node_input_size = base_env.observation_space['robot_node'].shape[-1] + base_env.observation_space['temporal_edges'].shape[-1]
 
-    algo_args.robot_node_input_size = base_env.observation_space['robot_node'].shape[-1] + base_env.observation_space['temporal_edges'].shape[-1]
+        algo_args.human_human_edge_input_size = base_env.observation_space['spatial_edges'].shape[-1] 
 
-    algo_args.human_human_edge_input_size = base_env.observation_space['spatial_edges'].shape[-1] 
-
-    model = CustomPPO.load(model_file, env=env, args=algo_args)
+    # model = CustomPPO.load(model_file, env=env, args=algo_args)
+    model = PPO.load(model_file, env=env)
 
 
 
@@ -423,12 +429,16 @@ def main():
     state.update_reached_target_mask(base_env.cfg.arrival_threshold)
     if base_env.cfg.use_global_path:
         state.update_navigation_state_vectorized(base_env.cfg.lookahead_distance)
-
+    state.traffic.traffic_positions = traffic_pos
+    state.traffic.traffic_velocities = traffic_vel
+    state.traffic.traffic_types = traffic_types
+    state.traffic.traffic_safety_radius = traffic_radii
 
     
 
-    # 直接写入观测处理器缓存
-    base_env.obs_processor.predict_traffic_trajectory(traffic_pos, traffic_vel, traffic_types, traffic_radii)
+    # # 直接写入观测处理器缓存
+    if hasattr(base_env.obs_processor, "predict_traffic_trajectory"):
+        base_env.obs_processor.predict_traffic_trajectory(traffic_pos, traffic_vel, traffic_types, traffic_radii)
 
     # 生成观测（取内层 'policy'）
     observations = base_env.obs_processor.process_observation(state)["policy"]

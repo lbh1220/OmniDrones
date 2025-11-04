@@ -397,37 +397,37 @@ def main():
     print(f"configuration files saved:")
     print(f"- env_config: {os.path.join(save_dir, 'env_config.yaml')}")
     print(f"- training_args: {os.path.join(save_dir, 'training_args.yaml')}")
-    try:
+    # try:
         # Start training
-        start_time = time.time()
-        model.learn(
-            total_timesteps=args.total_timesteps,
-            callback=callbacks,
-            log_interval=getattr(args, 'log_interval', 10)
-        )
-        end_time = time.time()
-        
-        # Save final model
-        model_path = os.path.join(save_dir, "final_model")
-        model.save(model_path)
-        model.get_vec_normalize_env().save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
-        
-        # Save normalization parameters if used
-        if hasattr(env, 'save'):
-            env.save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
-        
-        print(f"\ntraining completed!")
-        print(f"training time: {(end_time - start_time) / 3600:.2f} hours")
-        print(f"final model saved to: {model_path}")
-        
-        # Finish wandb run
-        if args.use_wandb and WANDB_AVAILABLE:
-            wandb.save(model_path + ".zip")
-            wandb.finish()
-    finally:
-        # Clean up
-        env.close()
-        simulation_app.close()
+    start_time = time.time()
+    model.learn(
+        total_timesteps=args.total_timesteps,
+        callback=callbacks,
+        log_interval=getattr(args, 'log_interval', 10)
+    )
+    end_time = time.time()
+    
+    # Save final model
+    model_path = os.path.join(save_dir, "final_model")
+    model.save(model_path)
+    model.get_vec_normalize_env().save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
+    
+    # Save normalization parameters if used
+    if hasattr(env, 'save'):
+        env.save(os.path.join(save_dir, "final_model_vecnormalize.pkl"))
+    
+    print(f"\ntraining completed!")
+    print(f"training time: {(end_time - start_time) / 3600:.2f} hours")
+    print(f"final model saved to: {model_path}")
+    
+    # Finish wandb run
+    if args.use_wandb and WANDB_AVAILABLE:
+        wandb.save(model_path + ".zip")
+        wandb.finish()
+    # finally:
+    #     # Clean up
+    env.close()
+    simulation_app.close()
 
 
 if __name__ == "__main__":
