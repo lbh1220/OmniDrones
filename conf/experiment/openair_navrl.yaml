@@ -1,28 +1,27 @@
-name: intent_attn
+name: openair_navrl
 defaults:
   - /env/open_air@env    
-  - /model/dynamic_traffic_features@model  
+  - /model/navrl@model  
   - /algo/ppo_skrl@algo    
 
 # --- 覆盖 ---
 env:
   observation_cfg:
-    modules: ["robot_node", "traffic_spatial_state"] #
+    modules: ["robot_node", "lidar", "dynamic_obstacle"]  #
   reward_cfg:
-    modules: ["nav", "traffic_future", "cross_track", "smoothness"] #
+    modules: ["nav", "traffic_future", "cross_track"] #
   # ... (其他 env 覆盖)
   arrival_threshold: 2.0
   use_global_path: True
   traffic_sim:
     num_drones: 10
-    num_evtols: 2
+    num_evtols: 1
     evtol:
       safety_radius: 8.0
-  predict_steps: 5
+  predict_steps: 0
   rew_evtol_future_penalty: -2.0
   rew_drone_future_penalty: -2.0
   rew_cross_track_coeff: -0.1
-  rew_smoothness_coeff: -0.1
 
 algo:
   rollouts: 128
@@ -30,4 +29,5 @@ algo:
   learning_rate: 4e-5
 
 model:
-  use_rnn: True
+  features_extractor_kwargs:
+    {"disable_lidar": True, "disable_dyn": False} 

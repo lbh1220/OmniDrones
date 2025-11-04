@@ -136,7 +136,7 @@ class UamEnvCfg(DirectRLEnvCfg):
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
-    rew_action_penalty = -0.0
+    rew_smoothness_coeff = -0.0
     rew_evtol_future_penalty = -0.0
     rew_drone_future_penalty = -0.0
     rew_time_penalty = 0.0
@@ -272,7 +272,7 @@ class DyanmicUamEnvCfg(UamEnvCfg):
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
-    rew_action_penalty = -0.0
+    rew_smoothness_coeff = -0.0
     rew_evtol_future_penalty = -0.0
     rew_drone_future_penalty = -0.0
     rew_time_penalty = 0.0
@@ -355,7 +355,7 @@ class NavrlEnvCfg(UamEnvCfg):
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
-    rew_action_penalty = -0.0
+    rew_smoothness_coeff = -0.0
     rew_evtol_future_penalty = -0.0
     rew_drone_future_penalty = -0.0
     rew_time_penalty = 0.0

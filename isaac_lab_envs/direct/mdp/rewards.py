@@ -15,7 +15,7 @@ class RewardModule(ABC):
         reward = torch.zeros(state.num_envs, device=self.device)
         return reward
     
-    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+    def reset(self, state: EnvState, env_ids: torch.Tensor):
         pass
 
 class NavRewardModule(RewardModule):
@@ -50,7 +50,7 @@ class NavRewardModule(RewardModule):
         reward += potential_reward
         return reward
     
-    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+    def reset(self, state: EnvState, env_ids: torch.Tensor):
         """重置势能缓存"""
         # 计算当前势能（负距离）
         if env_ids is None or env_ids.shape[0] == 0:
@@ -446,7 +446,7 @@ class TTCRewardModule(RewardModule):
         # delta is computed from the latest baseline, avoiding accumulation across safe periods.
         self.previous_min_d_cpa = min_d_cpa.clone()
         return patience
-    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+    def reset(self, state: EnvState, env_ids: torch.Tensor):
         # Reset patience memory for the specified envs
         if self.previous_min_d_cpa is not None:
             if self.previous_min_d_cpa.shape[0] < state.ego_drone.drone_state.shape[0]:
@@ -458,7 +458,37 @@ class TTCRewardModule(RewardModule):
             # avoiding misleading delta due to using 0 (which implies collision distance).
             self.previous_min_d_cpa[env_ids] = torch.nan
 
-
+class SmoothnessRewardModule(RewardModule):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.prev_vel_2d: torch.Tensor | None = None
+        self.smoothness_coeff = getattr(cfg, 'rew_smoothness_coeff', -0.0)
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        num_envs = state.num_envs
+        reward = torch.zeros(num_envs, device=self.device)
+        # 1) 平滑性惩罚（系数 -0.1 已在函数内部体现）
+        reward_smooth = self._penalty_smoothness(state)
+        reward = reward + reward_smooth
+        return reward
+    def _penalty_smoothness(self, state: EnvState) -> torch.Tensor:
+        vel_2d = state.ego_drone.velocities[:, :, :2].squeeze(1)  # [N,2]
+        if self.prev_vel_2d is None or self.prev_vel_2d.shape[0] != vel_2d.shape[0]:
+            self.prev_vel_2d = vel_2d.clone()
+            return torch.zeros(vel_2d.shape[0], device=self.device)
+        delta = torch.norm(vel_2d - self.prev_vel_2d, dim=-1)  # [N]
+        delta = delta.clamp(min=0.0)
+        self.prev_vel_2d = vel_2d.clone()
+        return self.smoothness_coeff * delta
+    def reset(self, state: EnvState, env_ids: torch.Tensor):
+        if self.prev_vel_2d is not None:
+            if self.prev_vel_2d.shape[0] < state.ego_drone.velocities.shape[0]:
+                # Expand to full size if needed
+                full = torch.zeros(state.ego_drone.velocities.shape[0], device=self.device)
+                full[: self.prev_vel_2d.shape[0]] = self.prev_vel_2d
+                self.prev_vel_2d = full
+            self.prev_vel_2d[env_ids] = 0.0
+        else:
+            self.prev_vel_2d = state.ego_drone.velocities[:, :, :2].squeeze(1).clone()# [N,2]
 class NavrlRewardModule(RewardModule):
     """
     复现NavRL项目
@@ -566,7 +596,7 @@ class NavrlRewardModule(RewardModule):
         self.prev_vel_2d = vel_2d.clone()
         return -0.1 * delta
 
-    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+    def reset(self, state: EnvState, env_ids: torch.Tensor):
         if self.prev_vel_2d is not None:
             if self.prev_vel_2d.shape[0] < state.ego_drone.velocities.shape[0]:
                 # Expand to full size if needed
@@ -589,6 +619,7 @@ REWARD_MODULES: dict[str, type[RewardModule]] = {
     "traffic_future": TrafficFutureRewardModule,
     "ttc": TTCRewardModule,
     "navrl": NavrlRewardModule,
+    "smoothness": SmoothnessRewardModule,
 }
 
 
@@ -622,7 +653,7 @@ class RewardManager:
                 total = total + r
         return total
 
-    def reset_potential(self, state: EnvState, env_ids: torch.Tensor):
+    def reset(self, state: EnvState, env_ids: torch.Tensor):
         for mod in self.modules:
-            if hasattr(mod, "reset_potential"):
-                mod.reset_potential(state, env_ids)
+            if hasattr(mod, "reset"):
+                mod.reset(state, env_ids)

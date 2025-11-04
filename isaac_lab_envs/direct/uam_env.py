@@ -397,7 +397,7 @@ class UamEnv(DirectRLEnv):
         self._post_physics_step(env_ids=env_ids)
         
         # 重置奖励计算器的势能缓存
-        self.reward_calculator.reset_potential(self.state, env_ids)
+        self.reward_calculator.reset(self.state, env_ids)
         
         super()._reset_idx(env_ids)
         self.metrics.on_reset(env_ids)

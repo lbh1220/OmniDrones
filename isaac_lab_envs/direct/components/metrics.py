@@ -82,6 +82,7 @@ class MetricsManager:
                 # 只记录rolling的指标, episode的记录抖动会比较严重
                 if not name.startswith('rolling'):   
                     self.env.extras[f"metrics/{name}"] = value
+                    continue
                 if 'episode' not in self.env.extras:
                     self.env.extras['episode'] = {} 
                 # 将指标值转换为 [1] 形状的标量tensor（多元素取mean）
