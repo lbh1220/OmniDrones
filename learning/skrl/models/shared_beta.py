@@ -8,16 +8,25 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 import gymnasium
-from skrl.models.torch import Model, GaussianMixin, DeterministicMixin
+from skrl.models.torch import Model, DeterministicMixin
 from skrl.utils.spaces.torch import unflatten_tensorized_space
 
-class BetaMixin(GaussianMixin):
+# class BetaMixin(GaussianMixin):
+#     def __init__(
+#         self,
+#         clip_actions: bool = False,
+#         clip_log_std: bool = True,
+#         min_log_std: float = -20,
+#         max_log_std: float = 2,
+#         reduction: str = "sum",
+#         role: str = "",
+#     ) -> None:
+# 经过检查，Mixin不需要继承GaussianMixin，skrl不会做type check
+class BetaMixin:
     def __init__(
         self,
-        clip_actions: bool = False,
-        clip_log_std: bool = True,
-        min_log_std: float = -20,
-        max_log_std: float = 2,
+        clip_actions: bool = False, #这个最好永远是False， 因为我的env中有动作放缩的操作
+        min_concentration: float = 1e-6,
         reduction: str = "sum",
         role: str = "",
     ) -> None:
@@ -45,6 +54,7 @@ class BetaMixin(GaussianMixin):
         # keep the same flags/names as GaussianMixin for compatibility
         self._g_clip_actions = clip_actions and isinstance(self.action_space, gymnasium.Space)
         if self._g_clip_actions:
+            raise NotImplementedError("clip_actions is not supported for BetaMixin for now, because the action space is not bounded in [0, 1]")
             self._g_clip_actions_min = torch.tensor(self.action_space.low, device=self.device, dtype=torch.float32)
             self._g_clip_actions_max = torch.tensor(self.action_space.high, device=self.device, dtype=torch.float32)
 
@@ -62,7 +72,7 @@ class BetaMixin(GaussianMixin):
         self._b_beta = None
         self._b_distribution = None
         self._b_num_samples = None
-        self._b_min_concentration = 1e-6
+        self._b_min_concentration = abs(min_concentration)
 
     def act(
         self, inputs: Mapping[str, Union[torch.Tensor, Any]], role: str = ""
@@ -165,13 +175,14 @@ class SharedBetaMixin(BetaMixin, DeterministicMixin, Model):
                  features_dim: int = 128,
                  net_arch: list = [256, 256],
                  clip_actions=False,
+                 min_concentration=1.0,
                  reduction="sum",
                  features_extractor_cls=None,
                  features_extractor_kwargs: dict = None,
                  **kwargs):
         
         Model.__init__(self, observation_space, action_space, device)
-        BetaMixin.__init__(self, clip_actions, True, -20, 2, reduction)
+        BetaMixin.__init__(self, clip_actions, min_concentration, reduction)
         DeterministicMixin.__init__(self, clip_actions)
         
         # Shared attention features extractor (like SB3 implementation)
@@ -183,7 +194,7 @@ class SharedBetaMixin(BetaMixin, DeterministicMixin, Model):
             if features_extractor_kwargs.get("features_dim") is None:
                 features_extractor_kwargs["features_dim"] = features_dim
         self.features_extractor = features_extractor_cls(
-            observation_space, action_space, device, **features_extractor_kwargs
+            observation_space, **features_extractor_kwargs
         )
         
         # Actor network (separate from critic)
@@ -264,3 +275,225 @@ class SharedBetaMixin(BetaMixin, DeterministicMixin, Model):
             critic_output = self.critic_net(features)
             value_output = self.value_layer(critic_output)
             return value_output, {}
+
+
+class SharedBetaMixinGRU(BetaMixin, DeterministicMixin, Model):
+    """
+    GRU-based shared model for continuous actions using attention mechanisms and Beta policy
+    """
+    def __init__(self, 
+                 observation_space, 
+                 action_space, 
+                 device: Union[str, torch.device] = None,
+                 features_dim: int = 128,
+                 net_arch: list = [256, 256],
+                 clip_actions=False,
+                 min_concentration=1.0,
+                 reduction="sum",
+                 num_envs=1,
+                 num_layers=1, 
+                 hidden_size=64, 
+                 sequence_length=16,
+                 features_extractor_cls=None,
+                 features_extractor_kwargs: dict = None,
+                 **kwargs):
+        Model.__init__(self, observation_space, action_space, device)
+        BetaMixin.__init__(self, clip_actions, min_concentration, reduction)
+        DeterministicMixin.__init__(self, clip_actions)
+
+        self.num_envs = num_envs
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+        self.sequence_length = sequence_length
+
+        # Shared attention features extractor (like SB3 implementation)
+        if features_extractor_cls is None:
+            features_extractor_cls = nn.Module
+        if features_extractor_kwargs is None:
+            features_extractor_kwargs = {"features_dim": features_dim}
+        else:
+            if features_extractor_kwargs.get("features_dim") is None:
+                features_extractor_kwargs["features_dim"] = features_dim
+        self.features_extractor = features_extractor_cls(
+            observation_space, **features_extractor_kwargs
+        )
+
+        # GRU layer (applied after features extraction)
+        self.gru = nn.GRU(
+            input_size=features_dim,
+            hidden_size=self.hidden_size,
+            num_layers=self.num_layers,
+            batch_first=True
+        )
+
+        # Actor network (separate from critic)
+        actor_layers = []
+        input_dim = self.hidden_size
+        for hidden_dim in net_arch:
+            actor_layers.append(nn.Linear(input_dim, hidden_dim))
+            actor_layers.append(nn.Tanh())
+            input_dim = hidden_dim
+        self.actor_net = nn.Sequential(*actor_layers)
+        
+        # Policy heads for Beta (alpha and beta)
+        self.alpha_layer = nn.Linear(input_dim, self.num_actions)
+        self.beta_layer = nn.Linear(input_dim, self.num_actions)
+        
+        # Critic network (separate from actor)
+        critic_layers = []
+        input_dim = self.hidden_size
+        for hidden_dim in net_arch:
+            critic_layers.append(nn.Linear(input_dim, hidden_dim))
+            critic_layers.append(nn.Tanh())
+            input_dim = hidden_dim
+        self.critic_net = nn.Sequential(*critic_layers)
+        
+        # Value head
+        self.value_layer = nn.Linear(input_dim, 1)
+        
+        # Initialize weights
+        self._initialize_weights()
+        
+        # For shared computation optimization
+        self._shared_gru_features = None
+        self._shared_hidden_states = None
+    
+    def get_specification(self):
+        """返回RNN规格配置，遵循SKRL RNN模式"""
+        return {
+            "rnn": {
+                "sequence_length": self.sequence_length,
+                "sizes": [(self.num_layers, self.num_envs, self.hidden_size)]
+            }
+        }
+
+    def _initialize_weights(self):
+        """Initialize network weights using orthogonal initialization"""
+        def init_weights(m):
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.constant_(m.bias, 0)
+        self.features_extractor.apply(init_weights)
+        self.actor_net.apply(init_weights)
+        self.critic_net.apply(init_weights)
+        self.alpha_layer.apply(init_weights)
+        self.beta_layer.apply(init_weights)
+        self.value_layer.apply(init_weights)
+        
+        # Initialize GRU weights
+        for name, param in self.gru.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param)
+
+
+
+    def _process_gru_sequence(self, features, hidden_states, terminated):
+        """
+        Process sequence through GRU following official SKRL pattern
+        
+        Args:
+            features: Input features from attention extractor [batch_size * sequence_length, features_dim]
+            hidden_states: GRU hidden states [num_layers, num_envs, hidden_size]
+            terminated: Termination flags [batch_size * sequence_length]
+            
+        Returns:
+            gru_output: GRU output [batch_size * sequence_length, hidden_size]
+            new_hidden_states: Updated hidden states [num_layers, num_envs, hidden_size]
+        """
+        # Training mode: process sequences
+        if self.training:
+            # Reshape for sequence processing
+            rnn_input = features.view(-1, self.sequence_length, features.shape[-1])  # (N, L, Hin)
+            hidden_states = hidden_states.view(self.num_layers, -1, self.sequence_length, hidden_states.shape[-1])
+            # Get initial hidden states for each sequence
+            hidden_states = hidden_states[:,:,0,:].contiguous()  # (D * num_layers, N, Hout)
+            
+            # Handle episode termination in middle of sequence
+            if terminated is not None and torch.any(terminated):
+                rnn_outputs = []
+                terminated = terminated.view(-1, self.sequence_length)
+                indexes = [0] + (terminated[:,:-1].any(dim=0).nonzero(as_tuple=True)[0] + 1).tolist() + [self.sequence_length]
+                
+                for i in range(len(indexes) - 1):
+                    i0, i1 = indexes[i], indexes[i + 1]
+                    rnn_output, hidden_states = self.gru(rnn_input[:,i0:i1,:], hidden_states)
+                    # Reset hidden states for terminated episodes
+                    hidden_states[:, (terminated[:,i1-1]), :] = 0
+                    rnn_outputs.append(rnn_output)
+                
+                rnn_output = torch.cat(rnn_outputs, dim=1)
+            else:
+                # No termination in sequence
+                rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
+        else:
+            # Rollout mode: process single steps
+            rnn_input = features.view(-1, 1, features.shape[-1])  # (N, L=1, Hin)
+            rnn_output, hidden_states = self.gru(rnn_input, hidden_states)
+        
+        # Flatten output for downstream networks
+        rnn_output = torch.flatten(rnn_output, start_dim=0, end_dim=1)
+        return rnn_output, hidden_states
+        
+    def act(self, inputs, role):
+        """Act method following official SKRL pattern"""
+        if role == "policy":
+            return BetaMixin.act(self, inputs, role)
+        elif role == "value":
+            return DeterministicMixin.act(self, inputs, role)
+    
+    def compute(self, inputs: dict, role: str = "") -> Union[Tuple[torch.Tensor, torch.Tensor, dict], Tuple[torch.Tensor, dict]]:
+        """
+        Compute method following official SKRL RNN pattern
+        
+        Architecture: AttentionFeatures -> GRU -> Actor/Critic networks
+        """
+        # Extract inputs
+        terminated = inputs.get("terminated", None)
+        hidden_states = inputs["rnn"][0]
+        
+        # Handle state flattening for discrete action spaces
+        flat_states = inputs["states"]
+        unflattened_states = unflatten_tensorized_space(self.observation_space, flat_states)
+        
+        if role == "policy":
+            # Extract attention features
+            features = self.features_extractor(unflattened_states)
+            
+            # Process through GRU
+            gru_features, new_hidden_states = self._process_gru_sequence(
+                features, hidden_states, terminated
+            )
+            
+            # Cache for potential value computation
+            self._shared_gru_features = gru_features
+            self._shared_hidden_states = new_hidden_states
+            
+            # Pass through actor network
+            actor_output = self.actor_net(gru_features)
+            alpha_logits = self.alpha_layer(actor_output)
+            beta_logits = self.beta_layer(actor_output)
+            
+            return alpha_logits, beta_logits, {"rnn": [new_hidden_states]}
+            
+        elif role == "value":
+            # Reuse shared GRU features if available
+            if self._shared_gru_features is not None:
+                gru_features = self._shared_gru_features
+                new_hidden_states = self._shared_hidden_states
+                # Reset cache
+                self._shared_gru_features = None 
+                self._shared_hidden_states = None
+            else:
+                # Compute fresh if not cached
+                features = self.features_extractor(unflattened_states)
+                gru_features, new_hidden_states = self._process_gru_sequence(
+                    features, hidden_states, terminated
+                )
+            
+            # Pass through critic network
+            critic_output = self.critic_net(gru_features)
+            value_output = self.value_layer(critic_output)
+            
+            return value_output, {"rnn": [new_hidden_states]}
