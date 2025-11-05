@@ -12,6 +12,27 @@ except ImportError:
     rvo2 = None
     print("Warning: rvo2 not installed. ORCAPolicy will not be available.")
 
+class PolicyConfig:
+    """Simple config class for model-based policies"""
+    def __init__(self, **kwargs):
+        # Default values
+        self.arrival_threshold = 2.0
+        self.repulsion_gain = 2.0
+        self.attraction_gain = 1.0
+        self.obstacle_threshold = 15.0
+        self.lookahead_distance = 3.0
+        
+        # ORCA-specific parameters
+        self.time_step = 0.16
+        self.neighbor_dist = 100.0
+        self.max_neighbors = 10
+        self.time_horizon = 11.0
+        self.time_horizon_obst = 11.0
+        self.safety_space = 1.5
+        
+        # Update with provided values
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 class PurePursuitPolicy(ModelBasedPolicy):
     """Pure pursuit policy following local goal from global path"""
@@ -21,6 +42,7 @@ class PurePursuitPolicy(ModelBasedPolicy):
         self.max_speed = getattr(env_cfg, 'max_speed', 5.0)
         self.min_speed = getattr(env_cfg, 'min_speed', 0.0)
         self.v_pref = getattr(env_cfg, 'v_pref', 1.0)
+
 
     def predict(self, observation: Dict[str, torch.Tensor], state: Optional[Any] = None, episode_start: Optional[Any] = None,
                 deterministic: bool = True) -> tuple[torch.Tensor, Optional[Any]]:
@@ -97,12 +119,144 @@ class ORCAPolicy(ModelBasedPolicy):
         self.time_horizon_obst = policy_cfg.time_horizon_obst
         self.safety_space = policy_cfg.safety_space
         print(f"ORCA parameters: {self.time_step}, {self.predict_timestep}, {self.neighbor_dist}, {self.max_neighbors}, {self.time_horizon}, {self.time_horizon_obst}, {self.safety_space}")
+
+    def _compute_orca_2d(self,
+                          robot_pos_np: np.ndarray,
+                          robot_vel_np: np.ndarray,
+                          robot_radius_np: np.ndarray,
+                          pref_vel_np: np.ndarray,
+                          traffic_pos_np: np.ndarray,
+                          traffic_vel_np: np.ndarray,
+                          traffic_radius_np: np.ndarray) -> np.ndarray:
+        """Compute ORCA 2D optimal velocities for each env using absolute coordinates.
+
+        Args:
+            robot_pos_np: [num_envs, 2]
+            robot_vel_np: [num_envs, 2]
+            robot_radius_np: [num_envs]
+            pref_vel_np: [num_envs, 2] preferred velocity (XY)
+            traffic_pos_np: [total_traffic, 2]
+            traffic_vel_np: [total_traffic, 2]
+            traffic_radius_np: [total_traffic]
+
+        Returns:
+            np.ndarray: [num_envs, 2] optimal XY velocities
+        """
+        num_envs = robot_pos_np.shape[0]
+        corrected_velocities = np.zeros((num_envs, 2), dtype=np.float32)
+
+        for env_idx in range(num_envs):
+            sim = rvo2.PyRVOSimulator(
+                self.time_step,
+                self.neighbor_dist,
+                self.max_neighbors,
+                self.time_horizon,
+                self.time_horizon_obst,
+                float(robot_radius_np[env_idx]) + self.safety_space,
+                self.max_speed
+            )
+
+            ego_pos = (float(robot_pos_np[env_idx, 0]), float(robot_pos_np[env_idx, 1]))
+            ego_vel = (float(robot_vel_np[env_idx, 0]), float(robot_vel_np[env_idx, 1]))
+
+            agent_id = sim.addAgent(
+                ego_pos,
+                self.neighbor_dist,
+                self.max_neighbors,
+                self.time_horizon,
+                self.time_horizon_obst,
+                float(robot_radius_np[env_idx]) + self.safety_space,
+                self.max_speed,
+                ego_vel
+            )
+
+            sim.setAgentPrefVelocity(agent_id, (float(pref_vel_np[env_idx, 0]), float(pref_vel_np[env_idx, 1])))
+
+            ego_pos_2d = robot_pos_np[env_idx]
+            total_traffic = 0 if traffic_pos_np is None else int(traffic_pos_np.shape[0])
+            for traffic_idx in range(total_traffic):
+                traffic_pos_2d = traffic_pos_np[traffic_idx]
+                distance = np.linalg.norm(traffic_pos_2d - ego_pos_2d)
+                if distance > self.neighbor_dist:
+                    continue
+
+                traffic_vel = (float(traffic_vel_np[traffic_idx, 0]), float(traffic_vel_np[traffic_idx, 1]))
+
+                sim.addAgent(
+                    (float(traffic_pos_2d[0]), float(traffic_pos_2d[1])),
+                    self.neighbor_dist,
+                    0,
+                    self.time_horizon,
+                    self.time_horizon_obst,
+                    float(traffic_radius_np[traffic_idx]) + self.safety_space,
+                    np.linalg.norm(traffic_vel) + 1e-8,
+                    traffic_vel
+                )
+
+            sim.doStep()
+            computed_vel = sim.getAgentVelocity(agent_id)
+            corrected_velocities[env_idx] = np.array(computed_vel, dtype=np.float32)
+
+        return corrected_velocities
+    def _predict(self, state) -> torch.Tensor:
+
+        robot_positions_2d = state.ego_drone.positions.squeeze(1)[:, :2]  # [num_envs, 2] - only x,y
+        robot_velocities_2d = state.ego_drone.velocities.squeeze(1)[:, :2]  # [num_envs, 2] - only x,y
+        # Robot radius is stored in environment config, not in state
+        robot_radius = torch.full((robot_positions_2d.shape[0],), 
+                                  self.env_cfg.safety_radius, 
+                                  device=robot_positions_2d.device, dtype=torch.float32)
         
+        if state.navigation.local_goals is not None:
+            goal = state.navigation.local_goals.squeeze(1)[:, :2]  # [num_envs, 2] - only x,y
+        else:
+            goal = state.navigation.target_positions.squeeze(1)[:, :2]  # [num_envs, 2] - only x,y
+        
+        relative_goal = goal - robot_positions_2d
+        goal_distance = torch.norm(relative_goal, dim=-1, keepdim=True) + 1e-8
+        robot_pref_vel = relative_goal / goal_distance * self.v_pref
+        
+        # Traffic information (2D only)
+        traffic_positions_2d = state.traffic.traffic_positions[:, :2]
+        traffic_velocities_2d = state.traffic.traffic_velocities[:, :2]
+        traffic_safety_radius = state.traffic.traffic_safety_radius
+
+        robot_pos_np = self.to_numpy(robot_positions_2d)
+        robot_vel_np = self.to_numpy(robot_velocities_2d)
+        robot_radius_np = self.to_numpy(robot_radius)
+        traffic_pos_np = self.to_numpy(traffic_positions_2d)
+        traffic_vel_np = self.to_numpy(traffic_velocities_2d)
+        traffic_radius_np = self.to_numpy(traffic_safety_radius)
+        pref_vel_np = self.to_numpy(robot_pref_vel)
+
+        corrected_vel_np = self._compute_orca_2d(
+            robot_pos_np,
+            robot_vel_np,
+            robot_radius_np,
+            pref_vel_np,
+            traffic_pos_np,
+            traffic_vel_np,
+            traffic_radius_np,
+        )
+
+        corrected_velocity_2d = torch.from_numpy(corrected_vel_np).to(robot_positions_2d.device)
+        return corrected_velocity_2d
+    def act(self, observation, timestep, timesteps):
+        # For skrl API, we do not need observation, timestep, timesteps
+        # we use the state from binded env
+        if self.env is None or self.env.state is None:
+            return torch.zeros((1, 2), device=self.device)
+        state_env = self.env.state
+        raw_velocity_2d = self._predict(state_env)
+        scaled_velocity_2d = raw_velocity_2d / self.max_speed
+        # skrl's act function returns actions, log_prob, outputs
+        return scaled_velocity_2d, None, None
+    
     def predict(self, observation: Dict[str, torch.Tensor], state: Optional[Any] = None, episode_start: Optional[Any] = None,
                 deterministic: bool = True) -> tuple[torch.Tensor, Optional[Any]]:
         """
         Predict action using ORCA for collision avoidance
-        
+        FOR sb3 API
         Args:
             observation: Dictionary containing observation data
                 - robot_node: [num_envs, 1, 9] robot state
@@ -115,110 +269,11 @@ class ORCAPolicy(ModelBasedPolicy):
             action: ORCA velocity [num_envs, 2]
             states: None
         """
-        robot_node = observation['robot_node']  # [num_envs, 1, 9]
-        robot_vel = observation['temporal_edges']  # [num_envs, 1, 2]
-        spatial_edges = observation['spatial_edges']  # [num_envs, total_traffic_num, spatial_dim]
-        detected_num = observation['detected_human_num']  # [num_envs, 1]
-        
-        num_envs = robot_node.shape[0]
-        
-        # Extract robot information
-        robot_radius = robot_node[:, 0, 2]  # [num_envs]
-        robot_v_pref = robot_node[:, 0, 3]  # [num_envs]
-        local_goal_relative_pos = robot_node[:, 0, 5:7] * (2 * self.circle_radius) / self.observation_norm_scale  # [num_envs, 2]
-        
-        # Convert to numpy for CPU processing (safe conversion)
-        robot_vel_np = self.to_numpy(robot_vel)  # [num_envs, 1, 2]
-        local_goal_np = self.to_numpy(local_goal_relative_pos)  # [num_envs, 2]
-        robot_radius_np = self.to_numpy(robot_radius)  # [num_envs]
-        robot_v_pref_np = self.to_numpy(robot_v_pref)  # [num_envs]
-        detected_num_np = self.to_numpy(detected_num)  # [num_envs, 1]
-        spatial_edges_np = self.to_numpy(spatial_edges)  # [num_envs, total_traffic, spatial_dim]
-        
-        # Process each environment independently
-        actions = np.zeros((num_envs, 2), dtype=np.float32)
-        
-        for env_idx in range(num_envs):
-            # Create ORCA simulator for this environment
-            sim = rvo2.PyRVOSimulator(
-                self.time_step,
-                self.neighbor_dist,
-                self.max_neighbors,
-                self.time_horizon,
-                self.time_horizon_obst,
-                robot_radius_np[env_idx] + self.safety_space,
-                self.max_speed
-            )
-            
-            # Add ego agent
-            ego_pos = (0.0, 0.0)  # Ego is at origin in relative coordinates
-            ego_vel = (robot_vel_np[env_idx, 0, 0], robot_vel_np[env_idx, 0, 1])
-            
-            agent_id = sim.addAgent(
-                ego_pos,
-                self.neighbor_dist,
-                self.max_neighbors,
-                self.time_horizon,
-                self.time_horizon_obst,
-                robot_radius_np[env_idx] + self.safety_space,
-                self.max_speed,
-                ego_vel
-            )
-            goal_distance = np.linalg.norm(local_goal_np[env_idx]) + 1e-8
-            pref_vel = (local_goal_np[env_idx] / goal_distance) * robot_v_pref_np[env_idx]
-            sim.setAgentPrefVelocity(agent_id, tuple(pref_vel))
-            
-            # Add traffic agents that are in range
-            num_detected = int(detected_num_np[env_idx, 0])
-            
-            for traffic_idx in range(num_detected):
-                # Extract traffic info from spatial_edges
-                # spatial_edges format: [2*(predict_steps+1) + 1]
-                # First 2 values are current relative position
-                traffic_data = spatial_edges_np[env_idx, traffic_idx]
-                
-                # Check if this traffic is valid (not padding)
-                if np.abs(traffic_data[0]) >= self.observation_norm_scale - 1e-3:
-                    continue
-                
-                # Extract current position (first 2 values, normalized)
-                traffic_rel_pos = traffic_data[:2] * (2 * self.circle_radius) / self.observation_norm_scale
-                traffic_radius = traffic_data[-1]  # Last value is safety radius
-                
-                # Estimate velocity from position change
-                # If we have predicted positions, we can use them
-                # Otherwise, assume constant velocity
-                if len(traffic_data) >= 4:
-                    next_pos = traffic_data[2:4] * (2 * self.circle_radius) / self.observation_norm_scale
-                    traffic_vel = (next_pos - traffic_rel_pos) / self.predict_timestep
-                else:
-                    traffic_vel = np.zeros(2)
-                
-                # Add traffic agent
-                sim.addAgent(
-                    tuple(traffic_rel_pos),
-                    self.neighbor_dist,
-                    0,  # Traffic agents don't need neighbors
-                    self.time_horizon,
-                    self.time_horizon_obst,
-                    traffic_radius + self.safety_space,
-                    np.linalg.norm(traffic_vel) + 1e-8,
-                    tuple(traffic_vel)
-                )
-            
-            # Run ORCA simulation
-            sim.doStep()
-            
-            # Get computed velocity
-            computed_vel = sim.getAgentVelocity(agent_id)
-            
-            # Normalize to unit direction (environment will scale by max_speed)
-            actions[env_idx] = np.array(computed_vel) / self.max_speed
-        
-        # Convert back to torch tensor
-        action = torch.from_numpy(actions).to(self.device)
-        
-        return action, None
+        # Switch to env.state (do not rely on external observation)
+        state_env = self.env.state
+        raw_velocity_2d = self._predict(state_env)
+        scaled_velocity_2d = raw_velocity_2d / self.max_speed
+        return scaled_velocity_2d, None
 
     def compute_corrected_velocity(self, state) -> torch.Tensor:
         """
@@ -234,8 +289,15 @@ class ORCAPolicy(ModelBasedPolicy):
             corrected_velocity: ORCA-corrected velocity commands [num_envs, 2]
         """
         if rvo2 is None:
-            # If rvo2 not available, return original velocity commands
-            return state.navigation.velocity_commands
+            # If rvo2 not available, return original XY with z set to 0
+            rl_velocity_commands = state.navigation.velocity_commands  # [num_envs, 1, 3] or [num_envs, 3]
+            if rl_velocity_commands.dim() == 3:
+                xy = rl_velocity_commands[:, 0, :2]
+            else:
+                xy = rl_velocity_commands[:, :2]
+            zeros_z = torch.zeros_like(xy[:, :1])
+            out = torch.cat([xy, zeros_z], dim=-1).unsqueeze(1)
+            return out
         
         # Extract robot information (2D only)
         robot_positions_2d = state.ego_drone.positions.squeeze(1)[:, :2]  # [num_envs, 2] - only x,y
@@ -251,8 +313,6 @@ class ORCAPolicy(ModelBasedPolicy):
         traffic_velocities_2d = state.traffic.traffic_velocities[:, :2]  # [total_traffic, 2] - only x,y  
         traffic_safety_radius = state.traffic.traffic_safety_radius  # [total_traffic]
         
-        num_envs = robot_positions_2d.shape[0]
-        
         # Convert to numpy for CPU processing
         robot_pos_np = self.to_numpy(robot_positions_2d)
         robot_vel_np = self.to_numpy(robot_velocities_2d)
@@ -261,82 +321,21 @@ class ORCAPolicy(ModelBasedPolicy):
         traffic_pos_np = self.to_numpy(traffic_positions_2d)
         traffic_vel_np = self.to_numpy(traffic_velocities_2d)
         traffic_radius_np = self.to_numpy(traffic_safety_radius)
-        
-        # Process each environment independently
-        corrected_velocities = np.zeros((num_envs, 2), dtype=np.float32)
-        
-        for env_idx in range(num_envs):
-            # Create ORCA simulator for this environment
-            sim = rvo2.PyRVOSimulator(
-                self.time_step,
-                self.neighbor_dist,
-                self.max_neighbors,
-                self.time_horizon,
-                self.time_horizon_obst,
-                robot_radius_np[env_idx] + self.safety_space,
-                self.max_speed
-            )
-            
-            # Add ego agent with absolute position
-            ego_pos = (robot_pos_np[env_idx, 0], robot_pos_np[env_idx, 1])
-            ego_vel = (robot_vel_np[env_idx, 0], robot_vel_np[env_idx, 1])
-            
-            agent_id = sim.addAgent(
-                ego_pos,
-                self.neighbor_dist,
-                self.max_neighbors,
-                self.time_horizon,
-                self.time_horizon_obst,
-                robot_radius_np[env_idx] + self.safety_space,
-                self.max_speed,
-                ego_vel
-            )
-            
-            # Set preferred velocity to RL-generated velocity commands
-            pref_vel = (
-                rl_vel_commands_np[env_idx, 0],
-                rl_vel_commands_np[env_idx, 1]
-            )
-            sim.setAgentPrefVelocity(agent_id, pref_vel)
-            
-            # Add traffic agents within observation range
-            ego_pos_2d = robot_pos_np[env_idx]  # [2]
-            for traffic_idx in range(traffic_pos_np.shape[0]):
-                # Get traffic absolute position
-                traffic_pos_2d = traffic_pos_np[traffic_idx]  # [2]
-                
-                # Check if traffic is within observation range
-                distance = np.linalg.norm(traffic_pos_2d - ego_pos_2d)
-                if distance > self.neighbor_dist:
-                    continue
-                
-                # Add traffic agent with absolute position
-                traffic_vel = (traffic_vel_np[traffic_idx, 0], traffic_vel_np[traffic_idx, 1])
-                
-                sim.addAgent(
-                    tuple(traffic_pos_2d),
-                    self.neighbor_dist,
-                    0,  # Traffic agents don't need neighbors
-                    self.time_horizon,
-                    self.time_horizon_obst,  
-                    traffic_radius_np[traffic_idx] + self.safety_space,
-                    np.linalg.norm(traffic_vel) + 1e-8,
-                    traffic_vel
-                )
-            
-            # Run ORCA simulation
-            sim.doStep()
-            
-            # Get computed velocity
-            computed_vel = sim.getAgentVelocity(agent_id)
-            
-            # Normalize by max_speed to match environment expected format
-            corrected_velocities[env_idx] = np.array(computed_vel)
-        
-        # Convert back to torch tensor
-        corrected_velocity = torch.from_numpy(corrected_velocities).to(robot_positions_2d.device)
-        z_speed_command = rl_velocity_commands[:, 2].unsqueeze(1)
-        corrected_velocity = torch.cat([corrected_velocity, z_speed_command], dim=-1)
-        corrected_velocity = corrected_velocity.unsqueeze(1)
+
+        pref_vel_np = rl_vel_commands_np[:, :2]
+
+        corrected_vel_np = self._compute_orca_2d(
+            robot_pos_np,
+            robot_vel_np,
+            robot_radius_np,
+            pref_vel_np,
+            traffic_pos_np,
+            traffic_vel_np,
+            traffic_radius_np,
+        )
+
+        corrected_velocity_xy = torch.from_numpy(corrected_vel_np).to(robot_positions_2d.device)
+        zeros_z = torch.zeros((corrected_velocity_xy.shape[0], 1), device=robot_positions_2d.device, dtype=corrected_velocity_xy.dtype)
+        corrected_velocity = torch.cat([corrected_velocity_xy, zeros_z], dim=-1).unsqueeze(1)
 
         return corrected_velocity

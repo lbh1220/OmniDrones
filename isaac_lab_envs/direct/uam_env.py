@@ -38,7 +38,7 @@ from isaac_lab_envs.direct.mdp.action import ActionManagerCfg, VelocityXYActionM
 from isaac_lab_envs.direct.mdp.rewards import RewardManagerCfg, RewardManager
 from isaac_lab_envs.direct.mdp.observations import ObservationManagerCfg, ObservationManager
 from isaac_lab_envs.direct.components.map import MapManagerCfg, MapManager
-from isaac_lab_envs.direct.components.metrics import MetricsManager, CrossTrackModule, AccelerationModule, FlagsModule
+from isaac_lab_envs.direct.components.metrics import MetricsManager, CrossTrackModule, AccelerationModule, FlagsModule, NearCollisionModule
 from isaac_lab_envs.direct.components.task_generator import CrossTaskGenerator
 from isaac_lab_envs.utils.path_planner import GlobalPathPlanner, GlobalPathPlannerCfg
 from isaac_lab_envs.traffic.traffic_simulator import TrafficSimulator
@@ -116,12 +116,14 @@ class UamEnv(DirectRLEnv):
 
     def _init_metrics(self):
         # 初始化 Metrics 管理器并注册模块
-        use_skrl = getattr(self.cfg, 'use_skrl', True)
-        self.metrics = MetricsManager(num_envs=self.num_envs, device=self.device, use_skrl=use_skrl)
+        use_skrl_metrics = getattr(self.cfg, 'use_skrl_metrics', True)
+        self.metrics = MetricsManager(num_envs=self.num_envs, device=self.device, use_skrl_metrics=use_skrl_metrics)
         self.metrics.bind_env(self)
         self.metrics.register(FlagsModule())
         self.metrics.register(CrossTrackModule())
         self.metrics.register(AccelerationModule())
+        if self.traffic_sim is not None:
+            self.metrics.register(NearCollisionModule())
 
     def _setup_terrain(self):
         if hasattr(self.cfg, 'urban_terrain'):

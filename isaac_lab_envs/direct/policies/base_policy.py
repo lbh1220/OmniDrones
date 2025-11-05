@@ -14,8 +14,11 @@ class BasePolicy(ABC):
     def __init__(self, name: str = "BasePolicy"):
         self.name = name
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    @abstractmethod
+        self.env = None
+
+    def bind_env(self, env):
+        self.env = env
+
     def predict(self, observation: Dict[str, torch.Tensor], state: Optional[Any] = None, episode_start: Optional[Any] = None,
                 deterministic: bool = True) -> tuple[torch.Tensor, Optional[Any]]:
         """
@@ -74,21 +77,7 @@ class ModelBasedPolicy(BasePolicy):
         self.cfg = policy_cfg
         self.env_cfg = env_cfg
         
-        # Normalization parameters
-        if hasattr(env_cfg.traffic_sim.area_bounds, 'xmax'):
-            self.area_size = max(
-                env_cfg.traffic_sim.area_bounds.xmax - env_cfg.traffic_sim.area_bounds.xmin,
-                env_cfg.traffic_sim.area_bounds.ymax - env_cfg.traffic_sim.area_bounds.ymin
-            )
-        else:
-            # Dictionary format
-            bounds = env_cfg.traffic_sim.area_bounds
-            self.area_size = max(
-                bounds['xmax'] - bounds['xmin'],
-                bounds['ymax'] - bounds['ymin']
-            )
-        self.circle_radius = self.area_size / 2.0 * 1.4142135623730951  # sqrt(2)
-        self.observation_norm_scale = env_cfg.observation_norm_scale
+
     
     def predict(self, observation: Dict[str, torch.Tensor], state: Optional[Any] = None, episode_start: Optional[Any] = None,
                 deterministic: bool = True) -> tuple[torch.Tensor, Optional[Any]]:

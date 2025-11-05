@@ -13,19 +13,15 @@ from datetime import datetime
 # Isaac Lab imports
 from omni.isaac.lab.app import AppLauncher
 
+# Policy imports
+from isaac_lab_envs.direct.policies.base_policy import ModelBasedPolicy
+from isaac_lab_envs.direct.policies.simple_policies import PurePursuitPolicy, ORCAPolicy, PolicyConfig
+
+
 
 # 导入您的环境
 
 from learning.skrl.models.utils import select_skrl_model
-MODEL_LIST = [
-    "final_model.pt",
-    "best_model.pt",
-    "best_model_1.pt",
-    "best_model_2.pt",
-    "best_model_3.pt",
-    "best_model_4.pt",
-    "best_model_5.pt",
-]
 
 def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False, num_envs: int = 10, record_video: bool = False):
     """
@@ -52,7 +48,7 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     #    这是为了完美复现训练时的实例化过程
     cfg = OmegaConf.create(cfg_dict)
 
-    save_dir = os.path.join(experiment_path, f"test_{datetime.now().strftime('%Y%m%d_%H%M')}")
+    save_dir = os.path.join(experiment_path, f"orca_{datetime.now().strftime('%Y%m%d_%H%M')}")
     # --- 3. 实例化环境 ---
     #    (这与 train_skrl.py 中的逻辑完全相同)
     print("Instantiating environment...")
@@ -60,6 +56,9 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     env_cfg_instance.num_envs = num_envs
     env_cfg_instance.scene = replace(env_cfg_instance.scene, num_envs=num_envs)
     env_cfg_instance.arrival_threshold = 2.0 # 测试时必须可以到达终点才行
+    env_cfg_instance.action_manager.action_space_type = "gaussian"
+    env_cfg_instance.action_manager.action_mode = "velocity_components"
+    env_cfg_instance.action_manager.rl_action_frame = "world"
     video_kwargs = None
     if record_video:
         video_kwargs = {
@@ -72,7 +71,8 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     # env_cfg_instance.viewer = ViewerCfg(...)
     from isaac_lab_envs.direct.uam_env import UamEnv
     from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg
-    env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None) #
+    base_env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None) #
+    env = base_env
     if video_kwargs is not None:
         import gymnasium as gym
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
@@ -82,66 +82,11 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
 
     # --- 4. 实例化 Agent ---
     #    (这与 train_skrl.py 中的逻辑几乎相同)
-    print("Instantiating agent...")
-    
-    # a. 实例化模型
-    models = {}
-    model_params = OmegaConf.to_container(cfg.model, resolve=True) #
-    model_params.pop("name", None)
-    use_rnn = model_params.pop("use_rnn", False)
-    feat_ext_cls_path = model_params.pop("features_extractor_cls")
-    FeatureExtractorClass = get_class(feat_ext_cls_path)
-    feat_ext_kwargs = model_params.pop("features_extractor_kwargs", {})
-    MainModelClass = select_skrl_model(env.cfg.action_manager.action_space_type, use_rnn=use_rnn)
-    if use_rnn:
-        if "num_envs" not in model_params:
-            model_params["num_envs"] = env.num_envs
-        if "sequence_length" not in model_params:
-            model_params["sequence_length"] = cfg.algo["rollouts"]
-    shared_model = MainModelClass(
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=cfg.device,
-        features_extractor_cls=FeatureExtractorClass,
-        features_extractor_kwargs=feat_ext_kwargs,
-        **model_params
-    )
-    models["policy"] = shared_model
-    models["value"] = shared_model
-    
+    policy_config = PolicyConfig()
+    agent = ORCAPolicy(policy_config, env_cfg_instance, "ORCA")
+    agent.bind_env(base_env)
 
 
-    # c. 准备 PPO 配置
-    ppo_cfg = PPO_DEFAULT_CONFIG.copy()
-    ppo_hyperparams = OmegaConf.to_container(cfg.algo, resolve=True) #
-    # (复制预处理器逻辑)
-    norm_obs = ppo_hyperparams.pop("norm_obs", False)
-    norm_reward = ppo_hyperparams.pop("norm_reward", False)
-    if norm_obs:
-        ppo_cfg["state_preprocessor"] = RunningStandardScaler
-        ppo_cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": cfg.device}
-    if norm_reward:
-        ppo_cfg["value_preprocessor"] = RunningStandardScaler
-        ppo_cfg["value_preprocessor_kwargs"] = {"size": 1, "device": cfg.device}
-    ppo_cfg.update(ppo_hyperparams)
-
-    # d. 实例化 Agent
-    rl_class = PPO_RNN if use_rnn else PPO
-    agent = rl_class(
-        models=models,
-        memory=None,  # 评估时不需要 memory
-        cfg=ppo_cfg,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=cfg.device,
-    )
-
-    # --- 5. 加载模型权重 ---
-    model_path = os.path.join(experiment_path, "final_model.pt") #
-    print(f"Loading model weights from: {model_path}")
-    agent.init()
-    agent.load(model_path) #
-    agent.set_running_mode("eval")
 
     # --- 6. 运行评估 ---
     print(f"Running evaluation for {num_episodes} episodes...")
@@ -150,7 +95,7 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     # save 这个json的result
     eval_summary = {
         "test_config": {
-            "model_dir": model_path,
+            "model_dir": "orca",
             "num_episodes": num_episodes,
             "num_envs": num_envs
         },

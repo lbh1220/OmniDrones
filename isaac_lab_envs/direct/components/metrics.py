@@ -45,11 +45,11 @@ class MetricsManager:
     - Published destination: extras['metrics'] as a flat dict of scalar metrics.
     """
 
-    def __init__(self, num_envs: int, device: torch.device, queue_size: int = 100, use_skrl: bool = True):
+    def __init__(self, num_envs: int, device: torch.device, queue_size: int = 100, use_skrl_metrics: bool = True):
         self.num_envs = num_envs
         self.device = device
         self.modules: List[MetricModule] = []
-        self.use_skrl = use_skrl
+        self.use_skrl_metrics = use_skrl_metrics
 
         # Pointers to env/state will be set at initialization
         self.env = None
@@ -77,7 +77,7 @@ class MetricsManager:
         # Publish as flat keys to satisfy SB3 wrapper (no nested dicts except 'log')
         # Keys will be written as: "metrics/<name>"
         for name, value in merged.items():
-            if self.use_skrl:
+            if self.use_skrl_metrics:
                 # self.env.extras需要有eposide这个key，并且这个key下必须是字典，每个subkey是一个tensor标量
                 # 只记录rolling的指标, episode的记录抖动会比较严重
                 if not name.startswith('rolling'):   
@@ -234,7 +234,8 @@ class NearCollisionModule(MetricModule):
         # thresholds = self._get_near_collision_ratio_thresholds(traffic_types, traffic_safety_radius)  # [T]
         
         thresholds = traffic_safety_radius + env.cfg.safety_radius
-        thresholds = thresholds*2.0
+        # thresholds = thresholds*2.0
+        thresholds = thresholds + 2.0
         # 比较: [E, T]
         near_matrix = distances < thresholds.unsqueeze(0)
         near_any = near_matrix.any(dim=1)  # [E]
