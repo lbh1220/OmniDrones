@@ -291,13 +291,8 @@ class TrafficObservationProcessor:
             robot_yaw.unsqueeze(-1)  # [num_envs, 1, 1]
         ], dim=-1)
         
-        # 计算空间边观测（使用预计算的轨迹）
-        self.traffic_future_traj = state.traffic.traffic_future_traj
-        self.traffic_positions = state.traffic.traffic_positions
-        self.traffic_velocities = state.traffic.traffic_velocities
-        self.traffic_types = state.traffic.traffic_types
-        self.traffic_safety_radius = state.traffic.traffic_safety_radius
-        spatial_edges, visible_masks, spatial_types = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
+
+        spatial_edges, visible_masks, spatial_types = self._compute_spatial_edges_from_cache(state)
         
         
         # 构建观测字典
@@ -311,7 +306,7 @@ class TrafficObservationProcessor:
         
         return {"policy": policy_obs}
 
-    def _compute_spatial_edges_from_cache(self, robot_pos: torch.Tensor, robot_vel: torch.Tensor) -> torch.Tensor:
+    def _compute_spatial_edges_from_cache(self, state: EnvState) -> torch.Tensor:
         """使用缓存的轨迹数据计算空间边观测
         
         Args:
@@ -323,7 +318,14 @@ class TrafficObservationProcessor:
             visible_masks: [num_envs, total_traffic_num]
             spatial_types: [num_envs, total_traffic_num] (1=drone, 2=evtol；0=dummy)
         """
-        num_envs = robot_pos.shape[0]
+        num_envs = state.num_envs
+        robot_pos = state.ego_drone.positions[:, :, :2]  # [num_envs, 1, 2]
+        robot_vel = state.ego_drone.velocities[:, :, :2]  # [num_envs, 1, 2]
+        self.traffic_positions = state.traffic.traffic_positions  # [total_traffic, 3]
+        self.traffic_future_traj = state.traffic.traffic_future_traj  # [total_traffic, predict_steps+1, 3]
+        self.traffic_types = state.traffic.traffic_types  # [total_traffic]
+        self.traffic_velocities = state.traffic.traffic_velocities  # [total_traffic, 3]
+        self.traffic_safety_radius = state.traffic.traffic_safety_radius  # [total_traffic]
         spatial_dim_xy = 2 * (self.predict_steps + 1)
         spatial_dim_encoded = self.spatial_point_dim * (self.predict_steps + 1)
     
@@ -478,7 +480,7 @@ class TrafficObservationProcessorWithPath(TrafficObservationProcessor):
         ], dim=-1)  # [num_envs, 1, 9]
         
         # 计算空间边观测（使用预计算的轨迹）
-        spatial_edges, visible_masks, spatial_types = self._compute_spatial_edges_from_cache(robot_pos, robot_vel)
+        spatial_edges, visible_masks, spatial_types = self._compute_spatial_edges_from_cache(state)
         
         
         # 构建观测字典

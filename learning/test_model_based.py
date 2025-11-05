@@ -76,7 +76,7 @@ def main():
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments")
     parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes for evaluation")
     parser.add_argument("--drones_num", type=int, default=10, help="Number of traffic drones")
-    parser.add_argument("--evtols_num", type=int, default=1, help="Number of traffic evtols")
+    parser.add_argument("--evtols_num", type=int, default=2, help="Number of traffic evtols")
     
     # Policy parameters
     parser.add_argument("--policy_type", type=str, 
@@ -126,8 +126,8 @@ def main():
     cfg.scene = replace(cfg.scene, num_envs=args.num_envs)
     cfg.traffic_sim.num_drones = args.drones_num
     cfg.traffic_sim.num_evtols = args.evtols_num
-    cfg.orca.enable = True
-    # cfg.traffic_sim.evtol.safety_radius = 8.0
+    cfg.orca.enable = False
+    cfg.traffic_sim.evtol.safety_radius = 8.0
 
     cfg.use_global_path = True
     cfg.debug_vis = True

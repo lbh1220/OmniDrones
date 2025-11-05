@@ -118,7 +118,8 @@ class ORCAPolicy(ModelBasedPolicy):
         robot_node = observation['robot_node']  # [num_envs, 1, 9]
         robot_vel = observation['temporal_edges']  # [num_envs, 1, 2]
         spatial_edges = observation['spatial_edges']  # [num_envs, total_traffic_num, spatial_dim]
-        detected_num = observation['detected_human_num']  # [num_envs, 1]
+        # detected_num = observation['detected_human_num']  # [num_envs, 1]
+        visible_masks = observation['visible_masks']  # [num_envs, total_traffic_num]
         
         num_envs = robot_node.shape[0]
         
@@ -132,7 +133,8 @@ class ORCAPolicy(ModelBasedPolicy):
         local_goal_np = self.to_numpy(local_goal_relative_pos)  # [num_envs, 2]
         robot_radius_np = self.to_numpy(robot_radius)  # [num_envs]
         robot_v_pref_np = self.to_numpy(robot_v_pref)  # [num_envs]
-        detected_num_np = self.to_numpy(detected_num)  # [num_envs, 1]
+        # detected_num_np = self.to_numpy(detected_num)  # [num_envs, 1]
+        visible_masks_np = self.to_numpy(visible_masks)  # [num_envs, total_traffic_num]
         spatial_edges_np = self.to_numpy(spatial_edges)  # [num_envs, total_traffic, spatial_dim]
         
         # Process each environment independently
@@ -169,9 +171,11 @@ class ORCAPolicy(ModelBasedPolicy):
             sim.setAgentPrefVelocity(agent_id, tuple(pref_vel))
             
             # Add traffic agents that are in range
-            num_detected = int(detected_num_np[env_idx, 0])
+            # num_detected = int(detected_num_np[env_idx, 0])
             
-            for traffic_idx in range(num_detected):
+            for traffic_idx in range(visible_masks_np.shape[1]):
+                if visible_masks_np[env_idx, traffic_idx] == 0:
+                    continue
                 # Extract traffic info from spatial_edges
                 # spatial_edges format: [2*(predict_steps+1) + 1]
                 # First 2 values are current relative position
