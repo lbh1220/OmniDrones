@@ -9,13 +9,13 @@ env:
   observation_cfg:
     modules: ["robot_node", "drlvo"] #
   reward_cfg:
-    modules: ["nav", "traffic_future", "cross_track", "smoothness"] #
+    modules: ["nav", "traffic_future", "smoothness"] #
   # ... (其他 env 覆盖)
   arrival_threshold: 2.0
-  use_global_path: True
+  use_global_path: False
   traffic_sim:
     num_drones: 10
-    num_evtols: 2
+    num_evtols: 0
     evtol:
       safety_radius: 8.0
   predict_steps: 0

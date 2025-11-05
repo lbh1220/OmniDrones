@@ -73,6 +73,17 @@ def world_to_body(rel_xy, cy, sy):
     
     return torch.stack([bx, by], dim=-1)
 
+def body_to_world(body_xy, cy, sy):
+    x = body_xy[..., 0]
+    y = body_xy[..., 1]
+    num_extra_dims = x.dim() - cy.dim()
+    if num_extra_dims > 0:
+        cy = cy.view(cy.shape + (1,) * num_extra_dims)
+        sy = sy.view(sy.shape + (1,) * num_extra_dims)
+    world_x = x * cy - y * sy
+    world_y = x * sy + y * cy
+    return torch.stack([world_x, world_y], dim=-1)
+
 
 class ObservationModule(ABC):
     def __init__(self, cfg):
@@ -509,6 +520,179 @@ class DynamicObstacleObservationModule(ObservationModule):
                 'traffic_states': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1, self.dynamic_obstacle_num, self.dynamic_obstacle_dim), dtype=np.float32),
                 }
 
+class DrlvoObservationModule(ObservationModule):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.cfg = cfg
+        self.num_envs = cfg.scene.num_envs
+
+        # DRL-VO 网格参数
+        self.grid_size = (20, 20)
+        self.grid_res = 4.0  # meters / cell
+        self.grid_shape_m = (80.0, 80.0)  # (x_range, y_range)
+
+        # DRL-VO 激光雷达历史参数 [cite: 205, 217]
+        self.lidar_history_len = 10  # 10 帧 @ 20Hz = 0.5s
+        
+        # 假设激光雷达点数
+        # 论文 [cite: 445] 提到 1080 个点 (UTM-30LX)。
+        # `cnn_data_pub.py` 使用 720 个点。
+        # `custom_cnn_full.py` 期望 6400 个值 (80*80)。
+        
+        # 论文中最合理的解释是 [cite: 212] "min+avg pooling" 
+        # 我们假设有 3200 个激光点。
+        # (Min(scans_over_time) [3200] + Avg(scans_over_time) [3200]) = 6400 -> 80x80
+        self.lidar_points = getattr(cfg, "lidar_points", 3200)
+        
+        # 初始化激光雷达历史缓冲区
+        self.lidar_history_buffer = torch.zeros(
+            (self.num_envs, self.lidar_history_len, self.lidar_points),
+            device=self.device
+        )
+        
+        # 用于行人网格“splatting”的坐标（处理半径）
+        # 我们将为每个行人创建一个小的核，而不是循环
+        self.max_radius_cells = int(np.ceil(cfg.traffic_sim.evtol.safety_radius / self.grid_res))
+        splat_range = torch.arange(-self.max_radius_cells, self.max_radius_cells + 1, device=self.device)
+        splat_xx, splat_yy = torch.meshgrid(splat_range, splat_range, indexing="ij")
+        self.splat_kernel_indices = torch.stack([splat_xx, splat_yy], dim=-1).view(1, 1, -1, 2)  # [1, 1, K*K, 2]
+        self.splat_kernel_size = self.splat_kernel_indices.shape[2]
+
+    def get_observation_space(self) -> dict:
+        policy_space_dict = {
+            # 论文中 CNN 的输入是 3 通道 (2 ped + 1 lidar) [cite: 192, 175, 178]
+            "ped_map": gym.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(2, self.grid_size[0], self.grid_size[1]), dtype=np.float32
+            )
+        }        
+        return policy_space_dict
+
+    def process_observation(self, state: EnvState) -> dict:
+        # 1. 计算行人/交通图 (ped_map)
+        ped_map = self._compute_ped_map(state)  # [N, 2, 80, 80]
+        # visualize_ped_map(ped_map=ped_map, vis_idx=5065)
+        
+        # 2. 计算激光雷达图 (scan_map)
+        # scan_map = self._compute_scan_map(state)  # [N, 1, 80, 80]
+        
+        # 3. 计算向量输入 (subgoal, robot_vel), #由robot node module解决吧
+        
+        # 4. 组合 CNN 输入
+        # 论文 [cite: 192] (图2) 和代码 确认
+        # 3个通道被拼接 (cat) 在一起
+        # cnn_input = torch.cat([ped_map, scan_map], dim=1)  # [N, 3, 80, 80]
+        
+        policy_obs = {
+            "ped_map": ped_map,
+        }
+        
+        return policy_obs
+
+    def _compute_ped_map(self, state: EnvState) -> torch.Tensor:
+        """
+        并行计算行人速度图 ( $2 \times 80 \times 80$ )。
+        """
+        num_envs = state.num_envs
+        # 假设 traffic.positions 是全局的 [total_traffic, 3]
+        # 并且 EnvState 提供了所有 traffic 的信息
+        if state.traffic.traffic_positions.numel() == 0:
+            return torch.zeros((num_envs, 2, self.grid_size[0], self.grid_size[1]), device=self.device)
+
+        # 提取 ego 状态 (世界坐标系)
+        robot_pos = state.ego_drone.drone_state[:, :, :2]  # [N, 1, 2]
+        robot_quat = state.ego_drone.rotations # [N,1,4]
+        robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1]  # [N,1]
+        cy = torch.cos(robot_yaw)
+        sy = torch.sin(robot_yaw)
+        
+        # 提取 traffic 状态 (世界坐标系)
+        # 扩展为 [1, M, 2] 以便与 [N, 1, 2] 广播
+        traffic_pos = state.traffic.traffic_positions[:, :2].unsqueeze(0)    # [1, M, 2]
+        traffic_vel = state.traffic.traffic_velocities[:, :2].unsqueeze(0)  # [1, M, 2]
+        traffic_radius = state.traffic.traffic_safety_radius.unsqueeze(0) # [1, M]
+
+        # 1. 转换到机器人局部坐标系
+        # 1.1 相对位置 (世界系)
+        rel_pos_world = traffic_pos - robot_pos  # [N, M, 2]
+        # 1.2 相对位置 (机器人系)
+        rel_pos_robot = world_to_body(rel_pos_world, cy, sy) # [N, M, 2]
+        # 1.3 绝对速度 (机器人系)
+        vel_robot = world_to_body(traffic_vel, cy, sy)  # [N, M, 2]
+
+        # 2. 过滤在 DRL-VO 观测区外的 traffic
+        x_local = rel_pos_robot[..., 0]
+        y_local = rel_pos_robot[..., 1]
+        
+        mask = (x_local >= 0) & (x_local < self.grid_shape_m[0]) & \
+               (y_local >= -self.grid_shape_m[1] / 2) & (y_local < self.grid_shape_m[1] / 2)
+        # mask shape: [N, M]
+
+        # 3. 计算网格索引
+        # (r, c) 是网格坐标 (row, col)
+        # r 对应 x (前方), c 对应 y (侧方)
+        #
+        r_center = (x_local / self.grid_res).floor()  # [N, M]
+        c_center = (-(y_local - (self.grid_shape_m[1] / 2)) / self.grid_res).floor() # [N, M]
+        
+        # --- 处理行人半径 (你要求的功能) ---
+        # 我们将“splat” (扩展) 每个行人以覆盖其半径
+        radius_cells = (traffic_radius / self.grid_res).ceil().long() # [1, M]
+        
+        # 确保 radius_cells 不超过我们的 splatting 核大小
+        radius_cells = torch.clamp(radius_cells, 0, self.max_radius_cells) # [1, M]
+        
+        # 为每个行人创建其 splatting 索引
+        # [N, M, 1, 2] + [1, 1, K*K, 2] -> [N, M, K*K, 2]
+        center_indices = torch.stack([r_center, c_center], dim=-1).unsqueeze(2)
+        splat_indices = center_indices + self.splat_kernel_indices
+        
+        # [N, M, K*K, 2]
+        
+        # 过滤掉核中超出半径的单元
+        # [1, 1, K*K]
+        kernel_dist_sq = self.splat_kernel_indices[..., 0]**2 + self.splat_kernel_indices[..., 1]**2
+        # [1, M, 1]
+        radius_cells_sq = radius_cells.float().square().unsqueeze(-1)
+        
+        # [N, M, K*K]
+        radius_mask = (kernel_dist_sq <= radius_cells_sq).expand(num_envs, -1, -1)
+
+        # 4. 展平以便使用 scatter (或 index_put_)
+        
+        # 结合观测区域掩码和半径掩码
+        final_mask = mask.unsqueeze(-1) & radius_mask # [N, M, K*K]
+
+        # 展平所有东西
+        
+        # 批次索引 [N] -> [N, 1, 1] -> [N, M, K*K]
+        batch_idx = torch.arange(num_envs, device=self.device).view(num_envs, 1, 1).expand(-1, mask.shape[1], self.splat_kernel_size)
+        
+        flat_batch = batch_idx[final_mask] # [Num_Valid_Cells]
+        flat_r = splat_indices[..., 0][final_mask].long()
+        flat_c = splat_indices[..., 1][final_mask].long()
+
+        # 裁剪索引到网格边界 [0, 79]
+        flat_r = torch.clamp(flat_r, 0, self.grid_size[0] - 1)
+        flat_c = torch.clamp(flat_c, 0, self.grid_size[1] - 1)
+
+        # 准备速度值
+        vx_vals = vel_robot[..., 0].unsqueeze(-1).expand(-1, -1, self.splat_kernel_size) # [N, M, K*K]
+        vy_vals = vel_robot[..., 1].unsqueeze(-1).expand(-1, -1, self.splat_kernel_size) # [N, M, K*K]
+        
+        flat_vx = vx_vals[final_mask]
+        flat_vy = vy_vals[final_mask]
+
+        # 5. 写入网格 (使用 index_put_ 以便并行)
+        # 这种方法用最后一个写入的值覆盖 (与 DRL-VO 的原始实现行为一致)
+        ped_map_vx = torch.zeros((num_envs, self.grid_size[0], self.grid_size[1]), device=self.device)
+        ped_map_vy = torch.zeros((num_envs, self.grid_size[0], self.grid_size[1]), device=self.device)
+        
+        ped_map_vx[flat_batch, flat_r, flat_c] = flat_vx
+        ped_map_vy[flat_batch, flat_r, flat_c] = flat_vy
+
+        return torch.stack([ped_map_vx, ped_map_vy], dim=1) # [N, 2, 80, 80]
+
+
 
 # -------------------- Modular Observation manager --------------------
 @configclass
@@ -522,6 +706,7 @@ OBSERVATION_MODULES: dict[str, type[ObservationModule]] = {
     "traffic_spatial_state": TrafficSpatialEdgesObservationModule,
     "lidar": LidarObservationModule,
     "dynamic_obstacle": DynamicObstacleObservationModule,
+    "drlvo": DrlvoObservationModule,
 }
 
 

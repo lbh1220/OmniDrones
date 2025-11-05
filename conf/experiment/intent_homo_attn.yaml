@@ -1,13 +1,13 @@
-name: drlvo
+name: intent_homo_attn
 defaults:
   - /env/open_air@env    
-  - /model/drlvo@model  
+  - /model/dynamic_traffic_features@model  
   - /algo/ppo_skrl@algo    
 
 # --- 覆盖 ---
 env:
   observation_cfg:
-    modules: ["robot_node", "drlvo"] #
+    modules: ["robot_node", "traffic_spatial_state"] #
   reward_cfg:
     modules: ["nav", "traffic_future", "cross_track", "smoothness"] #
   # ... (其他 env 覆盖)
@@ -18,13 +18,19 @@ env:
     num_evtols: 2
     evtol:
       safety_radius: 8.0
-  predict_steps: 0
+  predict_steps: 5
   rew_evtol_future_penalty: -2.0
   rew_drone_future_penalty: -2.0
   rew_cross_track_coeff: -0.1
   rew_smoothness_coeff: -0.0
-
+  action_manager:
+    action_space_type: "beta"
 algo:
   rollouts: 128
   mini_batches: 32
   learning_rate: 4e-5
+  entropy_loss_scale: 0.001
+
+model:
+  features_extractor_kwargs:
+    {"use_type_split": False}
