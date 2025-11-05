@@ -43,11 +43,15 @@ class SharedCategoricalMixin(CategoricalMixin, DeterministicMixin, Model):
         self.features_extractor = features_extractor_cls(
             observation_space, **features_extractor_kwargs
         )
-        
+        if isinstance(net_arch, dict):
+            pi_layers_dims = net_arch.get("pi", [])  # Layer sizes of the policy network
+            vf_layers_dims = net_arch.get("vf", [])  # Layer sizes of the value network
+        else:
+            pi_layers_dims = vf_layers_dims = net_arch
         # Actor network (separate from critic)
         actor_layers = []
         input_dim = features_dim
-        for hidden_dim in net_arch:
+        for hidden_dim in pi_layers_dims:
             actor_layers.append(nn.Linear(input_dim, hidden_dim))
             actor_layers.append(nn.Tanh())
             input_dim = hidden_dim
@@ -59,7 +63,7 @@ class SharedCategoricalMixin(CategoricalMixin, DeterministicMixin, Model):
         # Critic network (separate from actor)
         critic_layers = []
         input_dim = features_dim
-        for hidden_dim in net_arch:
+        for hidden_dim in vf_layers_dims:
             critic_layers.append(nn.Linear(input_dim, hidden_dim))
             critic_layers.append(nn.Tanh())
             input_dim = hidden_dim
@@ -176,11 +180,15 @@ class SharedAttentionGRUDiscrete(CategoricalMixin, DeterministicMixin, Model):
             num_layers=self.num_layers,
             batch_first=True
         )
-        
+        if isinstance(net_arch, dict):
+            pi_layers_dims = net_arch.get("pi", [])  # Layer sizes of the policy network
+            vf_layers_dims = net_arch.get("vf", [])  # Layer sizes of the value network
+        else:
+            pi_layers_dims = vf_layers_dims = net_arch
         # Actor network (takes GRU output)
         actor_layers = []
         input_dim = self.hidden_size
-        for hidden_dim in net_arch:
+        for hidden_dim in pi_layers_dims:
             actor_layers.append(nn.Linear(input_dim, hidden_dim))
             actor_layers.append(nn.Tanh())
             input_dim = hidden_dim
@@ -192,7 +200,7 @@ class SharedAttentionGRUDiscrete(CategoricalMixin, DeterministicMixin, Model):
         # Critic network (takes GRU output)
         critic_layers = []
         input_dim = self.hidden_size
-        for hidden_dim in net_arch:
+        for hidden_dim in vf_layers_dims:
             critic_layers.append(nn.Linear(input_dim, hidden_dim))
             critic_layers.append(nn.Tanh())
             input_dim = hidden_dim

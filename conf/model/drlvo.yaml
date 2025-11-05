@@ -6,8 +6,10 @@ features_extractor_cls: "learning.networks.drlvo.DrlvoFeaturesExtractor"
 use_rnn: False
 # 2. 主模型参数 (保持不变)
 features_dim: 256
-net_arch: [256, 256] # DRLVO似乎是pi=256, vf=128
-
+# net_arch: [256, 256] # DRLVO似乎是pi=256, vf=128
+net_arch:
+  pi: [256]
+  vf: [128]
 # 未来如果我要use_rnn, 需要在这里添加
 # 在train的时候，第一步先读了use_rnn, 然后pop了他
 
