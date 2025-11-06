@@ -72,7 +72,8 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     # env_cfg_instance.viewer = ViewerCfg(...)
     from isaac_lab_envs.direct.uam_env import UamEnv
     from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg
-    env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None) #
+    base_env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None) #
+    env = base_env
     if video_kwargs is not None:
         import gymnasium as gym
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
@@ -144,22 +145,28 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     agent.set_running_mode("eval")
 
     # --- 6. 运行评估 ---
-    print(f"Running evaluation for {num_episodes} episodes...")
-    from learning.skrl.evaluate_agent import evaluate_policy
-    eval_results = evaluate_policy(agent, env, num_envs, num_episodes)
-    # save 这个json的result
-    eval_summary = {
-        "test_config": {
-            "model_dir": model_path,
-            "num_episodes": num_episodes,
-            "num_envs": num_envs
-        },
-        "results": eval_results
-    }
-    import json
+    
+    if args.vis_velocity:
+        from learning.vis_velocity import visualize_model_velocity
+        visualize_model_velocity(agent, env_cfg_instance, base_env, save_dir)
+    else:
+        print(f"Running evaluation for {num_episodes} episodes...")
+        from learning.skrl.evaluate_agent import evaluate_policy
+        eval_results = evaluate_policy(agent, env, num_envs, num_episodes)
 
-    with open(os.path.join(save_dir, "eval_results.json"), "w") as f:
-        json.dump(eval_summary, f, indent=2)
+        # save 这个json的result
+        eval_summary = {
+            "test_config": {
+                "model_dir": model_path,
+                "num_episodes": num_episodes,
+                "num_envs": num_envs
+            },
+            "results": eval_results
+        }
+        import json
+
+        with open(os.path.join(save_dir, "eval_results.json"), "w") as f:
+            json.dump(eval_summary, f, indent=2)
     env.close()
     simulation_app.close()
     print("Done.")
@@ -167,11 +174,12 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/intent_attn/dynamic_traffic_features_20251104_1854", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--path", type=str, default="outputs/intent_attn/beta_action", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
     parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
+    parser.add_argument("--vis_velocity", action="store_true", default=True, help="Visualize velocity.")
     args = parser.parse_args()
     
     run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video)
