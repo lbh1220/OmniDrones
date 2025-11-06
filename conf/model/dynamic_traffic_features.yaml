@@ -3,7 +3,7 @@ name: dynamic_traffic_features
 # 1. 【关键】只替换了特征提取器的【类路径】
 features_extractor_cls: "learning.networks.traffic_attn.DynamicTrafficFeaturesExtractor"
 
-use_rnn: False
+use_rnn: True
 # 2. 主模型参数 (保持不变)
 features_dim: 128
 net_arch: [256, 256]

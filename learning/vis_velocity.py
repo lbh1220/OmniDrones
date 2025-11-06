@@ -181,7 +181,7 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     eps = 1e-6
     norm = torch.norm(dir_xy, dim=-1, keepdim=True)
     unit = torch.where(norm > eps, dir_xy / norm, torch.zeros_like(dir_xy))
-    # vel_xy = unit * float(base_env.cfg.max_speed)
+    vel_xy = unit * float(base_env.cfg.max_speed)
     drone_state[:, 0, 7:9] = vel_xy
     drone_state[:, 0, 9] = 0.0
     

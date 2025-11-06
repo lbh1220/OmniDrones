@@ -16,7 +16,7 @@ video_length: 500
 # --- Hydra 配置 ---
 hydra:
   run:
-    dir: outputs/${experiment.name}/${model.name}_${now:%Y%m%d_%H%M}
+    dir: outputs/${env.name}/${experiment.name}/${model.name}_${now:%Y%m%d_%H%M}
   job:
       chdir: True
   verbose: []

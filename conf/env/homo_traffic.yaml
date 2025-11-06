@@ -1,0 +1,31 @@
+defaults:
+  # 2. 加载 nav_base.yaml 的所有内容
+  # 3. 使用 '@_here_' 将其内容“合并”到当前级别
+  - /env/nav_base@_here_
+  - _self_
+name: homo_traffic
+
+
+# 启用 traffic_sim (之前是 null)
+traffic_sim:
+  _target_: isaac_lab_envs.traffic.cfg.config.TrafficCfg
+  num_drones: 10
+  num_evtols: 0
+  flight_height: ${env.flight_height}
+  evtol:
+    _target_: isaac_lab_envs.traffic.cfg.config.TrafficEvtolCfg
+    safety_radius: 8.0
+  drone:
+    _target_: isaac_lab_envs.traffic.cfg.config.TrafficDroneCfg
+    safety_radius: 1.0
+  # ... (evtol, drone 的 safety_radius 等) ...
+
+# 指定此环境所需的 MDP 管理器
+reward_cfg:
+  modules: ["nav", "traffic_future", "cross_track"]
+observation_cfg:
+  modules: ["robot_node", "lidar", "traffic_spatial_edges"]
+
+# 指定此环境的奖励参数
+rew_evtol_future_penalty: -2.0
+rew_drone_future_penalty: -2.0

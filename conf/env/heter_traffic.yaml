@@ -3,14 +3,14 @@ defaults:
   # 3. 使用 '@_here_' 将其内容“合并”到当前级别
   - /env/nav_base@_here_
   - _self_
-name: open_air
+name: heter_traffic
 
 
 # 启用 traffic_sim (之前是 null)
 traffic_sim:
   _target_: isaac_lab_envs.traffic.cfg.config.TrafficCfg
   num_drones: 10
-  num_evtols: 1
+  num_evtols: 2
   flight_height: ${env.flight_height}
   evtol:
     _target_: isaac_lab_envs.traffic.cfg.config.TrafficEvtolCfg
