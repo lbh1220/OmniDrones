@@ -1,7 +1,7 @@
 name: intent_homo_attn
 defaults:
   - /env/open_air@env    
-  - /model/dynamic_traffic_features@model  
+  - /model/traffic_attn@model  
   - /algo/ppo_skrl@algo    
 
 # --- 覆盖 ---

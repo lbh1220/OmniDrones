@@ -1,4 +1,4 @@
-name: intent_attp_s0p1
+name: no_future_rew
 defaults:
   - /env/heter_traffic@env    
   - /model/traffic_attn@model  
@@ -14,10 +14,10 @@ env:
   arrival_threshold: 2.0
   use_global_path: True
   predict_steps: 5
-  rew_evtol_future_penalty: -2.0
-  rew_drone_future_penalty: -2.0
+  rew_evtol_future_penalty: -0.0
+  rew_drone_future_penalty: -0.0
   rew_cross_track_coeff: -0.1
-  rew_smoothness_coeff: -0.1
+  rew_smoothness_coeff: -0.0
   action_manager:
     action_space_type: "beta"
 algo:

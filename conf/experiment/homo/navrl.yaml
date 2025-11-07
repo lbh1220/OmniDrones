@@ -1,15 +1,15 @@
-name: traffic_attn
+name: navrl_traffic
 defaults:
-  - /env/heter_traffic@env    
-  - /model/traffic_attn@model  
+  - /env/homo_traffic@env    
+  - /model/navrl@model  
   - /algo/ppo_skrl@algo    
 
 # --- 覆盖 ---
 env:
   observation_cfg:
-    modules: ["robot_node", "traffic_state"] #
+    modules: ["robot_node", "lidar", "dynamic_obstacle"]  #
   reward_cfg:
-    modules: ["nav", "traffic_future", "cross_track", "smoothness"] #
+    modules: ["nav", "traffic_future", "cross_track"] #
   # ... (其他 env 覆盖)
   arrival_threshold: 2.0
   use_global_path: True
@@ -18,10 +18,12 @@ env:
   rew_drone_future_penalty: -2.0
   rew_cross_track_coeff: -0.1
   rew_smoothness_coeff: -0.0
-  action_manager:
-    action_space_type: "beta"
+
 algo:
   rollouts: 128
   mini_batches: 32
   learning_rate: 4e-5
-  entropy_loss_scale: 0.001
+
+model:
+  features_extractor_kwargs:
+    {"disable_lidar": True, "disable_dyn": False} 

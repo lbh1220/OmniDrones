@@ -174,12 +174,12 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/intent_attn/beta_action", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--path", type=str, default="outputs/heter_traffic/intent_attn_t0p5/dynamic_traffic_features_20251107_0502", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
     parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
-    parser.add_argument("--vis_velocity", action="store_true", default=True, help="Visualize velocity.")
+    parser.add_argument("--vis_velocity", action="store_true", default=False, help="Visualize velocity.")
     args = parser.parse_args()
     
     run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video)

@@ -109,9 +109,12 @@ def generate_fix_traffic(
     cfg, device: torch.device,
 ):
         # evtol在（0, 15) 速度（2，0），两个drones在（-15，-15）和（15，15），速度（1，0）
+        # 另外一种方式是让evtol在path上
     flight_height = cfg.flight_height
+    # positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
+    # velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
     positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
-    velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
+    velocities = torch.tensor([[0.0, -2.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
     types = torch.tensor([2, 1, 1], dtype=torch.long, device=device)
     radii = torch.tensor([cfg.traffic_sim.evtol.safety_radius, cfg.traffic_sim.drone.safety_radius, cfg.traffic_sim.drone.safety_radius], device=device)
     return positions, velocities, types, radii
@@ -153,8 +156,10 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     # 起点（xmin,10), 终点(xmax,-10），waypoints中间添加一个(0,0)
     flight_height = base_env.cfg.flight_height
     start = torch.tensor([[xmin, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
-    goal = torch.tensor([[xmax, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
-    waypoints = torch.tensor([[xmin, 0.0, flight_height], [0.0, 0.0, flight_height], [xmax, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
+    goal = torch.tensor([[xmax, -10.0, flight_height]], device=base_env.device).unsqueeze(0)
+    inter_points = torch.tensor([[0.0, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
+    waypoints = torch.cat([start, inter_points, goal], dim=1)
+    # waypoints = torch.tensor([[xmin, 0.0, flight_height], [0.0, 0.0, flight_height], [xmax, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
     # 共享同一task：repeat到 num_envs
     state.navigation.start_positions = start.repeat(num_envs, 1, 1)
     state.navigation.target_positions = goal.repeat(num_envs, 1, 1)
@@ -182,6 +187,7 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     norm = torch.norm(dir_xy, dim=-1, keepdim=True)
     unit = torch.where(norm > eps, dir_xy / norm, torch.zeros_like(dir_xy))
     vel_xy = unit * float(base_env.cfg.max_speed)
+    vel_xy = torch.zeros_like(vel_xy)
     drone_state[:, 0, 7:9] = vel_xy
     drone_state[:, 0, 9] = 0.0
     
@@ -203,8 +209,9 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     state.traffic.traffic_future_traj = traffic_future_traj
     
     with torch.inference_mode():
-        for i in range(3):
+        for i in range(2):
             drone_state[:, 0, 7:9] = vel_xy
+            state.update_ego_drone_state(drone_state)
             # 生成观测（取内层 'policy'）
             observations = base_env.obs_processor.process_observation(state)["policy"]
             # 可能需要把observation flatten

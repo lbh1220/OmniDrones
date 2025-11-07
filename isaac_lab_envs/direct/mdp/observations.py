@@ -15,7 +15,7 @@ from omni_drones.utils.torch import (
 )
 
 
-def encode_relative_xy(relative_xy: torch.Tensor, use_angle_distance_obs: bool, circle_radius: float, observation_norm_scale: float) -> torch.Tensor:
+def encode_relative_xy(relative_xy: torch.Tensor, use_angle_distance_obs: bool, circle_radius: float=100.0, observation_norm_scale: float=10.0) -> torch.Tensor:
     """将相对位置编码为所需表示。
     
     - 旧模式: 直接对 (dx, dy) 做归一化
@@ -242,6 +242,8 @@ class TrafficStateObservationModule(ObservationModule):
         cy = torch.cos(robot_yaw)
         sy = torch.sin(robot_yaw)
         rel_pos = world_to_body(rel_pos, cy, sy)
+        traffic_vel_2d = traffic_vel_2d.unsqueeze(0).expand(N, -1, -1) # [N, T, 2]
+        traffic_vel_2d = world_to_body(traffic_vel_2d, cy, sy)
 
         # visible mask by range
         dists = torch.norm(rel_pos, dim=-1)  # [N, T]
@@ -249,12 +251,14 @@ class TrafficStateObservationModule(ObservationModule):
 
         # Assemble traffic_states per agent: [rel_x, rel_y, vel_x, vel_y, radius] (+ inv_dist optional)
         radii = traffic_rad.view(1, -1, 1).expand(N, T, 1)  # [N,T,1]
-        base = torch.cat([rel_pos, traffic_vel_2d.unsqueeze(0).expand(N, -1, -1), radii], dim=-1)  # [N,T,5]
-        if use_angle_distance_obs:
-            inv_dist = (1.0 / (dists + 1.0)).unsqueeze(-1)  # [N,T,1]
-            traffic_states = torch.cat([base, inv_dist], dim=-1)  # [N,T,6]
-        else:
-            traffic_states = base  # [N,T,5]
+        # base = torch.cat([rel_pos, traffic_vel_2d, radii], dim=-1)  # [N,T,5]
+        # if use_angle_distance_obs:
+        #     inv_dist = (1.0 / (dists + 1.0)).unsqueeze(-1)  # [N,T,1]
+        #     traffic_states = torch.cat([base, inv_dist], dim=-1)  # [N,T,6]
+        # else:
+        #     traffic_states = base  # [N,T,5]
+        encode_rel_pos = encode_relative_xy(rel_pos, use_angle_distance_obs)
+        traffic_states = torch.cat([encode_rel_pos, traffic_vel_2d, radii], dim=-1)  # [N,T,5/6]
 
 
         cur_T = traffic_states.shape[1]
