@@ -75,7 +75,11 @@ class UamEnv(DirectRLEnv):
             eye=(0, 0.0, range_x*1.75),
             lookat=(0., 0., 1.)
         )
-
+        # cfg.viewer = ViewerCfg(
+        #     resolution=(1080, 1080),
+        #     eye=(range_x*1.2, 0.0, range_x*1.2),
+        #     lookat=(0., 0., 1.)
+        # )
         self._init_mdp_components(cfg)
         
         # 父类初始化 - 这会调用 _setup_scene()

@@ -27,7 +27,7 @@ MODEL_LIST = [
     "best_model_5.pt",
 ]
 
-def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False, num_envs: int = 10, record_video: bool = False):
+def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False, num_envs: int = 10, record_video: bool = False, model_name: str = "agent_190000.pt"):
     """
     加载已训练的 PPO agent，并在环境中运行评估。
 
@@ -53,6 +53,7 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     cfg = OmegaConf.create(cfg_dict)
 
     save_dir = os.path.join(experiment_path, f"test_{datetime.now().strftime('%Y%m%d_%H%M')}")
+    os.makedirs(save_dir, exist_ok=True)
     # --- 3. 实例化环境 ---
     #    (这与 train_skrl.py 中的逻辑完全相同)
     print("Instantiating environment...")
@@ -60,6 +61,8 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     env_cfg_instance.num_envs = num_envs
     env_cfg_instance.scene = replace(env_cfg_instance.scene, num_envs=num_envs)
     env_cfg_instance.arrival_threshold = 2.0 # 测试时必须可以到达终点才行
+
+    env_cfg_instance.debug_vis_num_envs = 1
     video_kwargs = None
     if record_video:
         video_kwargs = {
@@ -138,7 +141,11 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     )
 
     # --- 5. 加载模型权重 ---
-    model_path = os.path.join(experiment_path, "final_model.pt") #
+    if not model_name.endswith(".pt"):
+        model_name = model_name + ".pt"
+    model_path = os.path.join(experiment_path, model_name) #
+    if not os.path.exists(model_path):
+        model_path = os.path.join(experiment_path, 'checkpoints', model_name)
     print(f"Loading model weights from: {model_path}")
     agent.init()
     agent.load(model_path) #
@@ -174,12 +181,14 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/heter_traffic/intent_attn_t0p5/dynamic_traffic_features_20251107_0502", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--path", type=str, default="outputs/dynamic_city/no_path/navrl_baseline", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
     parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
     parser.add_argument("--vis_velocity", action="store_true", default=False, help="Visualize velocity.")
+    parser.add_argument("--model_name", type=str, default="final_model.pt", help="Model name.")
     args = parser.parse_args()
-    
-    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video)
+    if args.vis_velocity:
+        args.record_video = False
+    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video, args.model_name)

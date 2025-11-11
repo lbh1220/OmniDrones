@@ -153,20 +153,6 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     base_env.state.collision.safety_radius = base_env.cfg.safety_radius
     base_env.state.init_traffic_namespace(predict_steps=base_env.cfg.predict_steps, pred_timestep=base_env.cfg.pred_timestep)
     state = base_env.state
-    # 起点（xmin,10), 终点(xmax,-10），waypoints中间添加一个(0,0)
-    flight_height = base_env.cfg.flight_height
-    start = torch.tensor([[xmin, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
-    goal = torch.tensor([[xmax, -10.0, flight_height]], device=base_env.device).unsqueeze(0)
-    inter_points = torch.tensor([[0.0, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
-    waypoints = torch.cat([start, inter_points, goal], dim=1)
-    # waypoints = torch.tensor([[xmin, 0.0, flight_height], [0.0, 0.0, flight_height], [xmax, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
-    # 共享同一task：repeat到 num_envs
-    state.navigation.start_positions = start.repeat(num_envs, 1, 1)
-    state.navigation.target_positions = goal.repeat(num_envs, 1, 1)
-    state.navigation.waypoints = waypoints.repeat(num_envs, 1, 1)
-    state.navigation.waypoint_lengths = torch.full((num_envs,), waypoints.shape[1], dtype=torch.long, device=base_env.device)
-    state.navigation.current_waypoint_indices = torch.zeros(num_envs, dtype=torch.long, device=base_env.device)
-
 
 
 
@@ -176,20 +162,35 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     drone_state[:, 0, 1] = torch.from_numpy(grid_xy[:, 1]).to(base_env.device)
     drone_state[:, 0, 2] = base_env.cfg.flight_height
     drone_state[:, 0, 3] = 1.0 # yaw = 0
-    # 计算指向目标的单位方向并赋速度
-    if cfg.use_global_path:
-        target_xy = state.navigation.local_goals[:, 0, :2]
-    else:
-        target_xy = state.navigation.target_positions[:, 0, :2]
-    pos_xy = drone_state[:, 0, :2]  # [N,2]
-    dir_xy = target_xy - pos_xy
-    eps = 1e-6
-    norm = torch.norm(dir_xy, dim=-1, keepdim=True)
-    unit = torch.where(norm > eps, dir_xy / norm, torch.zeros_like(dir_xy))
-    vel_xy = unit * float(base_env.cfg.max_speed)
-    vel_xy = torch.zeros_like(vel_xy)
-    drone_state[:, 0, 7:9] = vel_xy
-    drone_state[:, 0, 9] = 0.0
+
+
+    # 构造task
+    # 起点（xmin,10), 终点(xmax,-10），waypoints中间添加一个(0,0)
+    flight_height = base_env.cfg.flight_height
+    start = torch.tensor([[xmin, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
+    goal = torch.tensor([[xmax-5, -10.0, flight_height]], device=base_env.device).unsqueeze(0)
+    inter_points = torch.tensor([[0.0, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
+    waypoints = torch.cat([start, inter_points, goal], dim=1)
+    # waypoints = torch.cat([start, goal], dim=1)
+    # waypoints = torch.tensor([[xmin, 0.0, flight_height], [0.0, 0.0, flight_height], [xmax, 0.0, flight_height]], device=base_env.device).unsqueeze(0)
+    # 共享同一task：repeat到 num_envs
+    # share one global path
+    state.navigation.start_positions = start.repeat(num_envs, 1, 1)
+    state.navigation.target_positions = goal.repeat(num_envs, 1, 1)
+    state.navigation.waypoints = waypoints.repeat(num_envs, 1, 1)
+    state.navigation.waypoint_lengths = torch.full((num_envs,), waypoints.shape[1], dtype=torch.long, device=base_env.device)
+    state.navigation.current_waypoint_indices = torch.zeros(num_envs, dtype=torch.long, device=base_env.device)
+
+
+    point_to_point_path = True
+    if point_to_point_path:
+        # do not share global path, use point to point path
+        state.navigation.start_positions = drone_state[:, :, :3]
+        state.navigation.waypoints = torch.cat([state.navigation.start_positions, state.navigation.target_positions], dim=1)
+        state.navigation.waypoint_lengths = torch.full((num_envs,), 2, dtype=torch.long, device=base_env.device)
+        state.navigation.current_waypoint_indices = torch.zeros(num_envs, dtype=torch.long, device=base_env.device)
+
+
     
 
     state.update_ego_drone_state(drone_state)
@@ -201,15 +202,30 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     state.traffic.traffic_velocities = traffic_vel
     state.traffic.traffic_types = traffic_types
     state.traffic.traffic_safety_radius = traffic_radii
-
     
 
     # 直接写入观测处理器缓存
     traffic_future_traj = predict_traffic_trajectory(traffic_pos, traffic_vel, traffic_types, traffic_radii, base_env.cfg.predict_steps, base_env.cfg.pred_timestep)
     state.traffic.traffic_future_traj = traffic_future_traj
     
+    # 计算指向目标的单位方向并赋速度
+    if cfg.use_global_path:
+        target_xy = state.navigation.local_goals[:, 0, :2]
+    else:
+        target_xy = state.navigation.target_positions[:, 0, :2]
+    pos_xy = drone_state[:, 0, :2]  # [N,2]
+    dir_xy = target_xy - pos_xy
+    eps = 1e-6
+    norm = torch.norm(dir_xy, dim=-1, keepdim=True)
+    unit = torch.where(norm > eps, dir_xy / norm, torch.zeros_like(dir_xy))
+    vel_xy = unit * float(base_env.cfg.max_speed)
+    # vel_xy = torch.zeros_like(vel_xy)
+    drone_state[:, 0, 7:9] = vel_xy
+    drone_state[:, 0, 9] = 0.0
+
+
     with torch.inference_mode():
-        for i in range(2):
+        for i in range(1):
             drone_state[:, 0, 7:9] = vel_xy
             state.update_ego_drone_state(drone_state)
             # 生成观测（取内层 'policy'）
@@ -234,10 +250,11 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     fig, ax = plt.subplots(figsize=(9, 9))
     ax.set_aspect("equal")
     ax.set_xlim([xmin, xmax])
-    ax.set_ylim([ymin, ymax])
-    ax.set_title("Policy velocity field and traffic")
-    ax.set_xlabel("X [m]")
-    ax.set_ylabel("Y [m]")
+    # ax.set_ylim([ymin, ymax])
+    ax.set_ylim([-30,30])
+    # ax.set_title("Policy velocity field and traffic")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
 
     # 自动抽样网格，避免过密
     max_arrows = 4000
@@ -282,19 +299,32 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
                 width=0.004, color="tab:orange", alpha=0.9,
             )
 
-    # global path (共享同一路径，绘制一次)
-    wp = waypoints[0].detach().cpu().numpy()
-    ax.plot(wp[:, 0], wp[:, 1], "-", color="tab:green", lw=2.0, label="path")
-    ax.plot(wp[0, 0], wp[0, 1], "o", color="tab:green", ms=6, label="start")
-    ax.plot(wp[-1, 0], wp[-1, 1], "*", color="tab:purple", ms=10, label="goal")
+    # global path（仅在非 point-to-point 模式下绘制一次）
+    show_global_path = not point_to_point_path
+    if show_global_path:
+        wp = waypoints[0].detach().cpu().numpy()
+        ax.plot(wp[:, 0], wp[:, 1], "-", color="tab:green", lw=2.0, label="path")
+        ax.plot(wp[0, 0], wp[0, 1], "o", color="tab:green", ms=6, label="start")
+        # 目标单独绘制（不再用这里的 star）
+
+    # 单独绘制共享 target（所有 agent 仅画一个）
+    tgt = state.navigation.target_positions[0, 0, :2].detach().cpu().numpy()
+    ax.scatter(
+        tgt[0], tgt[1],
+        s=140, marker="X",
+        color="tab:purple", edgecolors="white", linewidths=1.0,
+        zorder=5,
+    )
 
     # 自定义图例（quiver默认不自动进图例）
     legend_handles = [
         mlines.Line2D([], [], color="tab:blue", marker=r'$\rightarrow$', linestyle='None', markersize=10, label="policy velocity"),
         mlines.Line2D([], [], color="tab:red", marker=r'$\rightarrow$', linestyle='None', markersize=10, label="drone traffic v"),
         mlines.Line2D([], [], color="tab:orange", marker=r'$\rightarrow$', linestyle='None', markersize=10, label="eVTOL traffic v"),
-        mlines.Line2D([], [], color="tab:green", linestyle='-', label="path"),
     ]
+    if show_global_path:
+        legend_handles.append(mlines.Line2D([], [], color="tab:green", linestyle='-', label="path"))
+    legend_handles.append(mlines.Line2D([], [], color="tab:purple", marker='X', linestyle='None', markersize=10, label="target"))
     ax.legend(handles=legend_handles, loc="upper right")
     ax.grid(True, ls=":", alpha=0.5)
     

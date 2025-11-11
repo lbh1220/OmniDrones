@@ -12,7 +12,7 @@ env:
     modules: ["nav", "traffic_future", "smoothness"] #
   # ... (其他 env 覆盖)
   arrival_threshold: 2.0
-  use_global_path: False
+  use_global_path: True
   predict_steps: 0
   rew_evtol_future_penalty: -2.0
   rew_drone_future_penalty: -2.0

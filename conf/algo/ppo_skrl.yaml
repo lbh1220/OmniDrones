@@ -17,3 +17,13 @@ clip_predicted_values: True
 # 归一化设置
 norm_obs: False
 norm_reward: True
+
+#如果要设置schedular的lr
+# "learning_rate_scheduler": LinearLR,
+
+# # 3. 设置 LinearLR 的参数
+# "learning_rate_scheduler_kwargs": {
+#     "start_factor": 1.0,  # 从 1.0 * START_LR 开始
+#     "end_factor": calculated_end_factor, # 衰减到 0.02 * START_LR
+#     "total_iters": calculated_total_iters # 在这么多步内完成衰减
+# }

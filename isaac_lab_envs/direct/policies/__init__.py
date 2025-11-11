@@ -6,12 +6,14 @@ Available policies:
 - ORCAPolicy: ORCA collision avoidance (requires rvo2)
 """
 
-from .base_policy import BasePolicy, ModelBasedPolicy
-from .simple_policies import PurePursuitPolicy, ORCAPolicy
+from .base_policy import BasePolicy, ModelBasedPolicy, PurePursuitPolicy
+from .orca import ORCAPolicy
+from .pdc_policy import PDCPolicy
 
 __all__ = [
     "BasePolicy",
     "ModelBasedPolicy", 
     "PurePursuitPolicy",
-    "ORCAPolicy"
+    "ORCAPolicy",
+    "PDCPolicy"
 ]
