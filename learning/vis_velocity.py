@@ -138,6 +138,17 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
 
     grid_xy = build_grid(xmin, xmax, ymin, ymax, grid_res)  # [N,2]
     # grid_xy = np.array([[20, 40]])
+    # filter out grid points that are inside any traffic safety radius
+    if traffic_pos.numel() > 0:
+        tp = traffic_pos.detach().cpu().numpy()[:, :2]  # [T,2]
+        tr = traffic_radii.detach().cpu().numpy()       # [T]
+        tr = tr + 1.0 # add a ego radius
+        # compute squared distance from each grid point to each traffic
+        diff = grid_xy[:, None, :] - tp[None, :, :]     # [N,T,2]
+        dist2 = np.sum(diff * diff, axis=-1)            # [N,T]
+        inside_any = dist2 <= (tr[None, :] ** 2)        # [N,T]
+        keep_mask = ~np.any(inside_any, axis=1)         # [N]
+        grid_xy = grid_xy[keep_mask]
     num_envs = grid_xy.shape[0]
 
     if hasattr(model.policy, "num_envs"):
@@ -225,7 +236,7 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
 
 
     with torch.inference_mode():
-        for i in range(1):
+        for i in range(3):
             drone_state[:, 0, 7:9] = vel_xy
             state.update_ego_drone_state(drone_state)
             # 生成观测（取内层 'policy'）
@@ -242,6 +253,11 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
             base_env._pre_physics_step(actions)
             # 取批量速度向量
             vel_xy = state.navigation.velocity_commands[:, 0, :2].detach()
+    #         if i == 0:
+    #             vel_xy0 = vel_xy.clone()
+
+    # mask_y15 = (grid_xy[:, 1] < 15.0) & (grid_xy[:, 0] < -8.5)
+    # vel_xy[mask_y15] = vel_xy0[mask_y15]
 
     vel_xy = vel_xy.cpu().numpy()
     

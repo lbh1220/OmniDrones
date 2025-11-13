@@ -76,40 +76,45 @@ def evaluate_policy(policy, env, num_envs, num_episodes):
         if done.any():
             for i, done_ in enumerate(done):
                 if done_:
-                    if cumulative_lengths[i].item() < 20: # 10s
-                        # 对于长度非常短的eposide不统计，可能是task初始化就很危险
-                        cumulative_rewards[i] = 0
-                        cumulative_lengths[i] = 0
-                        continue
-                    # Collect dynamic metrics only from this step's info for env i
-                    for k, v in info.items():
-                        if isinstance(k, str) and k.startswith('metrics/'):
-                            name = k.split('/', 1)[1]
-                            metrics_names.add(name)
-                            val = _get_env_value(v, i)
-                            if val is not None and np.isfinite(val):
-                                metrics_values_by_name[name].append(val)
-                    episode_count += 1
-                    ep_length = cumulative_lengths[i].item()
-                    ep_reward = cumulative_rewards[i].item()
-                    cumulative_rewards[i] = 0
-                    cumulative_lengths[i] = 0
-                    episode_rewards.append(ep_reward)
-                    episode_lengths.append(ep_length)
-                    
                     # Classify episode result
+                    do_record = False
                     Done_reason = 'Timeout'
                     if info['goal_reached'][i].item():
                         success_count += 1
+                        do_record = True
                         Done_reason = 'Success'
                     elif info['collision'][i].item():
                         collision_count += 1
                         Done_reason = 'Collision'
                     else:
                         timeout_count += 1
+                    if cumulative_lengths[i].item() < 20: # 10s
+                        # 对于长度非常短的eposide不统计，可能是task初始化就很危险
+                        cumulative_rewards[i] = 0
+                        cumulative_lengths[i] = 0
+                        continue
+                    # Collect dynamic metrics only from this step's info for env i
+                    if do_record:
+                        for k, v in info.items():
+                            if isinstance(k, str) and k.startswith('metrics/'):
+                                name = k.split('/', 1)[1]
+                                metrics_names.add(name)
+                                val = _get_env_value(v, i)
+                                if val is not None and np.isfinite(val):
+                                    metrics_values_by_name[name].append(val)
+                    episode_count += 1
+                    ep_length = cumulative_lengths[i].item()
+                    ep_reward = cumulative_rewards[i].item()
+                    cumulative_rewards[i] = 0
+                    cumulative_lengths[i] = 0
+                    if do_record:
+                        episode_rewards.append(ep_reward)
+                        episode_lengths.append(ep_length)
+                    
+
                     print(f'Episode {episode_count} {Done_reason} in {ep_length} steps, reward={ep_reward:.4f}', end='')
-                    for name, values in metrics_values_by_name.items():
-                        print(f", {name}={np.mean(values):.4f}", end='')
+                    # for name, values in metrics_values_by_name.items():
+                    #     print(f", {name}={np.mean(values):.4f}", end='')
                     print()
         episode_starts = done
     # Calculate basic metrics

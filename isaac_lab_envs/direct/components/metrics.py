@@ -109,6 +109,21 @@ class CrossTrackModule(MetricModule):
         super().__init__()
         self.window = window
         self.rb_values: deque = deque(maxlen=self.window)
+        # Rolling max per-episode cross-track error
+        self.rb_max_values: deque = deque(maxlen=self.window)
+        # Episode accumulators (initialized in on_env_init)
+        self.max_values_per_env: torch.Tensor | None = None
+
+    def on_env_init(self, manager: "MetricsManager"):
+        super().on_env_init(manager)
+        # Track per-episode maximum cross-track error per env
+        self.max_values_per_env = torch.zeros(manager.num_envs, device=manager.device)
+
+    def on_reset(self, manager: "MetricsManager", env_ids: torch.Tensor):
+        super().on_reset(manager, env_ids)
+        # Reset episode max for the reset environments
+        if self.max_values_per_env is not None and env_ids.numel() > 0:
+            self.max_values_per_env[env_ids] = 0.0
 
     def on_done(self, manager: "MetricsManager", terminated: torch.Tensor, truncated: torch.Tensor) -> Dict[str, float]:
         env = manager.env
@@ -122,11 +137,25 @@ class CrossTrackModule(MetricModule):
             current_step = env.episode_length_buf + 1  # [num_envs]
             new_avg = (old_avg * (current_step - 1) + current_errors) / current_step
             self.mean_values_per_env = new_avg
+            # Update per-episode maximum
+            if self.max_values_per_env is not None:
+                self.max_values_per_env = torch.maximum(self.max_values_per_env, current_errors)
             for idx in finished.nonzero().squeeze(-1).tolist():
                 self.rb_values.append(float(self.mean_values_per_env[idx].item()))
+                if self.max_values_per_env is not None:
+                    self.rb_max_values.append(float(self.max_values_per_env[idx].item()))
+                    # Reset episode max for finished env
+                    # self.max_values_per_env[idx] = 0.0
 
-        return {"rolling/mean_recent_cross_track_error": self.mean_to_tensor(self.rb_values),
-                "episode/mean_cross_track_error": self.mean_values_per_env.clone()}
+        # Prepare outputs (include both mean and max metrics)
+        out: Dict[str, torch.Tensor] = {
+            "rolling/mean_recent_cross_track_error": self.mean_to_tensor(self.rb_values),
+            "episode/mean_cross_track_error": self.mean_values_per_env.clone(),
+        }
+        if self.max_values_per_env is not None:
+            out["rolling/max_recent_cross_track_error"] = self.mean_to_tensor(self.rb_max_values)
+            out["episode/max_cross_track_error"] = self.max_values_per_env.clone()
+        return out
 
 class FlagsModule(MetricModule):
     """Tracks goal/collision/timeout flags per episode and rolling rates."""
@@ -206,6 +235,21 @@ class NearCollisionModule(MetricModule):
         super().__init__()
         self.window = window
         self.rb_values: deque = deque(maxlen=self.window)
+        # Rolling min distance to any traffic per episode
+        self.rb_min_distances: deque = deque(maxlen=self.window)
+        # Episode accumulators (initialized in on_env_init)
+        self.min_distance_per_env: torch.Tensor | None = None
+
+    def on_env_init(self, manager: "MetricsManager"):
+        super().on_env_init(manager)
+        # Initialize per-episode minimum distances with +inf
+        self.min_distance_per_env = torch.full((manager.num_envs,), float("inf"), device=manager.device)
+
+    def on_reset(self, manager: "MetricsManager", env_ids: torch.Tensor):
+        super().on_reset(manager, env_ids)
+        # Reset episode min distances for the reset environments
+        if self.min_distance_per_env is not None and env_ids.numel() > 0:
+            self.min_distance_per_env[env_ids] = float("inf")
 
     def on_done(self, manager: "MetricsManager", terminated: torch.Tensor, truncated: torch.Tensor) -> Dict[str, float]:
         env = manager.env
@@ -221,35 +265,55 @@ class NearCollisionModule(MetricModule):
         traffic_types = env.state.traffic.traffic_types  # [T]
         traffic_safety_radius = env.state.traffic.traffic_safety_radius  # [T]
 
-        if traffic_positions is None or traffic_positions.numel() == 0:
-            return {"rolling/mean_recent_near_collision_ratio": self.mean_to_tensor(self.rb_values),
-                    "episode/mean_near_collision_ratio": self.mean_values_per_env.clone()}
+        # Default outputs (will be filled regardless of traffic existence)
+        out: Dict[str, torch.Tensor] = {}
 
-        # 计算 pairwise 距离: [E, T]
-        # 广播: (E, 1, 3) - (1, T, 3) -> (E, T, 3)
-        deltas = ego_positions.squeeze(1).unsqueeze(1) - traffic_positions.unsqueeze(0)
-        distances = torch.norm(deltas, dim=-1)  # [E, T]
+        if traffic_positions is not None and traffic_positions.numel() > 0:
+            # 计算 pairwise 距离: [E, T]
+            # 广播: (E, 1, 3) - (1, T, 3) -> (E, T, 3)
+            deltas = ego_positions.squeeze(1).unsqueeze(1) - traffic_positions.unsqueeze(0)
+            distances = torch.norm(deltas, dim=-1)  # [E, T]
 
-        # 获取每个 traffic 的 near-collision 阈值: [T]
-        # thresholds = self._get_near_collision_ratio_thresholds(traffic_types, traffic_safety_radius)  # [T]
-        
-        thresholds = traffic_safety_radius + env.cfg.safety_radius
-        # thresholds = thresholds*2.0
-        thresholds = thresholds + 2.0
-        # 比较: [E, T]
-        near_matrix = distances < thresholds.unsqueeze(0)
-        near_any = near_matrix.any(dim=1)  # [E]
+            # 获取每个 traffic 的 near-collision 阈值: [T]
+            # thresholds = self._get_near_collision_ratio_thresholds(traffic_types, traffic_safety_radius)  # [T]
+            thresholds = traffic_safety_radius + env.cfg.safety_radius
+            step_min_distances = torch.min(distances - thresholds.unsqueeze(0), dim=1).values
+            # thresholds = thresholds*2.0
+            thresholds = thresholds + 2.0
+            # 比较: [E, T]
+            near_matrix = distances < thresholds.unsqueeze(0)
+            near_any = near_matrix.any(dim=1)  # [E]
 
-        # 更新均值
-        old_avg = self.mean_values_per_env  # [E]
-        current_step = env.episode_length_buf + 1  # [E]
-        new_avg = (old_avg * (current_step - 1) + near_any.float()) / current_step
-        self.mean_values_per_env = new_avg
-        for idx in finished.nonzero().squeeze(-1).tolist():
-            self.rb_values.append(float(self.mean_values_per_env[idx].item()))
+            # 更新均值
+            old_avg = self.mean_values_per_env  # [E]
+            current_step = env.episode_length_buf + 1  # [E]
+            new_avg = (old_avg * (current_step - 1) + near_any.float()) / current_step
+            self.mean_values_per_env = new_avg
 
-        return {"rolling/mean_recent_near_collision_ratio": self.mean_to_tensor(self.rb_values),
-                "episode/mean_near_collision_ratio": self.mean_values_per_env.clone()}
+            # 计算本步与 traffic 的最近距离: [E]
+            
+            if self.min_distance_per_env is not None:
+                # Update per-episode minimum distance
+                self.min_distance_per_env = torch.minimum(self.min_distance_per_env, step_min_distances.float())
+
+            # 回合结束时，写入滚动窗口并重置
+            for idx in finished.nonzero().squeeze(-1).tolist():
+                self.rb_values.append(float(self.mean_values_per_env[idx].item()))
+                if self.min_distance_per_env is not None:
+                    self.rb_min_distances.append(float(self.min_distance_per_env[idx].item()))
+                    # self.min_distance_per_env[idx] = float("inf")
+        else:
+            # 无 traffic 时，仅维护 rolling/episode 的近碰撞比例（不更新）
+            for idx in finished.nonzero().squeeze(-1).tolist():
+                self.rb_values.append(float(self.mean_values_per_env[idx].item()))
+
+        # 准备输出（含比例与距离两类指标）
+        out["rolling/mean_recent_near_collision_ratio"] = self.mean_to_tensor(self.rb_values)
+        out["episode/mean_near_collision_ratio"] = self.mean_values_per_env.clone()
+        if self.min_distance_per_env is not None:
+            out["rolling/min_recent_distance_to_traffic"] = self.mean_to_tensor(self.rb_min_distances)
+            out["episode/min_distance_to_traffic"] = self.min_distance_per_env.clone()
+        return out
 
     # def _get_near_collision_ratio_thresholds(self, traffic_types: torch.Tensor, traffic_safety_radius: torch.Tensor) -> torch.Tensor:
     #     """
