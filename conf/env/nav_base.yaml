@@ -26,7 +26,7 @@ urban_terrain:
   _target_: isaac_lab_envs.direct.components.map.UrbanTerrainCfg
   terrain_type: "plane"
 
-
+env_scale: 1.0
 # action manager和aera_bounds都在cfg中实例化了，所以不需要_target_
 action_manager:
   _target_: isaac_lab_envs.direct.mdp.action.ActionManagerCfg

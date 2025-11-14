@@ -31,14 +31,16 @@ class VisualizationManager:
 
     def debug_vis_callback(self, event):
         # Update nav visuals if present
-        if self.debug_draw is not None:
-            self.debug_draw.clear()
-        self._update_nav_visuals()
-        # Update traffic visuals if present
-        self._update_traffic_visuals()
-        self._update_lidar_visuals()
-        self._update_planned_path_visuals()
-
+        try:
+            if self.debug_draw is not None:
+                self.debug_draw.clear()
+            self._update_nav_visuals()
+            # Update traffic visuals if present
+            self._update_traffic_visuals()
+            self._update_lidar_visuals()
+            self._update_planned_path_visuals()
+        except Exception as e:
+            print(f"Warning: Could not update debug visuals: {e}")
     # ---------- Nav Visuals ----------
     def _setup_nav_visuals(self):
         env = self.env
@@ -117,7 +119,10 @@ class VisualizationManager:
             dp = drone.pos.squeeze(1)
             if dp.shape[0] > debug_vis_num:
                 dp = dp[:debug_vis_num]
-            self.drone_pos_visualizer.visualize(dp)
+            scale_shape = torch.tensor([1.0, 1.0, 0.5], device=dp.device, dtype=dp.dtype)
+            scales = scale_shape.expand(dp.shape[0], -1)*self.env.cfg.safety_radius
+            self.drone_pos_visualizer.visualize(dp, scales=scales)
+            # self.drone_pos_visualizer.visualize(dp)
 
         # local goals & projection points
         use_global_path = bool(getattr(cfg, "use_global_path", False))

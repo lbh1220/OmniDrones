@@ -132,6 +132,8 @@ class UamEnvCfg(DirectRLEnvCfg):
     pred_timestep: float = 2.0
 
 
+    env_scale = 1.0
+
     dynamic_obstacle_num = 5 # for navrl
     rew_success = 15.0
     rew_collision = -16.0

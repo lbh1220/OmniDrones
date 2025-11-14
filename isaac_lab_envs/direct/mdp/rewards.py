@@ -26,6 +26,7 @@ class NavRewardModule(RewardModule):
         self.success_reward = cfg.rew_success
         self.pot_factor = cfg.rew_potential
         self.previous_potential = None
+        self.v_pref = cfg.v_pref
 
     def compute_reward(self, state: EnvState) -> torch.Tensor:
 
@@ -95,7 +96,8 @@ class NavRewardModule(RewardModule):
         
         # 更新previous_potential
         self.previous_potential = current_potential.clone()
-        
+
+        potential_reward = potential_reward / self.v_pref #对速度做归一化
         return potential_reward
 
 class CrossTrackRewardModule(RewardModule):
@@ -104,6 +106,7 @@ class CrossTrackRewardModule(RewardModule):
         self.cross_track_reward_coeff = cfg.rew_cross_track_coeff
         self.alpha = getattr(cfg, 'rew_cross_track_alpha', 1.0)
         self.previous_cross_track = None
+        self.safety_radius = cfg.safety_radius
 
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         reward = torch.zeros(state.num_envs, device=self.device)
@@ -136,7 +139,7 @@ class CrossTrackRewardModule(RewardModule):
             # clamp this value to [0, 1]
             cross_track_reward = self.cross_track_reward_coeff * torch.clamp(effective_errors**2, max=1.0)
 
-            
+        cross_track_reward = cross_track_reward / self.safety_radius #对安全半径做归一化
         return cross_track_reward
 
 class TrafficFutureRewardModule(RewardModule):

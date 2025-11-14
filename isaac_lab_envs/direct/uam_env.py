@@ -51,6 +51,38 @@ from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg
 from omni.isaac.lab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 
+def take_scale(cfg):
+    if cfg.env_scale > 1.0:
+        cfg.flight_height = cfg.flight_height * cfg.env_scale
+        cfg.safety_radius = cfg.safety_radius * cfg.env_scale
+        cfg.v_pref = cfg.v_pref * cfg.env_scale
+        cfg.arrival_threshold = cfg.arrival_threshold * cfg.env_scale
+        cfg.max_speed = cfg.max_speed * cfg.env_scale
+        cfg.min_speed = cfg.min_speed * cfg.env_scale
+        cfg.area_bounds.xmax = cfg.area_bounds.xmax * cfg.env_scale
+        cfg.area_bounds.xmin = cfg.area_bounds.xmin * cfg.env_scale
+        cfg.area_bounds.ymax = cfg.area_bounds.ymax * cfg.env_scale
+        cfg.area_bounds.ymin = cfg.area_bounds.ymin * cfg.env_scale
+        cfg.area_bounds.grid_size = cfg.area_bounds.grid_size * cfg.env_scale
+        if cfg.traffic_sim is not None:
+            cfg.traffic_sim.evtol.safety_radius = cfg.traffic_sim.evtol.safety_radius * cfg.env_scale
+            cfg.traffic_sim.drone.safety_radius = cfg.traffic_sim.drone.safety_radius * cfg.env_scale
+            cfg.traffic_sim.evtol.max_speed = cfg.traffic_sim.evtol.max_speed * cfg.env_scale
+            cfg.traffic_sim.evtol.v_pref = cfg.traffic_sim.evtol.v_pref * cfg.env_scale
+            cfg.traffic_sim.drone.max_speed = cfg.traffic_sim.drone.max_speed * cfg.env_scale
+            cfg.traffic_sim.drone.v_pref = cfg.traffic_sim.drone.v_pref * cfg.env_scale
+            cfg.traffic_sim.area_bounds.xmax = cfg.traffic_sim.area_bounds.xmax * cfg.env_scale
+            cfg.traffic_sim.area_bounds.xmin = cfg.traffic_sim.area_bounds.xmin * cfg.env_scale
+            cfg.traffic_sim.area_bounds.ymax = cfg.traffic_sim.area_bounds.ymax * cfg.env_scale
+            cfg.traffic_sim.area_bounds.ymin = cfg.traffic_sim.area_bounds.ymin * cfg.env_scale
+            cfg.traffic_sim.area_bounds.grid_size = cfg.traffic_sim.area_bounds.grid_size * cfg.env_scale
+            cfg.traffic_sim.flight_height = cfg.traffic_sim.flight_height * cfg.env_scale
+            # ORCA的参数没有改，因为ORCA不能搞放缩
+            cfg.traffic_sim.orca.neighbor_dist = cfg.traffic_sim.orca.neighbor_dist * cfg.env_scale
+            # safety_space最好别动
+        cfg.rew_potential = cfg.rew_potential / cfg.env_scale
+        # cfg.
+    return cfg
 
 
 
@@ -61,6 +93,7 @@ class UamEnv(DirectRLEnv):
     cfg: UamEnvCfg
 
     def __init__(self, cfg: UamEnvCfg, render_mode: str | None = None, **kwargs):
+        cfg = take_scale(cfg)
         self.time_encoding = cfg.time_encoding
         self.randomization = cfg.randomization
         self.lidar_resolution = cfg.lidar_resolution
@@ -70,9 +103,10 @@ class UamEnv(DirectRLEnv):
         # 初始化观测和奖励处理器
         # debug visualization
         range_x = cfg.area_bounds.xmax - cfg.area_bounds.xmin
+        flight_height = cfg.flight_height
         cfg.viewer = ViewerCfg(
             resolution=(1080, 1080),
-            eye=(0, 0.0, range_x*1.75),
+            eye=(0, 0.0, range_x*1.75+flight_height),
             lookat=(0., 0., 1.)
         )
         # cfg.viewer = ViewerCfg(

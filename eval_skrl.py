@@ -63,6 +63,31 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     env_cfg_instance.arrival_threshold = 2.0 # 测试时必须可以到达终点才行
 
     env_cfg_instance.debug_vis_num_envs = 1
+    env_cfg_instance.env_scale = 10.0
+    # env_cfg_instance.max_speed = 10.0
+    # env_cfg_instance.safety_radius = 10.0
+    # env_cfg_instance.v_pref = 10.0
+    # env_cfg_instance.area_bounds.xmax = -500.0
+    # env_cfg_instance.area_bounds.xmin = 500.0
+    # env_cfg_instance.area_bounds.ymax = -500.0
+    # env_cfg_instance.area_bounds.ymin = 500.0
+    # env_cfg_instance.area_bounds.grid_size = 5.0
+    # env_cfg_instance.env_scale = 10.0
+    # env_cfg_instance.traffic_sim.num_drones = 10
+    # env_cfg_instance.traffic_sim.num_evtols = 1
+    # env_cfg_instance.traffic_sim.evtol.safety_radius = 100.0
+    # env_cfg_instance.traffic_sim.evtol.max_speed = 20.0
+    # env_cfg_instance.traffic_sim.evtol.v_pref = 20.0
+    # env_cfg_instance.traffic_sim.drone.max_speed = 10.0
+    # env_cfg_instance.traffic_sim.drone.safety_radius = 10.0
+    # env_cfg_instance.traffic_sim.drone.v_pref = 10.0
+    # env_cfg_instance.traffic_sim.orca.safety_space = 15.0
+    # env_cfg_instance.traffic_sim.orca.neighbor_dist = 1000.0
+    # env_cfg_instance.traffic_sim.area_bounds.xmax = 500.0
+    # env_cfg_instance.traffic_sim.area_bounds.xmin = -500.0
+    # env_cfg_instance.traffic_sim.area_bounds.ymax = 500.0
+    # env_cfg_instance.traffic_sim.area_bounds.ymin = -500.0
+    # env_cfg_instance.traffic_sim.area_bounds.grid_size = 5.0
     video_kwargs = None
     if record_video:
         video_kwargs = {
@@ -181,9 +206,9 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/dynamic_city/no_path/navrl_baseline", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--path", type=str, default="outputs/heter_traffic/traffic_attn/traffic_attn_20251108_2231", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
-    parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
+    parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode (no UI).")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
     parser.add_argument("--vis_velocity", action="store_true", default=False, help="Visualize velocity.")

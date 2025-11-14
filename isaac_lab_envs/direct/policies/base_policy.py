@@ -22,7 +22,7 @@ class PolicyConfig:
         
         # ORCA-specific parameters
         self.time_step = 0.16
-        self.neighbor_dist = 100.0
+        self.neighbor_dist = 1000.0
         self.max_neighbors = 10
         self.time_horizon = 11.0
         self.time_horizon_obst = 11.0

@@ -99,6 +99,7 @@ class ObservationModule(ABC):
 class RobotNodeObservationModule(ObservationModule):
     def __init__(self, cfg):
         super().__init__(cfg)
+        self.env_scale = getattr(cfg, 'env_scale', 1.0)
 
     def process_observation(self, state: EnvState) -> dict:
         cfg = self.cfg
@@ -128,12 +129,16 @@ class RobotNodeObservationModule(ObservationModule):
         goal_pos = target_pos[:, :, :2]
         rel_goal_world = goal_pos - robot_pos
         rel_goal_body = world_to_body(rel_goal_world, cy, sy)
+        rel_goal_body = rel_goal_body / self.env_scale
         encoded_rel_goal = encode_relative_xy(rel_goal_body, 
                             use_angle_distance_obs, circle_radius, observation_norm_scale)
         vel_body = world_to_body(robot_vel_world, cy, sy)
+        vel_body = vel_body / self.env_scale
 
         robot_radius = torch.full((state.ego_drone.positions.shape[0], 1, 1), cfg.safety_radius, device=device)
+        robot_radius = robot_radius / self.env_scale
         robot_v_pref = torch.full((state.ego_drone.positions.shape[0], 1, 1), cfg.v_pref, device=device)
+        robot_v_pref = robot_v_pref / self.env_scale
 
         # [rel_goal(2/3), radius(1), v_pref(1), yaw(1), vel_body(2)]
         robot_node = torch.cat([
@@ -151,6 +156,7 @@ class RobotNodeObservationModule(ObservationModule):
                 rel_local_goal_body = world_to_body(local_goals[:, :, :2] - robot_pos, cy, sy)
             else:
                 rel_local_goal_body = torch.zeros_like(rel_goal_body)
+            rel_local_goal_body = rel_local_goal_body / self.env_scale
             enc_rel_local = encode_relative_xy(rel_local_goal_body, 
                     use_angle_distance_obs, circle_radius, observation_norm_scale)
 
@@ -158,6 +164,7 @@ class RobotNodeObservationModule(ObservationModule):
                 rel_proj_body = world_to_body(projection_points[:, :, :2] - robot_pos, cy, sy)
             else:
                 rel_proj_body = torch.zeros_like(rel_goal_body)
+            rel_proj_body = rel_proj_body / self.env_scale
             enc_rel_proj = encode_relative_xy(rel_proj_body, 
                     use_angle_distance_obs, circle_radius, observation_norm_scale)
             robot_node = torch.cat([
@@ -296,7 +303,7 @@ class TrafficStateObservationModule(ObservationModule):
 class TrafficSpatialEdgesObservationModule(ObservationModule):
     def __init__(self, cfg):
         super().__init__(cfg)
-
+        self.env_scale = getattr(cfg, 'env_scale', 1.0)
     def process_observation(self, state: EnvState) -> dict:
 
         """使用缓存的轨迹数据计算空间边观测
@@ -353,6 +360,7 @@ class TrafficSpatialEdgesObservationModule(ObservationModule):
         
         relative_pos = traffic_pos_2d.unsqueeze(0) - robot_pos_expanded  # [num_envs, total_traffic, predict_steps+1, 2]
         relative_pos = world_to_body(relative_pos, cy, sy) # [num_envs, total_traffic, predict_steps+1, 2]
+        relative_pos = relative_pos / self.env_scale
         
         # 计算距离用于感知范围过滤
         current_distances = torch.norm(relative_pos[:, :, 0], dim=-1)  # [num_envs, total_traffic]
@@ -369,6 +377,7 @@ class TrafficSpatialEdgesObservationModule(ObservationModule):
 
         # 添加safety radius
         radius_with_feature_dim = state.traffic.traffic_safety_radius.unsqueeze(-1) #  [total_traffic, 1]
+        radius_with_feature_dim = radius_with_feature_dim / self.env_scale
         expanded_radius = radius_with_feature_dim.expand(num_envs, -1, -1) # [num_envs, total_traffic, 1]
         predicted_flat = torch.cat([predicted_flat, expanded_radius], dim=-1) # [num_envs, total_traffic, spatial_dim+1]
         
