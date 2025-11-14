@@ -92,12 +92,17 @@ class NavRewardModule(RewardModule):
             return torch.zeros_like(current_potential)
         
         # 计算势能变化
-        potential_reward = self.pot_factor * (current_potential - self.previous_potential)
+        potential_reward = (current_potential - self.previous_potential)
         
         # 更新previous_potential
         self.previous_potential = current_potential.clone()
 
+
         potential_reward = potential_reward / self.v_pref #对速度做归一化
+
+        potential_reward = potential_reward.clamp(min=-1.0, max=1.0) #归一化之后，他按理说范围应该在t_step（0.5）这个范围内,但是也许可以更大吧
+        potential_reward = potential_reward * self.pot_factor
+
         return potential_reward
 
 class CrossTrackRewardModule(RewardModule):
@@ -128,7 +133,8 @@ class CrossTrackRewardModule(RewardModule):
         safety_radius = state.collision.safety_radius
         
         # 减去安全半径，如果小于安全半径则影响不大
-        effective_errors = torch.clamp(cross_track_errors - safety_radius, min=0.0)
+        effective_errors = (cross_track_errors - safety_radius) / self.safety_radius
+        effective_errors = effective_errors.clamp(min=0.0,max=3.0) # 最大误差为3倍安全半径，再大就不再增加reward了
         
         if self.cross_track_reward_coeff > 0:
             # 正系数：奖励模式 - 距离越小奖励越大
@@ -139,7 +145,6 @@ class CrossTrackRewardModule(RewardModule):
             # clamp this value to [0, 1]
             cross_track_reward = self.cross_track_reward_coeff * torch.clamp(effective_errors**2, max=1.0)
 
-        cross_track_reward = cross_track_reward / self.safety_radius #对安全半径做归一化
         return cross_track_reward
 
 class TrafficFutureRewardModule(RewardModule):
