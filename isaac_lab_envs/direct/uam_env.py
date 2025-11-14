@@ -64,6 +64,10 @@ def take_scale(cfg):
         cfg.area_bounds.ymax = cfg.area_bounds.ymax * cfg.env_scale
         cfg.area_bounds.ymin = cfg.area_bounds.ymin * cfg.env_scale
         cfg.area_bounds.grid_size = cfg.area_bounds.grid_size * cfg.env_scale
+        cfg.lidar_range = cfg.lidar_range * cfg.env_scale
+        if cfg.global_path_planner_cfg is not None:
+            cfg.global_path_planner_cfg.lookahead_distance = cfg.global_path_planner_cfg.lookahead_distance * cfg.env_scale
+        # 暂时没有用mapmanager, 等用到地面建筑物的时候，需要修改
         if cfg.traffic_sim is not None:
             cfg.traffic_sim.evtol.safety_radius = cfg.traffic_sim.evtol.safety_radius * cfg.env_scale
             cfg.traffic_sim.drone.safety_radius = cfg.traffic_sim.drone.safety_radius * cfg.env_scale
@@ -71,6 +75,12 @@ def take_scale(cfg):
             cfg.traffic_sim.evtol.v_pref = cfg.traffic_sim.evtol.v_pref * cfg.env_scale
             cfg.traffic_sim.drone.max_speed = cfg.traffic_sim.drone.max_speed * cfg.env_scale
             cfg.traffic_sim.drone.v_pref = cfg.traffic_sim.drone.v_pref * cfg.env_scale
+            cfg.traffic_sim.drone.arrival_threshold = cfg.traffic_sim.drone.arrival_threshold * cfg.env_scale
+            cfg.traffic_sim.evtol.arrival_threshold = cfg.traffic_sim.evtol.arrival_threshold * cfg.env_scale
+            cfg.traffic_sim.drone.max_offset_radius = cfg.traffic_sim.drone.max_offset_radius * cfg.env_scale
+            cfg.traffic_sim.evtol.turn_radius = cfg.traffic_sim.evtol.turn_radius * cfg.env_scale
+            cfg.traffic_sim.drone.lookahead_distance = cfg.traffic_sim.drone.lookahead_distance * cfg.env_scale
+
             cfg.traffic_sim.area_bounds.xmax = cfg.traffic_sim.area_bounds.xmax * cfg.env_scale
             cfg.traffic_sim.area_bounds.xmin = cfg.traffic_sim.area_bounds.xmin * cfg.env_scale
             cfg.traffic_sim.area_bounds.ymax = cfg.traffic_sim.area_bounds.ymax * cfg.env_scale
@@ -80,7 +90,6 @@ def take_scale(cfg):
             # ORCA的参数没有改，因为ORCA不能搞放缩
             cfg.traffic_sim.orca.neighbor_dist = cfg.traffic_sim.orca.neighbor_dist * cfg.env_scale
             # safety_space最好别动
-        cfg.rew_potential = cfg.rew_potential / cfg.env_scale
         # cfg.
     return cfg
 

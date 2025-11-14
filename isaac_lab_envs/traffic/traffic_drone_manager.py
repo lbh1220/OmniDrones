@@ -350,7 +350,8 @@ class TrafficDroneManager:
             return
         target_vel_xy = self.state.velocity_commands.unsqueeze(0)
         target_vel_xy = target_vel_xy[:, :, :2]
-        target_yaws = torch.zeros(1, self.num_drones, 1, device=self.device)
+        # target_yaws = torch.zeros(1, self.num_drones, 1, device=self.device)
+        target_yaws = None
         target_height = self.config.flight_height * torch.ones(1, self.num_drones, 1, device=self.device)
         rotor_commands = self.controller.compute(
             root_state=drone_state,  # shape [1, N, 3]
@@ -390,11 +391,17 @@ class TrafficDroneManager:
         if self.state.extended_occupancy_grid is not None:
             safe = self.state.are_positions_safe(self.state.positions)
             collided |= ~safe
+            num_collided = collided.sum()
+            # if num_collided > 0:
+            #     self.logger.warning(f"TrafficDroneManager: detect collision with occupancy map: {num_collided}")
         # EVTOL collisions
         if self.evtol_states is not None and self.evtol_states.positions.numel() > 0:
             dmat = torch.cdist(self.state.positions, self.evtol_states.positions)
             thr = self.state.safety_radius.unsqueeze(1) + self.evtol_states.safety_radius.unsqueeze(0)
             collided |= (dmat < thr).any(dim=1)
+            num_collided = collided.sum()
+            # if num_collided > 0:
+            #     self.logger.warning(f"TrafficDroneManager: detect collision with EVTOL: {num_collided}")
         # Drone-drone collisions
         if self.num_drones > 1:
             dmat = torch.cdist(self.state.positions, self.state.positions)
@@ -403,12 +410,18 @@ class TrafficDroneManager:
             eye = torch.eye(self.num_drones, dtype=torch.bool, device=self.device)
             pair_collide = (dmat < thr) & (~eye)
             collided |= pair_collide.any(dim=1)
+            num_collided = collided.sum()
+            # if num_collided > 0:
+            #     self.logger.warning(f"TrafficDroneManager: detect collision with drones: {num_collided}")
         # Height abnormality: treat as collision when leaving the allowed band
         # band: [flight_height - 3 * safety_radius, flight_height + 3 * safety_radius]
         z = self.state.positions[:, 2]
-        tol = 5.0
+        tol = self.config.drone.safety_radius * 4.0
         fh = float(self.config.flight_height)
         height_abnormal = (z < (fh - tol)) | (z > (fh + tol))
+        num_collided = height_abnormal.sum()
+        # if num_collided > 0:
+        #     self.logger.warning(f"TrafficDroneManager: detect height abnormality: {num_collided}")
         collided |= height_abnormal
         # update state
         self.state.has_collided = collided.clone()
