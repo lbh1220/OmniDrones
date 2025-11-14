@@ -221,13 +221,15 @@ class PlanarSpeedController(LeePositionController):
         g: float,
         uav_params,
         # 新增一个用于高度控制的增益参数
-        height_p_gain: float = 2.0  
+        height_p_gain: float = 2.0,
+        height_d_gain: float = 1.0   # D增益 (需要调优)
     ) -> None:
         # 首先，调用父类的构造函数来初始化所有底层参数（如 pos_gain, mass, mixer 等）
         super().__init__(g, uav_params)
         
         # 保存高度控制的 P 增益
         self.height_p_gain = nn.Parameter(torch.tensor(height_p_gain))
+        self.height_d_gain = nn.Parameter(torch.tensor(height_d_gain))
         self.requires_grad_(False)
 
     def compute(
@@ -253,12 +255,22 @@ class PlanarSpeedController(LeePositionController):
         current_pos = root_state[..., :3]
         current_height = current_pos[..., 2:3]
 
-        # 2. 计算高度误差，并生成修正性的Z轴速度
-        #    如果当前高度低于目标，产生一个向上的速度；反之亦然。
+        current_vel_z = root_state[..., 9:10] # 获取当前Z轴速度 (在世界坐标系)
+
+        # 2. 【关键步骤 2】我们自己计算Z轴PD控制
         height_error = target_height - current_height
-        vel_z_correction = height_error * self.height_p_gain
-        # clip vel_z_correction to be within [-1, 1]
-        vel_z_correction = vel_z_correction.clamp(-1, 1)
+        
+        # P 项 (比例)：修正当前的位置误差
+        p_term = height_error * self.height_p_gain
+        
+        # D 项 (微分)：抵抗当前的Z轴速度 (增加阻尼)
+        d_term = -self.height_d_gain * current_vel_z 
+        
+        vel_z_correction = (p_term + d_term)
+        
+        # 提高修正速度的上限 (例如 +/- 5m/s)，这需要调优
+        vel_z_correction = vel_z_correction.clamp(-5.0, 5.0)
+        # vel_z_correction = torch.zeros_like(vel_z_correction)
 
         # 3. 构造一个完整的3D目标速度
         #    将用户输入的XY速度和我们计算出的Z速度合并
@@ -268,7 +280,7 @@ class PlanarSpeedController(LeePositionController):
         #    我们告诉底层控制器，XY方向的目标就是当前位置（因为我们主要控制速度），
         #    而Z方向的目标是我们的目标高度。这能辅助底层控制器更好地维持高度。
         target_pos_3d = current_pos.clone()
-        target_pos_3d[..., 2:3] = target_height
+        # target_pos_3d[..., 2:3] = target_height
 
         # 5. 调用父类的 compute 方法
         #    我们已经准备好了所有“翻译”过的、底层控制器能理解的3D指令。

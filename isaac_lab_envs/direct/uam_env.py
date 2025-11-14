@@ -133,8 +133,8 @@ class UamEnv(DirectRLEnv):
 
         # 初始姿态分布
         self.init_rpy_dist = torch.distributions.Uniform(
-            torch.tensor([-.2, -.2, 0.], device=self.device) * torch.pi,
-            torch.tensor([0.2, 0.2, 2.], device=self.device) * torch.pi
+            torch.tensor([0., 0., 0.], device=self.device) * torch.pi,
+            torch.tensor([0., 0., 2.], device=self.device) * torch.pi
         )
         
         self.extras = {
@@ -424,6 +424,8 @@ class UamEnv(DirectRLEnv):
         # 随机初始姿态（使用原始分布）
         rpy = self.init_rpy_dist.sample((*env_ids.shape, 1))
         rot = euler_to_quaternion(rpy)
+        # rot = torch.zeros_like(rot)
+        # rot[..., 0] = 1.0
         
         # 更新状态对象中的目标位置
         self.state.navigation.target_positions[env_ids] = goal
