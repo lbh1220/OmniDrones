@@ -317,7 +317,7 @@ class TrafficFutureRewardModule(RewardModule):
             v_rel = traffic_vel_2d.unsqueeze(0) - robot_vel_2d   # [N,T,2]
             # 速度做尺度归一化
             v_rel = v_rel / (self.v_pref + 1e-6)
-            dot_raw = (p_rel * v_rel).sum(dim=-1)                # [N,T]
+            dot_raw = (p_rel * v_rel).sum(dim=-1)                # [N,T],# dot为正时代表互相远离，为负代表靠近（危险），所以后面取负来计算系数
             closing_coeff = torch.clamp(-dot_raw, min=0.0)       # [N,T]
             scaled_future_penalty = future_penalty_per_traffic * closing_coeff  # [N,T]
 
