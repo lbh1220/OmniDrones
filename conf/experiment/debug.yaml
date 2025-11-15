@@ -1,6 +1,6 @@
-name: traffic_attn_large
+name: traffic_attn
 defaults:
-  - /env/large_traffic@env    
+  - /env/heter_traffic@env    
   - /model/traffic_attn@model  
   - /algo/ppo_skrl@algo    
 
@@ -14,10 +14,9 @@ env:
   arrival_threshold: 2.0
   use_global_path: True
   predict_steps: 5
-  rew_potential: 1.0
   rew_evtol_future_penalty: -2.0
   rew_drone_future_penalty: -2.0
-  rew_cross_track_coeff: -0.1
+  rew_cross_track_coeff: 0.5
   rew_smoothness_coeff: -0.0
   action_manager:
     action_space_type: "beta"

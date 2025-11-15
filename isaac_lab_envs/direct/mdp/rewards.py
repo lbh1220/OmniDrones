@@ -111,13 +111,17 @@ class CrossTrackRewardModule(RewardModule):
         self.cross_track_reward_coeff = cfg.rew_cross_track_coeff
         self.alpha = getattr(cfg, 'rew_cross_track_alpha', 1.0)
         self.previous_cross_track = None
-        self.safety_radius = cfg.safety_radius
+        self.safety_radius = getattr(cfg, 'safety_radius', 1.0)
+        self.v_pref = getattr(cfg, 'v_pref', 1.0)
 
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         reward = torch.zeros(state.num_envs, device=self.device)
         # 添加横向误差奖励项
         if self.cross_track_reward_coeff != 0.0 and state.navigation.cross_track_errors is not None:
-            cross_track_reward = self._compute_cross_track_reward(state)
+            if self.cross_track_reward_coeff < 0:
+                cross_track_reward = self._compute_cross_track_reward(state)
+            else:
+                cross_track_reward = self._compute_cross_track_reward_new(state)
             reward += cross_track_reward
         return reward
     def _compute_cross_track_reward(self, state: EnvState) -> torch.Tensor:
@@ -139,12 +143,44 @@ class CrossTrackRewardModule(RewardModule):
         if self.cross_track_reward_coeff > 0:
             # 正系数：奖励模式 - 距离越小奖励越大
             # this value is in range [0, 1]
+            raise NotImplementedError("Cross track reward with positive coefficient is not deprecated")
             cross_track_reward = self.cross_track_reward_coeff * torch.exp(-self.alpha * effective_errors)
         else:
             # 负系数：惩罚模式 - 距离越大惩罚越大
             # clamp this value to [0, 1]
             cross_track_reward = self.cross_track_reward_coeff * torch.clamp(effective_errors**2, max=1.0)
 
+        return cross_track_reward
+    
+    def _compute_cross_track_reward_new(self, state: EnvState) -> torch.Tensor:
+        # 使用投影点方向与当前速度的内积来度量“是否远离航线”
+        # 向量、速度分别按 safety_radius 与 v_pref 做尺度归一化
+        EPS = 1e-6
+        num_envs = state.num_envs
+        # 若不存在必要数据，直接返回 0
+        if (state.ego_drone.positions is None or
+            state.ego_drone.velocities is None or
+            state.navigation.projection_points is None):
+            return torch.zeros(num_envs, device=self.device)
+        
+        pos_2d = state.ego_drone.positions[:, 0, :2]          # [N,2]
+        proj_2d = state.navigation.projection_points[:, 0, :2]# [N,2]
+        vel_2d = state.ego_drone.velocities[:, 0, :2]         # [N,2]
+        
+        # 从当前位置指向投影点的向量
+        to_proj_2d = proj_2d - pos_2d                         # [N,2]
+        # 尺度归一化
+        to_proj_2d = to_proj_2d / (self.safety_radius + EPS)
+        vel_2d = vel_2d / (self.v_pref + EPS)
+        
+        # 计算内积：>0 表示朝向航线，<=0 表示远离航线
+        dot = (to_proj_2d * vel_2d).sum(dim=-1)               # [N]
+        # 对这个dot做一个clamp
+        dot = torch.clamp(dot, min=-3.0, max=3.0)
+        # 只惩罚远离航线的情况（负部分）
+        negative_part = torch.minimum(dot, torch.zeros_like(dot))
+        # 系数为正，乘以负值得到惩罚（负奖励）
+        cross_track_reward = self.cross_track_reward_coeff * negative_part
         return cross_track_reward
 
 class TrafficFutureRewardModule(RewardModule):
@@ -158,7 +194,7 @@ class TrafficFutureRewardModule(RewardModule):
         self.drones_decay_factor = cfg.rew_drones_decay_factor
         self.evtols_threshold_factor = cfg.rew_evtols_threshold_factor
         self.evtols_decay_factor = cfg.rew_evtols_decay_factor
-        
+        self.v_pref = getattr(cfg, 'v_pref', 1.0)
     def compute_reward(self, state: EnvState) -> torch.Tensor:
 
 
@@ -261,8 +297,31 @@ class TrafficFutureRewardModule(RewardModule):
 
         # 在所有交通飞机和所有未来时间步中，找到那个最小的惩罚值（即最大的风险）
         # min over dim=2 (time), then min over dim=1 (traffic)
-        future_penalty, _ = torch.min(reward_future_matrix, dim=2)
-        future_penalty, _ = torch.min(future_penalty, dim=1) # 形状: [num_envs]
+        future_penalty_per_traffic, _ = torch.min(reward_future_matrix, dim=2)  # [num_envs, total_traffic]
+
+        # 通过相对位置与相对速度的点积，计算“靠近系数”：
+        # closing_coeff = max(0, -(p_rel · v_rel))
+        # 其中 p_rel = traffic_pos - robot_pos, v_rel = traffic_vel - robot_vel
+        # 若为正（表示靠近），用该正值缩放对应traffic的惩罚；若为负或零，则视为0（不施加该traffic的惩罚）
+        scaled_future_penalty = future_penalty_per_traffic
+        if (traffic_positions is not None and traffic_velocities is not None and
+            traffic_positions.numel() > 0 and traffic_velocities.numel() > 0 and
+            hasattr(state.ego_drone, "velocities") and state.ego_drone.velocities is not None):
+            robot_vel_2d = state.ego_drone.velocities[:, :, :2]  # [N,1,2]
+            traffic_pos_2d = traffic_positions[:, :2]            # [T,2]
+            traffic_vel_2d = traffic_velocities[:, :2]           # [T,2]
+            # Broadcast to [N,T,2]
+            p_rel = traffic_pos_2d.unsqueeze(0) - robot_pos      # [N,T,2]
+            # 将p_rel做归一化，放缩到norm=1
+            p_rel = p_rel / (torch.norm(p_rel, dim=-1, keepdim=True) + 1e-6)
+            v_rel = traffic_vel_2d.unsqueeze(0) - robot_vel_2d   # [N,T,2]
+            # 速度做尺度归一化
+            v_rel = v_rel / (self.v_pref + 1e-6)
+            dot_raw = (p_rel * v_rel).sum(dim=-1)                # [N,T]
+            closing_coeff = torch.clamp(-dot_raw, min=0.0)       # [N,T]
+            scaled_future_penalty = future_penalty_per_traffic * closing_coeff  # [N,T]
+
+        future_penalty, _ = torch.min(scaled_future_penalty, dim=1) # 形状: [num_envs]
 
         # 确保惩罚不会是正的
         return torch.min(future_penalty, torch.zeros_like(future_penalty))

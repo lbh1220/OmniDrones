@@ -420,8 +420,8 @@ class TrafficDroneManager:
         fh = float(self.config.flight_height)
         height_abnormal = (z < (fh - tol)) | (z > (fh + tol))
         num_collided = height_abnormal.sum()
-        # if num_collided > 0:
-        #     self.logger.warning(f"TrafficDroneManager: detect height abnormality: {num_collided}")
+        if num_collided > 0:
+            self.logger.warning(f"TrafficDroneManager: detect height abnormality: {num_collided}")
         collided |= height_abnormal
         # update state
         self.state.has_collided = collided.clone()
