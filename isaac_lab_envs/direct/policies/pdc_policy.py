@@ -128,6 +128,7 @@ class PDCPolicy(ModelBasedPolicy):
 
         # Attractive term: k1 * (xi_i - target), with saturation
         xi_err = xi_i - target  # [E, 2]
+        # 
         attractive = self._sat_vec2(self.k1 * xi_err, self.v_pref)  # [E, 2]
 
         # Repulsive term: sum_j b_ij * (xi_i - xi_j), b_ij = max(0, -dV/dnorm / norm)
@@ -153,6 +154,7 @@ class PDCPolicy(ModelBasedPolicy):
 
             # b_ij = -dV/dnorm / ||xi||, clamp to >= 0, handle zero norms
             inv_norm = torch.where(xi_m_norm > 1e-8, 1.0 / xi_m_norm, torch.zeros_like(xi_m_norm))
+            # PDC应该不需要做归一化，至少这里的计算是无量纲的
             b_ij = -dV_dnorm * inv_norm
             b_ij = torch.clamp(b_ij, min=0.0)  # [E, T]
 

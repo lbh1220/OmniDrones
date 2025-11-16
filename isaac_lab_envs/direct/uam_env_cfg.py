@@ -138,6 +138,7 @@ class UamEnvCfg(DirectRLEnvCfg):
     rew_success = 15.0
     rew_collision = -16.0
     rew_potential = 0.5
+    rew_approaching_reward_coeff = 0.0
     rew_smoothness_coeff = -0.0
     rew_evtol_future_penalty = -0.0
     rew_drone_future_penalty = -0.0

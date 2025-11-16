@@ -389,23 +389,24 @@ class TrafficFutureRewardModule(RewardModule):
         # closing_coeff = max(0, -(p_rel · v_rel))
         # 其中 p_rel = traffic_pos - robot_pos, v_rel = traffic_vel - robot_vel
         # 若为正（表示靠近），用该正值缩放对应traffic的惩罚；若为负或零，则视为0（不施加该traffic的惩罚）
+        # 这个不好，这个会鼓励偏移行为
         scaled_future_penalty = future_penalty_per_traffic
-        if (traffic_positions is not None and traffic_velocities is not None and
-            traffic_positions.numel() > 0 and traffic_velocities.numel() > 0 and
-            hasattr(state.ego_drone, "velocities") and state.ego_drone.velocities is not None):
-            robot_vel_2d = state.ego_drone.velocities[:, :, :2]  # [N,1,2]
-            traffic_pos_2d = traffic_positions[:, :2]            # [T,2]
-            traffic_vel_2d = traffic_velocities[:, :2]           # [T,2]
-            # Broadcast to [N,T,2]
-            p_rel = traffic_pos_2d.unsqueeze(0) - robot_pos      # [N,T,2]
-            # 将p_rel做归一化，放缩到norm=1
-            p_rel = p_rel / (torch.norm(p_rel, dim=-1, keepdim=True) + 1e-6)
-            v_rel = traffic_vel_2d.unsqueeze(0) - robot_vel_2d   # [N,T,2]
-            # 速度做尺度放缩，不过并没有归一，因为相对速度还与交通的速度有关
-            v_rel = v_rel / (self.v_pref + 1e-6)
-            dot_raw = (p_rel * v_rel).sum(dim=-1)                # [N,T],# dot为正时代表互相远离，为负代表靠近（危险），所以后面取负来计算系数
-            closing_coeff = torch.clamp(-dot_raw, min=0.0)       # [N,T]
-            scaled_future_penalty = future_penalty_per_traffic * closing_coeff  # [N,T]
+        # if (traffic_positions is not None and traffic_velocities is not None and
+        #     traffic_positions.numel() > 0 and traffic_velocities.numel() > 0 and
+        #     hasattr(state.ego_drone, "velocities") and state.ego_drone.velocities is not None):
+        #     robot_vel_2d = state.ego_drone.velocities[:, :, :2]  # [N,1,2]
+        #     traffic_pos_2d = traffic_positions[:, :2]            # [T,2]
+        #     traffic_vel_2d = traffic_velocities[:, :2]           # [T,2]
+        #     # Broadcast to [N,T,2]
+        #     p_rel = traffic_pos_2d.unsqueeze(0) - robot_pos      # [N,T,2]
+        #     # 将p_rel做归一化，放缩到norm=1
+        #     p_rel = p_rel / (torch.norm(p_rel, dim=-1, keepdim=True) + 1e-6)
+        #     v_rel = traffic_vel_2d.unsqueeze(0) - robot_vel_2d   # [N,T,2]
+        #     # 速度做尺度放缩，不过并没有归一，因为相对速度还与交通的速度有关
+        #     v_rel = v_rel / (self.v_pref + 1e-6)
+        #     dot_raw = (p_rel * v_rel).sum(dim=-1)                # [N,T],# dot为正时代表互相远离，为负代表靠近（危险），所以后面取负来计算系数
+        #     closing_coeff = torch.clamp(-dot_raw, min=0.0)       # [N,T]
+        #     scaled_future_penalty = future_penalty_per_traffic * closing_coeff  # [N,T]
 
         future_penalty, _ = torch.min(scaled_future_penalty, dim=1) # 形状: [num_envs]
 

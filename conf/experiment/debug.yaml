@@ -1,6 +1,6 @@
-name: traffic_attn
+name: traffic_attn_large
 defaults:
-  - /env/heter_traffic@env    
+  - /env/large_traffic@env    
   - /model/traffic_attn@model  
   - /algo/ppo_skrl@algo    
 
@@ -9,14 +9,18 @@ env:
   observation_cfg:
     modules: ["robot_node", "traffic_spatial_state"] #
   reward_cfg:
-    modules: ["nav", "traffic_future", "cross_track", "smoothness"] #
+    modules: ["nav", "traffic_future", "cross_track", "approaching"] #
   # ... (其他 env 覆盖)
   arrival_threshold: 2.0
   use_global_path: True
   predict_steps: 5
+  rew_potential: 0.0
+  rew_approaching_reward_coeff: 0.25
   rew_evtol_future_penalty: -2.0
+  rew_evtols_threshold_factor: 1.2
+  rew_evtols_decay_factor: 1.0
   rew_drone_future_penalty: -2.0
-  rew_cross_track_coeff: 0.5
+  rew_cross_track_coeff: 0.4
   rew_smoothness_coeff: -0.0
   action_manager:
     action_space_type: "beta"
