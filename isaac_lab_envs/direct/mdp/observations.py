@@ -89,7 +89,8 @@ class ObservationModule(ABC):
     def __init__(self, cfg):
         self.cfg = cfg
         self.device = "cuda"
-
+    def bind_env(self, env):
+        self.env = env
     def process_observation(self, state: EnvState) -> dict:
         raise NotImplementedError
 
@@ -729,6 +730,7 @@ class ObservationManager:
         self.device = device
         self.manager_cfg = manager_cfg or ObservationManagerCfg()
         self.modules: list[ObservationModule] = []
+        self.env = None
         for name in self.manager_cfg.modules:
             mod_cls = OBSERVATION_MODULES.get(name)
             if mod_cls is None:
@@ -737,7 +739,10 @@ class ObservationManager:
             mod = mod_cls(env_cfg)
             mod.device = device
             self.modules.append(mod)
-
+    def bind_env(self, env):
+        self.env = env
+        for mod in self.modules:
+            mod.bind_env(env)
     def process_observation(self, state: EnvState) -> dict:
         obs = {}
         for mod in self.modules:

@@ -118,9 +118,9 @@ def evaluate_policy(policy, env, num_envs, num_episodes):
                     print()
         episode_starts = done
     # Calculate basic metrics
-    success_rate = success_count / num_episodes
-    collision_rate = collision_count / num_episodes
-    timeout_rate = timeout_count / num_episodes
+    success_rate = success_count / episode_count
+    collision_rate = collision_count / episode_count
+    timeout_rate = timeout_count / episode_count
     episode_length = np.mean(episode_lengths)
     episode_reward = np.mean(episode_rewards)
     # Aggregate dynamic metrics

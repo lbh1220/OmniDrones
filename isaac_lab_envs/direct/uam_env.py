@@ -159,6 +159,8 @@ class UamEnv(DirectRLEnv):
         RewCls = cfg.reward_calculator_cls
         self.obs_processor = ObsCls(cfg, cfg.observation_cfg)
         self.reward_calculator = RewCls(cfg, cfg.reward_cfg)
+        self.obs_processor.bind_env(self)
+        self.reward_calculator.bind_env(self)
         self.task_generator = CrossTaskGenerator(cfg, self)
 
     def _init_metrics(self):
@@ -244,6 +246,7 @@ class UamEnv(DirectRLEnv):
 
         # 初始化状态管理对象
         self.state = EnvState(device=self.device, num_envs=self.num_envs)
+        self.state.bind_env(self)
         self.state.initialize_basic_tensors()
         self.state.collision.safety_radius = self.cfg.safety_radius
 

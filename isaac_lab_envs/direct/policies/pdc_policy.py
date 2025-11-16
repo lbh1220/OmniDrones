@@ -18,6 +18,7 @@ class PDCPolicy(ModelBasedPolicy):
         self.max_speed = getattr(env_cfg, "max_speed", 5.0)
         self.min_speed = getattr(env_cfg, "min_speed", 0.0)
         self.v_pref = getattr(env_cfg, "v_pref", 1.0)
+        self.safety_radius = getattr(env_cfg, "safety_radius", 1.0)
 
         # PDC (Free Flight) parameters from PolicyConfig
         self.k1 = getattr(policy_cfg, "k1", 1.0)

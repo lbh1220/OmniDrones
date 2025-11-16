@@ -138,6 +138,9 @@ class EnvState:
         
         # 其他可扩展的命名空间
         self._custom_namespaces = {}
+        self.env = None
+    def bind_env(self, env):
+        self.env = env
         
     def init_traffic_namespace(self, predict_steps: int = 5, pred_timestep: float = 2.0):
         """初始化交通命名空间"""

@@ -113,17 +113,29 @@ def generate_fix_traffic(
     flight_height = cfg.flight_height
     # positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
     # velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
-    positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
+    positions = torch.tensor([[0.0, 20.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
     velocities = torch.tensor([[0.0, -2.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
     types = torch.tensor([2, 1, 1], dtype=torch.long, device=device)
     radii = torch.tensor([cfg.traffic_sim.evtol.safety_radius, cfg.traffic_sim.drone.safety_radius, cfg.traffic_sim.drone.safety_radius], device=device)
     return positions, velocities, types, radii
-
+def generate_one_traffic(
+    cfg, device: torch.device,
+):
+        # evtol在（0, 15) 速度（2，0），两个drones在（-15，-15）和（15，15），速度（1，0）
+        # 另外一种方式是让evtol在path上
+    flight_height = cfg.flight_height
+    # positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
+    # velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
+    positions = torch.tensor([[0.0, 20.0, flight_height]], device=device)
+    velocities = torch.tensor([[0.0, -2.0, 0]], device=device)
+    types = torch.tensor([2], dtype=torch.long, device=device)
+    radii = torch.tensor([cfg.traffic_sim.evtol.safety_radius], device=device)
+    return positions, velocities, types, radii
 def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     """主函数"""
 
     # traffic：所有 env 共享同一组 traffic（位置/速度/类型/半径）
-    traffic_pos, traffic_vel, traffic_types, traffic_radii = generate_fix_traffic(
+    traffic_pos, traffic_vel, traffic_types, traffic_radii = generate_one_traffic(
         cfg,
         torch.device("cuda"),
     )

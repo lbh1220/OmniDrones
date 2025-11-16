@@ -10,7 +10,9 @@ class RewardModule(ABC):
     def __init__(self, cfg):
         self.cfg = cfg
         self.device = "cuda"
-
+        self.env = None
+    def bind_env(self, env):
+        self.env = env
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         reward = torch.zeros(state.num_envs, device=self.device)
         return reward
@@ -104,6 +106,84 @@ class NavRewardModule(RewardModule):
         potential_reward = potential_reward * self.pot_factor
 
         return potential_reward
+
+class ApproachingRewardModule(RewardModule):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.approaching_reward_coeff = cfg.rew_approaching_reward_coeff
+        self.v_pref = getattr(cfg, 'v_pref', 1.0)
+        self.arrival_threshold = getattr(cfg, 'arrival_threshold', 1.0)
+    def compute_reward(self, state: EnvState) -> torch.Tensor:
+        """
+        Compute approaching reward based on the dot product between current velocity (2D)
+        and the preferred direction.
+        - When cfg.use_global_path is False:
+            pref_dir = normalize(target_pos - current_pos)
+        - When cfg.use_global_path is True:
+            pref_dir = normalize(local_goal - projection_point)
+          Special case: if distance(projection_point, local_goal) is too small, fallback to
+            pref_dir = normalize(target_pos - current_pos)
+        Additionally, apply mask from env.extras["mask_approaching_rew"] (if provided) to zero-out
+        reward for masked envs.
+        """
+        num_envs = state.num_envs
+        device = self.device
+        EPS = 1e-6
+        reward = torch.zeros(num_envs, device=device)
+        # Guard: need positions and velocities
+        if (state.ego_drone.positions is None or
+            state.ego_drone.velocities is None or
+            state.navigation.target_positions is None):
+            return reward
+        # Current velocity (2D)
+        vel_2d = state.ego_drone.velocities[:, 0, :2]  # [N,2]
+        # Build preferred direction
+        use_global = getattr(self.cfg, 'use_global_path', False)
+        if not use_global:
+            # pref = target - current position
+            pos_2d = state.ego_drone.positions[:, 0, :2]          # [N,2]
+            tgt_2d = state.navigation.target_positions[:, 0, :2]  # [N,2]
+            dir_vec = tgt_2d - pos_2d                              # [N,2]
+        else:
+            # pref = local_goal - projection_point
+            proj = state.navigation.projection_points
+            lgoal = state.navigation.local_goals
+            if proj is None or lgoal is None:
+                # Fallback to target when required tensors are missing
+                pos_2d = state.ego_drone.positions[:, 0, :2]
+                tgt_2d = state.navigation.target_positions[:, 0, :2]
+                dir_vec = tgt_2d - pos_2d
+            else:
+                proj_2d = proj[:, 0, :2]     # [N,2]
+                lgoal_2d = lgoal[:, 0, :2]   # [N,2]
+                dir_vec = lgoal_2d - proj_2d # [N,2]
+                # If too close (degenerate), fallback to target direction
+                near_mask = (torch.norm(dir_vec, dim=-1) < 1.0)  # [N]
+                if near_mask.any():
+                    pos_2d = state.ego_drone.positions[:, 0, :2]
+                    tgt_2d = state.navigation.target_positions[:, 0, :2]
+                    fallback = tgt_2d - pos_2d
+                    dir_vec[near_mask] = fallback[near_mask]
+        # Normalize preferred direction
+        dir_norm = torch.norm(dir_vec, dim=-1, keepdim=True)  # [N,1]
+        pref_dir = torch.where(
+            dir_norm > EPS, dir_vec / (dir_norm + EPS), torch.zeros_like(dir_vec)
+        )  # [N,2]
+        # Dot product between velocity and preferred dir (projected speed along pref dir)
+        # Keep scale comparable to [-1,1] by normalizing velocity with v_pref
+        vel_scaled = vel_2d / (self.v_pref + EPS)
+        dot = (vel_scaled * pref_dir).sum(dim=-1)  # [N]
+        dot = torch.clamp(dot, min=-1.0, max=1.0)
+        approaching_reward = self.approaching_reward_coeff * dot  # [N]
+        # Apply masking from env.extras if available
+        mask = None
+        if self.env is not None and hasattr(self.env, "extras") and isinstance(self.env.extras, dict):
+            maybe_mask = self.env.extras.get("mask_approaching_rew", None)
+            if isinstance(maybe_mask, torch.Tensor) and maybe_mask.shape[0] == num_envs:
+                mask = maybe_mask.bool().to(device)
+        if mask is not None:
+            approaching_reward = torch.where(mask, torch.zeros_like(approaching_reward), approaching_reward)
+        return approaching_reward
 
 class CrossTrackRewardModule(RewardModule):
     def __init__(self, cfg):
@@ -201,6 +281,12 @@ class TrafficFutureRewardModule(RewardModule):
         reward = torch.zeros(state.num_envs, device=self.device)
 
         future_penalty = self._compute_future_collision_penalty_refactored(state)
+        # Set approaching mask when future penalty exists (penalty < 0)
+        if self.env is not None and hasattr(self.env, "extras") and isinstance(self.env.extras, dict):
+            mask_approaching = (future_penalty < 0.0)
+            # ensure dtype is bool and device matches
+            mask_approaching = mask_approaching.to(dtype=torch.bool, device=self.device)
+            self.env.extras["mask_approaching_rew"] = mask_approaching
         reward += future_penalty
         return reward
 
@@ -315,7 +401,7 @@ class TrafficFutureRewardModule(RewardModule):
             # 将p_rel做归一化，放缩到norm=1
             p_rel = p_rel / (torch.norm(p_rel, dim=-1, keepdim=True) + 1e-6)
             v_rel = traffic_vel_2d.unsqueeze(0) - robot_vel_2d   # [N,T,2]
-            # 速度做尺度归一化
+            # 速度做尺度放缩，不过并没有归一，因为相对速度还与交通的速度有关
             v_rel = v_rel / (self.v_pref + 1e-6)
             dot_raw = (p_rel * v_rel).sum(dim=-1)                # [N,T],# dot为正时代表互相远离，为负代表靠近（危险），所以后面取负来计算系数
             closing_coeff = torch.clamp(-dot_raw, min=0.0)       # [N,T]
@@ -323,7 +409,6 @@ class TrafficFutureRewardModule(RewardModule):
 
         future_penalty, _ = torch.min(scaled_future_penalty, dim=1) # 形状: [num_envs]
 
-        # 确保惩罚不会是正的
         return torch.min(future_penalty, torch.zeros_like(future_penalty))
 
 class TTCRewardModule(RewardModule):
@@ -687,6 +772,7 @@ REWARD_MODULES: dict[str, type[RewardModule]] = {
     "ttc": TTCRewardModule,
     "navrl": NavrlRewardModule,
     "smoothness": SmoothnessRewardModule,
+    "approaching": ApproachingRewardModule,
 }
 
 
@@ -696,6 +782,7 @@ class RewardManager:
         self.device = device
         self.manager_cfg = manager_cfg or RewardManagerCfg()
         self.modules: list[RewardModule] = []
+        self.env = None
         # build modules by names
         seen = set()
         for name in self.manager_cfg.modules:
@@ -709,7 +796,10 @@ class RewardManager:
             mod = mod_cls(env_cfg)
             mod.device = device
             self.modules.append(mod)
-
+    def bind_env(self, env):
+        self.env = env
+        for mod in self.modules:
+            mod.bind_env(env)
     def compute_reward(self, state: EnvState) -> torch.Tensor:
         if not self.modules:
             return torch.zeros(state.num_envs, device=self.device)

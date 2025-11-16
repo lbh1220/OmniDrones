@@ -279,7 +279,7 @@ class NearCollisionModule(MetricModule):
             thresholds = traffic_safety_radius + env.cfg.safety_radius
             step_min_distances = torch.min(distances - thresholds.unsqueeze(0), dim=1).values
             # thresholds = thresholds*2.0
-            thresholds = thresholds + 2.0
+            thresholds = thresholds + 2.0*env.cfg.safety_radius
             # 比较: [E, T]
             near_matrix = distances < thresholds.unsqueeze(0)
             near_any = near_matrix.any(dim=1)  # [E]
