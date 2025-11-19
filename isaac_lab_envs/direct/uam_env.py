@@ -34,7 +34,7 @@ from tensordict.tensordict import TensorDict
 
 
 from isaac_lab_envs.direct.mdp.state import EnvState
-from isaac_lab_envs.direct.mdp.action import ActionManagerCfg, VelocityXYActionManager
+from isaac_lab_envs.direct.mdp.action import ActionManagerCfg, VelocityXYActionManager, AccelerationActionManager
 from isaac_lab_envs.direct.mdp.rewards import RewardManagerCfg, RewardManager
 from isaac_lab_envs.direct.mdp.observations import ObservationManagerCfg, ObservationManager
 from isaac_lab_envs.direct.components.map import MapManagerCfg, MapManager
@@ -154,7 +154,12 @@ class UamEnv(DirectRLEnv):
 
     def _init_mdp_components(self, cfg):
         """初始化模块化组件"""
-        self.action_manager = VelocityXYActionManager(cfg.action_manager, self)
+        if cfg.action_manager.action_mode == "velocity_components":
+            self.action_manager = VelocityXYActionManager(cfg.action_manager, self)
+        elif cfg.action_manager.action_mode == "direction_acceleration":
+            self.action_manager = AccelerationActionManager(cfg.action_manager, self)
+        else:
+            raise ValueError(f"Unknown action mode: {cfg.action_manager.action_mode}")
         ObsCls = cfg.observation_processor_cls
         RewCls = cfg.reward_calculator_cls
         self.obs_processor = ObsCls(cfg, cfg.observation_cfg)
@@ -422,10 +427,24 @@ class UamEnv(DirectRLEnv):
             self.state.navigation.waypoint_lengths[env_ids] = waypoints_length
             self.state.navigation.current_waypoint_indices[env_ids] = 0
         else:
-            start, goal = self.task_generator.generate_task(len(env_ids), flight_height=self.cfg.flight_height)
+            # start, goal = self.task_generator.generate_task(len(env_ids), flight_height=self.cfg.flight_height)
+            # 输出的waypoints只有两个点，起点和终点
+            start, goal, waypoints, waypoints_length = self.task_generator.generate_task(len(env_ids), flight_height=self.cfg.flight_height)
+            self.state.navigation.waypoints[env_ids] = waypoints
+            self.state.navigation.waypoint_lengths[env_ids] = waypoints_length
+            self.state.navigation.current_waypoint_indices[env_ids] = 0
         
         # 随机初始姿态（使用原始分布）
         rpy = self.init_rpy_dist.sample((*env_ids.shape, 1))
+        # 如果使用加速度动作空间，则将初始yaw对准第二个waypoint
+        if self.cfg.action_manager.action_mode == "direction_acceleration":
+            # start: [M, 1, 3], waypoints: [M, W, 3]
+            rpy = torch.zeros_like(rpy)
+            start_xy = start[:, 0, :2]
+            wp1_xy = waypoints[:, 1, :2]
+            dir_xy = wp1_xy - start_xy
+            yaw = torch.atan2(dir_xy[:, 1], dir_xy[:, 0])  # radians
+            rpy[..., 2] = yaw.unsqueeze(-1)
         rot = euler_to_quaternion(rpy)
         # rot = torch.zeros_like(rot)
         # rot[..., 0] = 1.0
