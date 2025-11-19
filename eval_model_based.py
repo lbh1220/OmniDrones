@@ -23,7 +23,7 @@ from isaac_lab_envs.direct.policies.pdc_policy import PDCPolicy
 
 from learning.skrl.models.utils import select_skrl_model
 
-def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False, num_envs: int = 10, record_video: bool = False, model_name: str = "orca", policy_overrides: dict | None = None):
+def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False, num_envs: int = 10, record_video: bool = False, vis_velocity: bool = False, model_name: str = "orca", policy_overrides: dict | None = None):
     """
     加载已训练的 PPO agent，并在环境中运行评估。
 
@@ -59,7 +59,7 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
         base_dir = os.path.join(experiment_path, model_name)
         os.makedirs(base_dir, exist_ok=True)
         # build subdirectory name from only the overrides kv
-        sorted_items = [f"{k}={policy_overrides[k]}" for k in sorted(policy_overrides.keys())]
+        sorted_items = [f"{k}={policy_overrides[k]}" for k in policy_overrides.keys()]
         subdir_name = "_".join(sorted_items) if len(sorted_items) > 0 else "default"
         save_dir = os.path.join(base_dir, f"{subdir_name}_{timestamp}")
     else:
@@ -111,28 +111,31 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
 
 
     # --- 6. 运行评估 ---
-    print(f"Running evaluation for {num_episodes} episodes...")
-    from learning.skrl.evaluate_agent import evaluate_policy
-    eval_results = evaluate_policy(agent, env, num_envs, num_episodes)
-    # save 这个json的result
-    eval_summary = {
-        "test_config": {
-            "model_dir": model_name,
-            "num_episodes": num_episodes,
-            "num_envs": num_envs,
-            "policy_cfg": policy_config.__dict__
-        },
-        "results": eval_results
-    }
-    import json
+    if vis_velocity:
+        from learning.vis_velocity import visualize_model_velocity
+        visualize_model_velocity(agent, env_cfg_instance, base_env, save_dir, grid_res=env_cfg_instance.env_scale)
+    else:
+        print(f"Running evaluation for {num_episodes} episodes...")
+        from learning.skrl.evaluate_agent import evaluate_policy
+        eval_results = evaluate_policy(agent, env, num_envs, num_episodes)
+        # save 这个json的result
+        eval_summary = {
+            "test_config": {
+                "model_dir": model_name,
+                "num_episodes": num_episodes,
+                "num_envs": num_envs,
+                "policy_cfg": policy_config.__dict__
+            },
+            "results": eval_results
+        }
+        import json
 
-    with open(os.path.join(save_dir, "eval_results.json"), "w") as f:
-        json.dump(eval_summary, f, indent=2)
+        with open(os.path.join(save_dir, "eval_results.json"), "w") as f:
+            json.dump(eval_summary, f, indent=2)
     env.close()
     simulation_app.close()
     print("Done.")
     # Return artifacts for programmatic callers (e.g., sweeps)
-    return save_dir, eval_results
 
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
@@ -142,6 +145,7 @@ if __name__ == "__main__":
     parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
     parser.add_argument("--record_video", action="store_true", default=False, help="Record video.")
+    parser.add_argument("--vis_velocity", action="store_true", default=False, help="Visualize velocity.")
     parser.add_argument("--model_name", type=str, default="orca", help="Policy to use (orca or pdc).")  
     # ORCA optional overrides (only applied if provided)
     parser.add_argument("--orca_safety_space", type=float, default=None, help="ORCA: safety_space")
@@ -158,7 +162,8 @@ if __name__ == "__main__":
     parser.add_argument("--pdc_epsilon", type=float, default=None, help="PDC: epsilon")
     parser.add_argument("--pdc_epsilon_s", type=float, default=None, help="PDC: epsilon_s")
     args = parser.parse_args()
-    
+    if args.vis_velocity:
+        args.record_video = False
     # Build policy_overrides only from provided args
     policy_overrides = None
     if args.model_name == "orca":
@@ -184,4 +189,4 @@ if __name__ == "__main__":
         filtered = {k: v for k, v in mapping.items() if v is not None}
         policy_overrides = filtered if len(filtered) > 0 else None
     
-    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video, args.model_name, policy_overrides) 
+    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video, args.vis_velocity, args.model_name, policy_overrides) 

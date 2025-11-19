@@ -156,7 +156,7 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     
     if args.vis_velocity:
         from learning.vis_velocity import visualize_model_velocity
-        visualize_model_velocity(agent, env_cfg_instance, base_env, save_dir)
+        visualize_model_velocity(agent, env_cfg_instance, base_env, save_dir, grid_res=env_cfg_instance.env_scale)
     else:
         print(f"Running evaluation for {num_episodes} episodes...")
         from learning.skrl.evaluate_agent import evaluate_policy

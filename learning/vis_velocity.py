@@ -113,8 +113,10 @@ def generate_fix_traffic(
     flight_height = cfg.flight_height
     # positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
     # velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
-    positions = torch.tensor([[0.0, 20.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
-    velocities = torch.tensor([[0.0, -2.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
+    positions = torch.tensor([[0.0, 2*cfg.traffic_sim.evtol.safety_radius, flight_height], 
+    [-15*cfg.traffic_sim.drone.safety_radius, -15*cfg.traffic_sim.drone.safety_radius, flight_height], 
+    [15*cfg.traffic_sim.drone.safety_radius, -15*cfg.traffic_sim.drone.safety_radius, flight_height]], device=device)
+    velocities = torch.tensor([[0.0, -cfg.traffic_sim.evtol.v_pref, 0], [-cfg.traffic_sim.drone.v_pref, 0.0, 0], [cfg.traffic_sim.drone.v_pref, 0.0, 0]], device=device)
     types = torch.tensor([2, 1, 1], dtype=torch.long, device=device)
     radii = torch.tensor([cfg.traffic_sim.evtol.safety_radius, cfg.traffic_sim.drone.safety_radius, cfg.traffic_sim.drone.safety_radius], device=device)
     return positions, velocities, types, radii
@@ -126,16 +128,29 @@ def generate_one_traffic(
     flight_height = cfg.flight_height
     # positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
     # velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
-    positions = torch.tensor([[0.0, 20.0, flight_height]], device=device)
-    velocities = torch.tensor([[0.0, -2.0, 0]], device=device)
+    positions = torch.tensor([[0.0, 2*cfg.traffic_sim.evtol.safety_radius, flight_height]], device=device)
+    velocities = torch.tensor([[0.0, -cfg.traffic_sim.evtol.v_pref, 0]], device=device)
     types = torch.tensor([2], dtype=torch.long, device=device)
     radii = torch.tensor([cfg.traffic_sim.evtol.safety_radius], device=device)
+    return positions, velocities, types, radii
+def generate_one_drone(
+    cfg, device: torch.device,
+):
+        # evtol在（0, 15) 速度（2，0），两个drones在（-15，-15）和（15，15），速度（1，0）
+        # 另外一种方式是让evtol在path上
+    flight_height = cfg.flight_height
+    # positions = torch.tensor([[0.0, 15.0, flight_height], [-15.0, -15.0, flight_height], [15.0, -15.0, flight_height]], device=device)
+    # velocities = torch.tensor([[2.0, 0.0, 0], [-1.0, 0.0, 0], [0.707, 0.707, 0]], device=device)
+    positions = torch.tensor([[-15*cfg.traffic_sim.drone.safety_radius, -15*cfg.traffic_sim.drone.safety_radius, flight_height]], device=device)
+    velocities = torch.tensor([[cfg.traffic_sim.drone.v_pref, 0.0, 0]], device=device)
+    types = torch.tensor([1], dtype=torch.long, device=device)
+    radii = torch.tensor([cfg.traffic_sim.drone.safety_radius], device=device)
     return positions, velocities, types, radii
 def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     """主函数"""
 
     # traffic：所有 env 共享同一组 traffic（位置/速度/类型/半径）
-    traffic_pos, traffic_vel, traffic_types, traffic_radii = generate_one_traffic(
+    traffic_pos, traffic_vel, traffic_types, traffic_radii = generate_fix_traffic(
         cfg,
         torch.device("cuda"),
     )
@@ -163,7 +178,7 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
         grid_xy = grid_xy[keep_mask]
     num_envs = grid_xy.shape[0]
 
-    if hasattr(model.policy, "num_envs"):
+    if hasattr(model, "policy") and hasattr(model.policy, "num_envs"):
         model.policy.num_envs = num_envs
         model.init()
         model.set_running_mode("eval")
@@ -272,14 +287,16 @@ def visualize_model_velocity(model, cfg, base_env, output_dir, grid_res=1.0):
     # vel_xy[mask_y15] = vel_xy0[mask_y15]
 
     vel_xy = vel_xy.cpu().numpy()
+    # 对输出的vel_xy做一定的归一化
+    vel_xy = vel_xy / cfg.v_pref
     
 
     # 可视化：向量场 + traffic + 路径
     fig, ax = plt.subplots(figsize=(9, 9))
     ax.set_aspect("equal")
     ax.set_xlim([xmin, xmax])
-    # ax.set_ylim([ymin, ymax])
-    ax.set_ylim([-30,30])
+    ax.set_ylim([ymin, ymax])
+    # ax.set_ylim([-30,30])
     # ax.set_title("Policy velocity field and traffic")
     ax.set_xlabel("X")
     ax.set_ylabel("Y")

@@ -35,12 +35,12 @@ class PolicyConfig:
         # best practice parameters for large scale experiments
         # [1.0, 1.0, 1e-5, 1e-6, 1.0, 3.0, 4.0]
         self.k1 = 1.0              # attraction gain
-        self.k2 = 1.0             # repulsion gain
+        self.k2 = 2.0           # repulsion gain
         self.epsilon = 1e-5         # epsilon in denominator
         self.epsilon_s = 1e-6       # epsilon for s(x) smoothing
         self.l_i = 1.0            # filter gain for xi = p + v / l_i
         # Interaction distance scales (multipliers on sum of radii)
-        self.d1 = 3.0
+        self.d1 = 2.0
         self.d2 = 4.0
         
         # Update with provided values
