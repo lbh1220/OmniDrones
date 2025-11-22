@@ -115,7 +115,7 @@ class UamEnv(DirectRLEnv):
         flight_height = cfg.flight_height
         cfg.viewer = ViewerCfg(
             resolution=(1080, 1080),
-            eye=(0, 0.0, range_x*1.75+flight_height),
+            eye=(0, 0.0, range_x*1+flight_height),
             lookat=(0., 0., 1.)
         )
         # cfg.viewer = ViewerCfg(
@@ -335,7 +335,7 @@ class UamEnv(DirectRLEnv):
         if self.traffic_sim is not None:
             self.traffic_sim._post_physics_step()
             self.traffic_sim.update_traffic_for_env(self.state)
-            self.state.traffic.traffic_future_traj = self.traffic_sim.predict_future_positions(self.cfg.predict_steps, self.cfg.pred_timestep)
+            self.state.traffic.traffic_future_traj = self.traffic_sim.predict_future_positions_by_manager(self.cfg.predict_steps, self.cfg.pred_timestep)
         
         
 

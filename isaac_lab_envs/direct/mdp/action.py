@@ -94,7 +94,7 @@ class AccelerationActionManager(ActionManager):
         elif hasattr(env_cfg, "dtheta_limit_rad"):
             dtheta_limit = getattr(env_cfg, "dtheta_limit_rad")
         else:
-            dtheta_limit = math.radians(30.0)
+            dtheta_limit = math.radians(5.0)
         return float(dv_limit), float(dtheta_limit), float(max_speed)
 
     def process_actions(self, actions: torch.Tensor) -> None:
@@ -247,7 +247,29 @@ class VelocityXYActionManager(ActionManager):
         self.command_vel_xy = self._convert_action_frame(command_vel_xy)
 
         env.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
-
+        # # --- Temporary clamp: prevent moving away from path when far from projection ---
+        # try:
+        #     state = env.state
+        #     proj_pts = getattr(state.navigation, "projection_points", None)
+        #     positions = getattr(state.ego_drone, "positions", None)
+        #     if (proj_pts is not None) and (positions is not None) and proj_pts.numel() > 0 and positions.numel() > 0:
+        #         # Vector from current position to projection point (XY)
+        #         to_proj_xy = (proj_pts - positions).squeeze(1)[..., :2]  # [N,2]
+        #         dist_xy = torch.norm(to_proj_xy, dim=-1)                 # [N]
+        #         safety_radius = float(getattr(env.cfg, "safety_radius", 1.0))
+        #         threshold = 1.5 * safety_radius
+        #         # Dot between to-projection vector and current command velocity
+        #         cmd_xy = self.command_vel_xy.squeeze(1)                  # [N,2]
+        #         dot_val = torch.sum(to_proj_xy * cmd_xy, dim=-1)         # [N]
+        #         # If far from path and moving away (dot < 0), clamp command to zero
+        #         mask = (dist_xy > threshold) & (dot_val < 0.0)
+        #         if torch.any(mask):
+        #             cmd_xy[mask] = 0.0
+        #             self.command_vel_xy = cmd_xy.unsqueeze(1)
+        #             env.state.navigation.velocity_commands[:, :, :2] = self.command_vel_xy.clone()
+        # except Exception:
+        #     # Best-effort safeguard; do not interfere with control if anything goes wrong
+        #     pass
     def _convert_action_frame(self, velocity_commands: torch.Tensor) -> torch.Tensor:
         if self.cfg.rl_action_frame == "world":
             return velocity_commands.unsqueeze(1) # [num_envs, 1, 2]

@@ -1,5 +1,6 @@
 import torch
 from omni.isaac.lab.markers import CUBOID_MARKER_CFG  # isort: skip
+from omni.isaac.lab.markers import RED_ARROW_X_MARKER_CFG, GREEN_ARROW_X_MARKER_CFG
 from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
 import omni.isaac.lab.sim as sim_utils
 
@@ -76,6 +77,13 @@ class VisualizationManager:
             self.drone_pos_visualizer = VisualizationMarkers(drone_marker_cfg)
             self.drone_pos_visualizer.set_visibility(True)
 
+        # drone velocity arrows (green arrows along +x scaled by speed, match ego drone color scheme)
+        if not hasattr(self, "drone_vel_visualizer"):
+            drone_vel_cfg = GREEN_ARROW_X_MARKER_CFG.copy()
+            drone_vel_cfg.prim_path = "/Visuals/Command/drone_velocity"
+            self.drone_vel_visualizer = VisualizationMarkers(drone_vel_cfg)
+            self.drone_vel_visualizer.set_visibility(True)
+
         # local goal & projection (only when using global path)
         use_global_path = bool(getattr(cfg, "use_global_path", False))
         if use_global_path:
@@ -115,14 +123,43 @@ class VisualizationManager:
                 self.target_pos_visualizer.visualize(vis_target_pos)
 
         # drone positions
-        if hasattr(self, "drone_pos_visualizer") and drone is not None and hasattr(drone, "pos"):
-            dp = drone.pos.squeeze(1)
+        if hasattr(self, "drone_pos_visualizer") and state is not None and hasattr(state.ego_drone, "positions"):
+            dp = state.ego_drone.positions.squeeze(1)
             if dp.shape[0] > debug_vis_num:
                 dp = dp[:debug_vis_num]
             scale_shape = torch.tensor([1.0, 1.0, 0.5], device=dp.device, dtype=dp.dtype)
             scales = scale_shape.expand(dp.shape[0], -1)*self.env.cfg.safety_radius
             self.drone_pos_visualizer.visualize(dp, scales=scales)
             # self.drone_pos_visualizer.visualize(dp)
+
+        # drone velocities (arrows)
+        if hasattr(self, "drone_vel_visualizer") and hasattr(state.ego_drone, "velocities") and state.ego_drone.velocities is not None:
+            dp_full = state.ego_drone.positions.squeeze(1)
+            vv_full = state.ego_drone.velocities.squeeze(1)
+            if dp_full.shape[0] > debug_vis_num:
+                dp = dp_full[:debug_vis_num]
+                vv = vv_full[:debug_vis_num]
+            else:
+                dp = dp_full
+                vv = vv_full
+            if dp.numel() > 0 and vv.numel() > 0:
+                # optional: visualize only XY components to avoid vertical "spikes"
+                use_xy_only = bool(getattr(cfg, "debug_vis_velocity_use_xy_only", True)) if cfg is not None else True
+                if use_xy_only:
+                    vv = vv.clone()
+                    vv[:, 2] = 0.0
+                vel_scale = float(getattr(cfg, "debug_vis_velocity_scale", 1.0)) if cfg is not None else 1.0
+                speeds = torch.norm(vv, dim=-1, keepdim=True)  # [M,1]
+                # orientations from +x to velocity direction
+                orientations = self._quat_align_x_to_vectors(vv)
+                # thickness on Y/Z to avoid too thin "blade" look
+                # thickness = float(getattr(cfg, "debug_vis_arrow_thickness", 0.2)) if cfg is not None else 0.2
+                # thickness_col = torch.full_like(speeds, thickness)
+                scales = torch.cat([torch.clamp(speeds * vel_scale, min=0.0), 
+                                    env.cfg.env_scale*torch.ones_like(speeds)*5, 
+                                    env.cfg.env_scale*torch.ones_like(speeds)], dim=-1)
+                # scales = scales * self.env.cfg.env_scale
+                self.drone_vel_visualizer.visualize(translations=dp, orientations=orientations, scales=scales)
 
         # local goals & projection points
         use_global_path = bool(getattr(cfg, "use_global_path", False))
@@ -165,22 +202,12 @@ class VisualizationManager:
             self.traffic_visualizer = VisualizationMarkers(traffic_marker_cfg)
             self.traffic_visualizer.set_visibility(True)
 
-        # also show main drone positions in traffic env if absent
-        if not hasattr(self, "drone_pos_visualizer") and hasattr(env, "drone") and hasattr(env.drone, "pos"):
-            drone_marker_cfg = VisualizationMarkersCfg(
-                prim_path="/Visuals/Command/drone_position",
-                markers={
-                    "sphere": sim_utils.SphereCfg(
-                        radius=1.0,
-                        visual_material=sim_utils.PreviewSurfaceCfg(
-                            diffuse_color=(0.0, 1.0, 0.0),
-                            opacity=0.5,
-                        ),
-                    )
-                },
-            )
-            self.drone_pos_visualizer = VisualizationMarkers(drone_marker_cfg)
-            self.drone_pos_visualizer.set_visibility(True)
+        # traffic velocities (red arrows)
+        if not hasattr(self, "traffic_vel_visualizer"):
+            traffic_vel_cfg = RED_ARROW_X_MARKER_CFG.copy()
+            traffic_vel_cfg.prim_path = "/Visuals/Command/traffic_velocity"
+            self.traffic_vel_visualizer = VisualizationMarkers(traffic_vel_cfg)
+            self.traffic_vel_visualizer.set_visibility(True)
 
     def _update_traffic_visuals(self):
         env = self.env
@@ -198,49 +225,103 @@ class VisualizationManager:
                 scales = scales * safety_radius.unsqueeze(1)
             self.traffic_visualizer.visualize(translations=positions, scales=scales)
 
+        # traffic velocities (arrows, keep traffic color scheme: red)
+        velocities = getattr(state.traffic, "traffic_velocities", None) if getattr(state, "traffic", None) is not None else None
+        if velocities is not None and positions is not None and velocities.numel() > 0 and positions.numel() > 0 and hasattr(self, "traffic_vel_visualizer"):
+            # Ensure same count
+            count = min(positions.shape[0], velocities.shape[0])
+            pos = positions[:count]
+            vel = velocities[:count]
+            cfg = getattr(env, "cfg", None)
+            # optional: XY only to keep arrows in ground plane
+            use_xy_only = bool(getattr(cfg, "debug_vis_velocity_use_xy_only", True)) if cfg is not None else True
+            if use_xy_only:
+                vel = vel.clone()
+                vel[:, 2] = 0.0
+            vel_scale = float(getattr(cfg, "debug_vis_velocity_scale", 1.0)) if (cfg is not None) else 1.0
+            speeds = torch.norm(vel, dim=-1, keepdim=True)
+            orientations = self._quat_align_x_to_vectors(vel)
+            # thickness = float(getattr(cfg, "debug_vis_arrow_thickness", 0.2)) if cfg is not None else 0.2
+            # thickness_col = torch.full_like(speeds, thickness)
+            # scales = torch.cat([torch.clamp(speeds * vel_scale, min=0.0), thickness_col, thickness_col], dim=-1)
+            scales = torch.cat([torch.clamp(speeds * vel_scale, min=0.0), 
+                                env.cfg.env_scale*torch.ones_like(speeds)*5,  # 使这个箭头不要太扁
+                                env.cfg.env_scale*torch.ones_like(speeds)], dim=-1)
+            self.traffic_vel_visualizer.visualize(translations=pos, orientations=orientations, scales=scales)
+
 
 # ---------- 【新】Planned Path Visuals (Lines) ----------
     def _update_planned_path_visuals(self):
         """
         使用 self.debug_draw.plot() 绘制 state.navigation.waypoints 中的路径。
         """
+        if self.debug_draw is None:
+            return
         env = self.env
         cfg = getattr(env, "cfg", None)
         state = getattr(env, "state", None)
-        use_global_path = bool(getattr(cfg, "use_global_path", False))
-        if not use_global_path:
-            return
-        if self.debug_draw is None:
-            return
 
-        # 安全检查
-        if (state is None 
-            or not hasattr(state, "navigation")
-            or not hasattr(state.navigation, "waypoints")
-            or not hasattr(state.navigation, "waypoint_lengths")
-            or state.navigation.waypoints is None
-            or state.navigation.waypoint_lengths is None):
-            return
+        use_global_path = bool(getattr(cfg, "use_global_path", False))
+
+        can_draw_ego_global_path = (
+            use_global_path and
+            (state is not None) and
+            (hasattr(state, "navigation") and hasattr(state.navigation, "waypoints") and hasattr(state.navigation, "waypoint_lengths")) and
+            (state.navigation.waypoints is not None) and
+            (state.navigation.waypoint_lengths is not None)
+        )
 
         debug_vis_num = int(getattr(cfg, "debug_vis_num_envs", 10)) if cfg is not None else 10
-        
-        all_waypoints = state.navigation.waypoints # [N, MaxW, 3 or 4]
-        all_lengths = state.navigation.waypoint_lengths # [N]
-        
-        num_to_draw = min(env.num_envs, debug_vis_num)
-        
-        color = (0.5, 0.5, 1.0, 0.8) # 
-        size = 2.0
-        for i in range(num_to_draw):
-            length = int(all_lengths[i].item())
-            if length < 2: 
-                continue
-                
-            # 提取 (N, 3) 的点集
-            points_tensor = all_waypoints[i, :length, :3]
+        if can_draw_ego_global_path:
+            all_waypoints = state.navigation.waypoints # [N, MaxW, 3 or 4]
+            all_lengths = state.navigation.waypoint_lengths # [N]
             
-            # 【核心】调用您的 plot 函数
-            self.debug_draw.plot(points_tensor, color=color, size=size)
+            num_to_draw = min(env.num_envs, debug_vis_num)
+            
+            color = (0.5, 0.5, 1.0, 0.8) # 
+            size = 2.0
+            for i in range(num_to_draw):
+                length = int(all_lengths[i].item())
+                if length < 2: 
+                    continue
+                    
+                # 提取 (N, 3) 的点集
+                points_tensor = all_waypoints[i, :length, :3]
+                
+                # 【核心】调用您的 plot 函数
+                self.debug_draw.plot(points_tensor, color=color, size=size)
+
+        # ---------- 追加：绘制 traffic EVTOL 的全局路径 ----------
+        env = self.env
+        traffic_sim = getattr(env, "traffic_sim", None)
+        evtol_manager = getattr(traffic_sim, "evtol_manager", None) if traffic_sim is not None else None
+        state_evtol = getattr(evtol_manager, "state", None) if evtol_manager is not None else None
+        can_draw_evtol_paths = (
+            (self.debug_draw is not None) and
+            (traffic_sim is not None) and
+            (evtol_manager is not None) and
+            (getattr(evtol_manager, "num_evtols", 0) > 0) and
+            (state_evtol is not None) and
+            hasattr(state_evtol, "waypoints") and
+            hasattr(state_evtol, "waypoint_lengths") and
+            (getattr(state_evtol, "waypoints", None) is not None) and
+            (getattr(state_evtol, "waypoint_lengths", None) is not None)
+        )
+        if can_draw_evtol_paths:
+            # 使用红色绘制 EVTOL 的路径
+            color_evtol = (1.0, 0.0, 0.0, 0.8)
+            size_evtol = 2.0
+            waypoints_evtol = state_evtol.waypoints  # [Ne, M, 4]
+            lengths_evtol = state_evtol.waypoint_lengths  # [Ne]
+            num_evtols = int(getattr(evtol_manager, "num_evtols", waypoints_evtol.shape[0] if waypoints_evtol is not None else 0))
+            for i in range(num_evtols):
+                if i >= waypoints_evtol.shape[0]:
+                    break
+                length = int(lengths_evtol[i].item()) if lengths_evtol is not None and lengths_evtol.numel() > i else 0
+                if length < 2:
+                    continue
+                pts = waypoints_evtol[i, :length, :3]
+                self.debug_draw.plot(pts, color=color_evtol, size=size_evtol)
 
 
     # ---------- 【新】LiDAR Visuals (Lines) ----------
@@ -342,3 +423,40 @@ class VisualizationManager:
             vis = getattr(self, name, None)
             if vis is not None:
                 vis.set_visibility(False)
+
+    @staticmethod
+    def _quat_align_x_to_vectors(vectors: torch.Tensor) -> torch.Tensor:
+        """
+        Build quaternions (w, x, y, z) that rotate +X axis to each given vector direction.
+        For zero-length vectors, returns identity. For opposite direction, uses 180 deg about +Z.
+        Args:
+            vectors: [M, 3] tensor
+        Returns:
+            quats: [M, 4] tensor (w, x, y, z)
+        """
+        if vectors is None or vectors.numel() == 0:
+            return torch.empty((0, 4), device=vectors.device if vectors is not None else "cpu")
+        b = vectors
+        eps = 1e-8
+        speeds = torch.norm(b, dim=-1, keepdim=True)
+        zero_mask = speeds.squeeze(-1) < eps
+        # Normalize non-zero vectors
+        bn = b / torch.clamp(speeds, min=eps)
+        # a = (1,0,0); cross(a, b) = (0, -bz, by); dot = bx
+        cross = torch.stack([torch.zeros_like(bn[..., 0]), -bn[..., 2], bn[..., 1]], dim=-1)
+        dot = bn[..., 0]
+        w = 1.0 + dot
+        q = torch.zeros(bn.shape[0], 4, device=b.device, dtype=b.dtype)
+        q[:, 0] = w
+        q[:, 1:] = cross
+        # Handle opposite direction (w ~ 0)
+        opp_mask = w < 1e-6
+        if torch.any(opp_mask):
+            q[opp_mask] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=b.device, dtype=b.dtype)
+        # Normalize
+        q_norm = torch.norm(q, dim=-1, keepdim=True)
+        q = q / torch.clamp(q_norm, min=eps)
+        # For zero vectors, set identity
+        if torch.any(zero_mask):
+            q[zero_mask] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=b.device, dtype=b.dtype)
+        return q

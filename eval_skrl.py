@@ -27,7 +27,13 @@ MODEL_LIST = [
     "best_model_5.pt",
 ]
 
-def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False, num_envs: int = 10, record_video: bool = False, model_name: str = "agent_190000.pt"):
+def run_evaluation(experiment_path: str, 
+                    num_episodes: int = 10, 
+                    headless: bool = False, 
+                    num_envs: int = 10, 
+                    record_video: bool = False, 
+                    model_name: str = "agent_190000.pt",
+                    seed: int = 425):
     """
     加载已训练的 PPO agent，并在环境中运行评估。
 
@@ -58,11 +64,17 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     #    (这与 train_skrl.py 中的逻辑完全相同)
     print("Instantiating environment...")
     env_cfg_instance = instantiate(cfg.env)
+    env_cfg_instance.seed = seed
     env_cfg_instance.num_envs = num_envs
     env_cfg_instance.scene = replace(env_cfg_instance.scene, num_envs=num_envs)
     env_cfg_instance.arrival_threshold = 2.0 # 测试时必须可以到达终点才行
 
-    # env_cfg_instance.debug_vis_num_envs = 1
+    env_cfg_instance.area_bounds.xmin = -55.0
+    env_cfg_instance.area_bounds.xmax = 55.0
+    env_cfg_instance.area_bounds.ymin = -55.0
+    env_cfg_instance.area_bounds.ymax = 55.0
+
+    env_cfg_instance.debug_vis_num_envs = 1
     # env_cfg_instance.env_scale = 10.0
     video_kwargs = None
     if record_video:
@@ -83,7 +95,7 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
     from omni.isaac.lab_tasks.utils.wrappers.skrl import SkrlVecEnvWrapper
     env = SkrlVecEnvWrapper(env)
-    env.seed(cfg.seed) #
+    env.seed(env_cfg_instance.seed) #
 
     # --- 4. 实例化 Agent ---
     #    (这与 train_skrl.py 中的逻辑几乎相同)
@@ -182,8 +194,9 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/heter_traffic/traffic_attn/traffic_attn_20251108_2231", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--path", type=str, default="outputs/heter_traffic/traffic_attn_large/pot0p5", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
+    parser.add_argument("--seed", type=int, default=425, help="Seed")
     parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode (no UI).")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
@@ -192,4 +205,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.vis_velocity:
         args.record_video = False
-    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video, args.model_name)
+    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video, args.model_name, args.seed)

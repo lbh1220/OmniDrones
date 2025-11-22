@@ -30,6 +30,7 @@ class UamEnvCfg(DirectRLEnvCfg):
     num_observations = 7  # robot_node(5) + temporal_edges(2) = 7
     num_states = 0
     debug_vis = False
+    debug_vis_velocity_scale = 50.0
     debug_vis_num_envs = 10  # only visualize the first 5 environments
     is_training = True
 

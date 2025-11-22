@@ -584,3 +584,22 @@ class TrafficDroneManager:
     def get_safety_radius(self) -> torch.Tensor:
         """Get safety radius of all drones."""
         return self.state.safety_radius
+
+    # ---------------- Prediction APIs ----------------
+    def predict_future_positions_constant_velocity(self, predict_steps: int, pred_timestep: float) -> torch.Tensor:
+        """
+        Predict future positions of traffic drones assuming constant velocity.
+        Returns:
+            Tensor of shape [N, predict_steps + 1, 3]
+        """
+        # current states
+        if self.state.positions.numel() == 0:
+            return torch.empty(0, predict_steps + 1, 3, device=self.device)
+        positions = self.state.positions  # [N, 3]
+        velocities = self.state.velocities if self.state.velocities.numel() > 0 else torch.zeros_like(positions)
+        # time vector [S+1]
+        times = torch.arange(0, predict_steps + 1, device=self.device, dtype=torch.float32) * float(pred_timestep)
+        # broadcast to [S+1, N, 3]
+        disp = times.view(-1, 1, 1) * velocities.view(1, -1, 3)
+        preds = positions.view(1, -1, 3) + disp  # [S+1, N, 3]
+        return preds.permute(1, 0, 2).contiguous()  # [N, S+1, 3]

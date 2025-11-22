@@ -23,7 +23,15 @@ from isaac_lab_envs.direct.policies.pdc_policy import PDCPolicy
 
 from learning.skrl.models.utils import select_skrl_model
 
-def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool = False, num_envs: int = 10, record_video: bool = False, vis_velocity: bool = False, model_name: str = "orca", policy_overrides: dict | None = None):
+def run_evaluation(experiment_path: str, 
+                    num_episodes: int = 10, 
+                    headless: bool = False, 
+                    num_envs: int = 10, 
+                    record_video: bool = False, 
+                    vis_velocity: bool = False, 
+                    model_name: str = "orca", 
+                    policy_overrides: dict | None = None,
+                    seed: int = 425):
     """
     加载已训练的 PPO agent，并在环境中运行评估。
 
@@ -69,8 +77,15 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
     #    (这与 train_skrl.py 中的逻辑完全相同)
     print("Instantiating environment...")
     env_cfg_instance = instantiate(cfg.env)
+    env_cfg_instance.seed = seed
     env_cfg_instance.num_envs = num_envs
-    env_cfg_instance.traffic_sim.num_evtols = 0
+    # env_cfg_instance.traffic_sim.num_evtols = 0
+
+    env_cfg_instance.area_bounds.xmin = -55.0
+    env_cfg_instance.area_bounds.xmax = 55.0
+    env_cfg_instance.area_bounds.ymin = -55.0
+    env_cfg_instance.area_bounds.ymax = 55.0
+
     env_cfg_instance.scene = replace(env_cfg_instance.scene, num_envs=num_envs)
     env_cfg_instance.arrival_threshold = 2.0 # 测试时必须可以到达终点才行
     env_cfg_instance.action_manager.action_space_type = "gaussian"
@@ -95,7 +110,7 @@ def run_evaluation(experiment_path: str, num_episodes: int = 10, headless: bool 
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
     from omni.isaac.lab_tasks.utils.wrappers.skrl import SkrlVecEnvWrapper
     env = SkrlVecEnvWrapper(env)
-    env.seed(cfg.seed) #
+    env.seed(env_cfg_instance.seed) #
 
     # --- 4. 实例化 Agent ---
     #    (这与 train_skrl.py 中的逻辑几乎相同)
@@ -142,9 +157,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
     parser.add_argument("--path", type=str, default="outputs/heter_traffic/traffic_attn_large/pot0p5", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
-    parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
-    parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
-    parser.add_argument("--record_video", action="store_true", default=False, help="Record video.")
+    parser.add_argument("--seed", type=int, default=425, help="Seed")
+    parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode (no UI).")
+    parser.add_argument("--num_envs", type=int, default=1, help="Number of environments.")
+    parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
     parser.add_argument("--vis_velocity", action="store_true", default=False, help="Visualize velocity.")
     parser.add_argument("--model_name", type=str, default="orca", help="Policy to use (orca or pdc).")  
     # ORCA optional overrides (only applied if provided)
@@ -189,4 +205,12 @@ if __name__ == "__main__":
         filtered = {k: v for k, v in mapping.items() if v is not None}
         policy_overrides = filtered if len(filtered) > 0 else None
     
-    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video, args.vis_velocity, args.model_name, policy_overrides) 
+    run_evaluation(args.path, 
+    args.episodes, 
+    args.headless, 
+    args.num_envs, 
+    args.record_video, 
+    args.vis_velocity, 
+    args.model_name, 
+    policy_overrides, 
+    args.seed) 

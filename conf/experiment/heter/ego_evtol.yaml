@@ -1,6 +1,6 @@
 name: ego_evtol
 defaults:
-  - /env/homo_traffic@env    
+  - /env/heter_traffic@env    
   - /model/traffic_attn@model  
   - /algo/ppo_skrl@algo    
 
@@ -13,7 +13,7 @@ env:
   # ... (其他 env 覆盖)
   max_speed: 2.0
   v_pref: 2.0
-  safety_radius: 2.0
+  safety_radius: 4.0
   arrival_threshold: 4.0
   use_global_path: True
   predict_steps: 5
@@ -27,7 +27,9 @@ env:
     action_mode: "direction_acceleration"
     rl_action_frame: "world"
   traffic_sim:
-    num_drones: 1
+    num_evtols: 2
+    evtol:
+      safety_radius: ${env.safety_radius}
 algo:
   rollouts: 128
   mini_batches: 32

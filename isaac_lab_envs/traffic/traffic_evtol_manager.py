@@ -477,3 +477,75 @@ class TrafficEVTOLManager:
     def get_safety_radius(self) -> torch.Tensor:
         """Get safety radius of all EVTOLs."""
         return self.state.safety_radius
+
+    # ---------------- Prediction APIs ----------------
+    def predict_future_positions_along_path(self, predict_steps: int, pred_timestep: float) -> torch.Tensor:
+        """
+        Predict future positions for EVTOLs by advancing along their waypoint polylines.
+        - Uses smooth waypoints (dense trajectory) aligned with current_waypoint_indices.
+        - Starts from current position and current smooth waypoint index.
+        - Advances at preferred speed v_pref (clamped within [min_speed, max_speed]).
+        - Stops at last smooth waypoint and holds when reaching the end.
+        Returns:
+            Tensor of shape [N, predict_steps + 1, 3]
+        """
+        device = self.device
+        N = int(self.num_evtols)
+        if N == 0 or self.state.positions.numel() == 0:
+            return torch.empty(0, predict_steps + 1, 3, device=device)
+        preds = torch.zeros(N, predict_steps + 1, 3, device=device, dtype=torch.float32)
+        # snapshot tensors
+        cur_pos_all = self.state.positions.detach().clone()  # [N,3]
+        cur_idx_all = self.state.current_waypoint_indices.detach().clone() if self.state.current_waypoint_indices.numel() > 0 else torch.zeros(N, dtype=torch.long, device=device)
+        v_pref = self.state.v_pref if self.state.v_pref.numel() > 0 else torch.full((N,), float(self.v_pref), device=device)
+        v_pref = torch.clamp(v_pref, min=self.state.min_speed if self.state.min_speed.numel() > 0 else self.min_speed,
+                             max=self.state.max_speed if self.state.max_speed.numel() > 0 else self.max_speed)
+        # write t=0
+        preds[:, 0, :] = cur_pos_all
+        dt = float(pred_timestep)
+        for i in range(N):
+            cur_pos = cur_pos_all[i].detach().cpu().numpy()
+            cur_idx = int(cur_idx_all[i].item())
+            # resolve this EVTOL's smooth waypoint list (dense path)
+            if i >= len(self.evtol_course_assignments) or len(self.all_smooth_path) == 0:
+                # hold
+                for k in range(1, predict_steps + 1):
+                    preds[i, k, :] = preds[i, k - 1, :]
+                continue
+            course_idx = self.evtol_course_assignments[i]
+            if course_idx < 0 or course_idx >= len(self.all_smooth_path):
+                for k in range(1, predict_steps + 1):
+                    preds[i, k, :] = preds[i, k - 1, :]
+                continue
+            smooth_waypoints = self.all_smooth_path[course_idx]
+            max_len = len(smooth_waypoints)
+            if max_len == 0:
+                for k in range(1, predict_steps + 1):
+                    preds[i, k, :] = preds[i, k - 1, :]
+                continue
+            # clamp current smooth index
+            cur_idx = max(0, min(cur_idx, max_len - 1))
+            speed = float(v_pref[i].item())
+            for k in range(1, predict_steps + 1):
+                remaining = speed * dt
+                # walk along segments towards smooth_waypoints[cur_idx]
+                while remaining > 0.0 and cur_idx < max_len:
+                    wp = smooth_waypoints[cur_idx]
+                    target = np.array([wp.x, wp.y, wp.z])
+                    direction = target - cur_pos
+                    dist = float(np.linalg.norm(direction))
+                    if dist < 1e-6:
+                        cur_idx += 1
+                        continue
+                    step = min(remaining, dist)
+                    cur_pos = cur_pos + (direction / dist) * step
+                    remaining -= step
+                    if step == dist:
+                        cur_idx += 1
+                preds[i, k, :] = torch.tensor(cur_pos, device=device, dtype=torch.float32)
+                # after reaching end, hold position
+                if cur_idx >= max_len:
+                    for kk in range(k + 1, predict_steps + 1):
+                        preds[i, kk, :] = preds[i, k, :]
+                    break
+        return preds

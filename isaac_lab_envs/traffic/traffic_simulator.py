@@ -436,6 +436,41 @@ class TrafficSimulator:
 
         return predicted_positions
     
+    def predict_future_positions_by_manager(
+        self,
+        predict_steps: int,
+        pred_timestep: float,
+        activate_drones_num: int = None,
+        activate_evtols_num: int = None,
+    ) -> torch.Tensor:
+        """
+        综合调用 drones/evtols 各自的预测器进行未来位置预测，并按 get_aircraft_positions 的顺序拼接。
+        - drones: 使用匀速预测（由 drone_manager 提供）
+        - evtols: 使用沿航线预测（由 evtol_manager 提供）
+        Returns:
+            Tensor of shape [N_total, predict_steps + 1, 3]
+        """
+        preds_list = []
+        # drones first
+        if self.drone_manager is not None:
+            d_preds = self.drone_manager.predict_future_positions_constant_velocity(predict_steps, pred_timestep)  # [Nd, S+1, 3]
+            if d_preds.numel() > 0 and activate_drones_num is not None:
+                if activate_drones_num >= 0 and activate_drones_num < d_preds.shape[0]:
+                    d_preds = d_preds[:activate_drones_num]
+            if d_preds.numel() > 0:
+                preds_list.append(d_preds)
+        # evtols second
+        if self.evtol_manager is not None:
+            e_preds = self.evtol_manager.predict_future_positions_along_path(predict_steps, pred_timestep)  # [Ne, S+1, 3]
+            if e_preds.numel() > 0 and activate_evtols_num is not None:
+                if activate_evtols_num >= 0 and activate_evtols_num < e_preds.shape[0]:
+                    e_preds = e_preds[:activate_evtols_num]
+            if e_preds.numel() > 0:
+                preds_list.append(e_preds)
+        if len(preds_list) == 0:
+            return torch.empty(0, predict_steps + 1, 3, device=self.device)
+        return torch.cat(preds_list, dim=0)
+    
     def update_traffic_for_env(self, state, drones_num: int = None, evtols_num: int = None):
         """Update the traffic for the environment."""
         if hasattr(state, 'traffic'):
