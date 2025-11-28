@@ -21,5 +21,6 @@
 # SOFTWARE.
 
 from .evtol_base import EVTOLBase
+from .evtol_type1 import EVTOL_TYPE1
 
-__all__ = ["EVTOLBase"]
+__all__ = ["EVTOLBase", "EVTOL_TYPE1"]

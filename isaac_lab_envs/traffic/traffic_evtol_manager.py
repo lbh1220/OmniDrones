@@ -35,7 +35,7 @@ from dataclasses import dataclass
 
 from omni.isaac.core.utils import prims as prim_utils
 
-from omni_drones.robots.evtol import EVTOLBase
+from omni_drones.robots.evtol import EVTOLBase, EVTOL_TYPE1
 from isaac_lab_envs.traffic.utils.state import TrafficState, Waypoint, Waypoint_ex
 from isaac_lab_envs.traffic.utils.generator import EVTOLTargetGenerator
 from isaac_lab_envs.utils.path_planner import GlobalPathPlanner
@@ -102,8 +102,13 @@ class TrafficEVTOLManager:
             self.is_created = True
             return
         
-        # 创建EVTOL基础对象
-        self.evtol = EVTOLBase(device=self.device)
+        # 创建EVTOL对象（支持自定义USD资产或子类）
+        model_name = getattr(self.config.evtol, "model", "iris")
+        if model_name == "type1":
+            # 子类：默认绑定 obstacle USD；也可用 config.evtol.asset_name 覆盖
+            self.evtol = EVTOL_TYPE1(device=self.device)
+        else:
+            self.evtol = EVTOLBase(device=self.device)
         
         # 为每个EVTOL分配航线
         initial_positions = []
@@ -117,14 +122,13 @@ class TrafficEVTOLManager:
             initial_positions.append((init_2d[0], init_2d[1], init_height))
             prim_paths.append(f"{self.traffic_prim_path}/traffic_evtol_{i}")
             # scales.append((self.config.evtol.safety_radius, self.config.evtol.safety_radius, 1.0))  # EVTOL通常比较大
-            scales.append((2.0, 2.0, 1.0))
+            scales.append((1.0, 1.0, 1.0))
         
         # 创建primitives - traffic 内部不碰撞
         created_prims = self.evtol.spawn(
             translations=initial_positions,
             prim_paths=prim_paths,
             scales=scales,
-            asset_name="Sphere",  # 使用球体作为占位符
             enable_collision=False  # traffic 内部不碰撞
         )
         
