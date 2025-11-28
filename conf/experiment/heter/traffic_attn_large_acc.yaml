@@ -11,8 +11,17 @@ env:
   reward_cfg:
     modules: ["nav", "traffic_future", "cross_track"] #
   # ... (其他 env 覆盖)
-  arrival_threshold: 2.0
+  arrival_threshold: 10.0
+  safety_radius: 5.0
+  max_speed: 1.5
+  min_speed: 0.5
+  v_pref: 1.5
   use_global_path: True
+  traffic_sim:
+    num_drones: 10
+    num_evtols: 1
+    evtol:
+      safety_radius: 8.0
   predict_steps: 5
   rew_potential: 0.5
   # rew_approaching_reward_coeff: 0.25

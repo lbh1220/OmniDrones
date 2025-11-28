@@ -59,6 +59,7 @@ def take_scale(cfg):
         cfg.arrival_threshold = cfg.arrival_threshold * cfg.env_scale
         cfg.max_speed = cfg.max_speed * cfg.env_scale
         cfg.min_speed = cfg.min_speed * cfg.env_scale
+        cfg.dv_limit = cfg.dv_limit * cfg.env_scale
         cfg.area_bounds.xmax = cfg.area_bounds.xmax * cfg.env_scale
         cfg.area_bounds.xmin = cfg.area_bounds.xmin * cfg.env_scale
         cfg.area_bounds.ymax = cfg.area_bounds.ymax * cfg.env_scale
@@ -113,8 +114,10 @@ class UamEnv(DirectRLEnv):
         # debug visualization
         range_x = cfg.area_bounds.xmax - cfg.area_bounds.xmin
         flight_height = cfg.flight_height
+
+        resolution = 2160
         cfg.viewer = ViewerCfg(
-            resolution=(1080, 1080),
+            resolution=(resolution, resolution),
             eye=(0, 0.0, range_x*1+flight_height),
             lookat=(0., 0., 1.)
         )
@@ -127,7 +130,7 @@ class UamEnv(DirectRLEnv):
         
         # 父类初始化 - 这会调用 _setup_scene()
         super().__init__(cfg, render_mode, **kwargs)
-        
+
         # 在父类初始化完成后进行无人机特定的初始化
         self._post_init_setup()
 

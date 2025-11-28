@@ -30,6 +30,7 @@ MODEL_LIST = [
 def run_evaluation(experiment_path: str, 
                     num_episodes: int = 10, 
                     headless: bool = False, 
+                    livestream: int = -1,
                     num_envs: int = 10, 
                     record_video: bool = False, 
                     model_name: str = "agent_190000.pt",
@@ -44,7 +45,8 @@ def run_evaluation(experiment_path: str,
     """
     # --- 2. 启动 Isaac Sim ---
     print("Launching Isaac Sim...")
-    app_launcher = AppLauncher(headless=headless, enable_cameras=record_video)
+    app_launcher = AppLauncher(headless=headless, livestream=livestream, enable_cameras=record_video)
+    # app_launcher = AppLauncher(livestream=2, enable_cameras=record_video)
     simulation_app = app_launcher.app
     
     # --- 1. 加载配置 ---
@@ -74,16 +76,24 @@ def run_evaluation(experiment_path: str,
     env_cfg_instance.area_bounds.ymin = -55.0
     env_cfg_instance.area_bounds.ymax = 55.0
 
-    env_cfg_instance.debug_vis_num_envs = 1
+    # env_cfg_instance.debug_vis_num_envs = 1
     # env_cfg_instance.env_scale = 10.0
     video_kwargs = None
     if record_video:
-        video_kwargs = {
-            "video_folder": os.path.join(save_dir, "videos"),
-            "step_trigger": (lambda step: step % cfg.video_interval == 0),
-            "video_length": cfg.video_length,
-            "disable_logger": True,
-        }
+        if num_envs > 1:
+            video_kwargs = {
+                "video_folder": os.path.join(save_dir, "videos"),
+                "step_trigger": (lambda step: step % cfg.video_interval == 0),
+                "video_length": cfg.video_length,
+                "disable_logger": True,
+            }
+        else:
+            video_kwargs = {
+                "video_folder": os.path.join(save_dir, "videos"),
+                "episode_trigger": (lambda x: True), # Record every episode
+                "disable_logger": True, 
+            }
+            # num_envs = 1 的情况
         env_cfg_instance.debug_vis = True    # (您可以在此处添加或修改 cfg 以进行评估，例如更改相机)
     # env_cfg_instance.viewer = ViewerCfg(...)
     from isaac_lab_envs.direct.uam_env import UamEnv
@@ -194,10 +204,11 @@ def run_evaluation(experiment_path: str,
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/heter_traffic/traffic_attn_large/pot0p5", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--path", type=str, default="outputs/large_traffic/traffic_attn_large_acc/traffic_attn_20251123_0033", help="Path to the experiment directory")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
     parser.add_argument("--seed", type=int, default=425, help="Seed")
     parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode (no UI).")
+    parser.add_argument("--livestream", type=int, default=-1, help="Livestream.")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
     parser.add_argument("--vis_velocity", action="store_true", default=False, help="Visualize velocity.")
@@ -205,4 +216,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.vis_velocity:
         args.record_video = False
-    run_evaluation(args.path, args.episodes, args.headless, args.num_envs, args.record_video, args.model_name, args.seed)
+    if args.livestream > 0:
+        args.headless = False
+    run_evaluation(args.path, args.episodes, args.headless, args.livestream, args.num_envs, args.record_video, args.model_name, args.seed)

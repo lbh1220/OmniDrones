@@ -26,6 +26,7 @@ from learning.skrl.models.utils import select_skrl_model
 def run_evaluation(experiment_path: str, 
                     num_episodes: int = 10, 
                     headless: bool = False, 
+                    livestream: int = -1,
                     num_envs: int = 10, 
                     record_video: bool = False, 
                     vis_velocity: bool = False, 
@@ -42,7 +43,7 @@ def run_evaluation(experiment_path: str,
     """
     # --- 2. 启动 Isaac Sim ---
     print("Launching Isaac Sim...")
-    app_launcher = AppLauncher(headless=headless, enable_cameras=record_video)
+    app_launcher = AppLauncher(headless=headless, livestream=livestream, enable_cameras=record_video)
     simulation_app = app_launcher.app
     
     # --- 1. 加载配置 ---
@@ -92,13 +93,22 @@ def run_evaluation(experiment_path: str,
     env_cfg_instance.action_manager.action_mode = "velocity_components"
     env_cfg_instance.action_manager.rl_action_frame = "world"
     video_kwargs = None
+    video_kwargs = None
     if record_video:
-        video_kwargs = {
-            "video_folder": os.path.join(save_dir, "videos"),
-            "step_trigger": (lambda step: step % cfg.video_interval == 0),
-            "video_length": cfg.video_length,
-            "disable_logger": True,
-        }
+        if num_envs > 1:
+            video_kwargs = {
+                "video_folder": os.path.join(save_dir, "videos"),
+                "step_trigger": (lambda step: step % cfg.video_interval == 0),
+                "video_length": cfg.video_length,
+                "disable_logger": True,
+            }
+        else:
+            video_kwargs = {
+                "video_folder": os.path.join(save_dir, "videos"),
+                "episode_trigger": (lambda x: True), # Record every episode
+                "disable_logger": True, 
+            }
+            # num_envs = 1 的情况
         env_cfg_instance.debug_vis = True    # (您可以在此处添加或修改 cfg 以进行评估，例如更改相机)
     # env_cfg_instance.viewer = ViewerCfg(...)
     from isaac_lab_envs.direct.uam_env import UamEnv
@@ -155,11 +165,12 @@ def run_evaluation(experiment_path: str,
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/heter_traffic/traffic_attn_large/pot0p5", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--path", type=str, default="outputs/large_traffic/traffic_attn_large_acc/traffic_attn_20251123_0033", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
     parser.add_argument("--seed", type=int, default=425, help="Seed")
     parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode (no UI).")
     parser.add_argument("--num_envs", type=int, default=1, help="Number of environments.")
+    parser.add_argument("--livestream", type=int, default=-1, help="Livestream.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
     parser.add_argument("--vis_velocity", action="store_true", default=False, help="Visualize velocity.")
     parser.add_argument("--model_name", type=str, default="orca", help="Policy to use (orca or pdc).")  
@@ -178,6 +189,8 @@ if __name__ == "__main__":
     parser.add_argument("--pdc_epsilon", type=float, default=None, help="PDC: epsilon")
     parser.add_argument("--pdc_epsilon_s", type=float, default=None, help="PDC: epsilon_s")
     args = parser.parse_args()
+    if args.livestream > 0:
+        args.headless = False
     if args.vis_velocity:
         args.record_video = False
     # Build policy_overrides only from provided args
@@ -208,6 +221,7 @@ if __name__ == "__main__":
     run_evaluation(args.path, 
     args.episodes, 
     args.headless, 
+    args.livestream,
     args.num_envs, 
     args.record_video, 
     args.vis_velocity, 

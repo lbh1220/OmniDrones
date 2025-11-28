@@ -1,6 +1,7 @@
 import torch
 from omni.isaac.lab.markers import CUBOID_MARKER_CFG  # isort: skip
 from omni.isaac.lab.markers import RED_ARROW_X_MARKER_CFG, GREEN_ARROW_X_MARKER_CFG
+from omni.isaac.lab.markers import FRAME_MARKER_CFG
 from omni.isaac.lab.markers import VisualizationMarkers, VisualizationMarkersCfg
 import omni.isaac.lab.sim as sim_utils
 
@@ -76,6 +77,13 @@ class VisualizationManager:
             )
             self.drone_pos_visualizer = VisualizationMarkers(drone_marker_cfg)
             self.drone_pos_visualizer.set_visibility(True)
+
+        # drone frame marker (current pose frames)
+        if not hasattr(self, "drone_frame_visualizer"):
+            frame_cfg = FRAME_MARKER_CFG.copy()
+            frame_cfg.prim_path = "/Visuals/Command/drone_frame"
+            self.drone_frame_visualizer = VisualizationMarkers(frame_cfg)
+            self.drone_frame_visualizer.set_visibility(True)
 
         # drone velocity arrows (green arrows along +x scaled by speed, match ego drone color scheme)
         if not hasattr(self, "drone_vel_visualizer"):
@@ -160,6 +168,23 @@ class VisualizationManager:
                                     env.cfg.env_scale*torch.ones_like(speeds)], dim=-1)
                 # scales = scales * self.env.cfg.env_scale
                 self.drone_vel_visualizer.visualize(translations=dp, orientations=orientations, scales=scales)
+
+        # drone current pose frames
+        if hasattr(self, "drone_frame_visualizer") and hasattr(state.ego_drone, "positions") and hasattr(state.ego_drone, "rotations"):
+            pos_full = state.ego_drone.positions.squeeze(1)  # [N,3]
+            quat_full = state.ego_drone.rotations.squeeze(1)  # [N,4] (w,x,y,z)
+            count = pos_full.shape[0]
+            if count > 0 and quat_full is not None and quat_full.shape[0] == count:
+                if count > debug_vis_num:
+                    pos = pos_full[:debug_vis_num]
+                    quat = quat_full[:debug_vis_num]
+                else:
+                    pos = pos_full
+                    quat = quat_full
+                # optional scale for frame gizmo size
+                s = self.env.cfg.safety_radius*3
+                scales = torch.tensor([s, s, s], device=pos.device, dtype=pos.dtype).expand(pos.shape[0], 3)
+                self.drone_frame_visualizer.visualize(translations=pos, orientations=quat, scales=scales)
 
         # local goals & projection points
         use_global_path = bool(getattr(cfg, "use_global_path", False))

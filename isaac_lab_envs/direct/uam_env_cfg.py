@@ -86,6 +86,8 @@ class UamEnvCfg(DirectRLEnvCfg):
     max_speed: float = 1.0
     min_speed: float = 0.0
     v_pref: float = 1.0 # preferred speed
+    dv_limit: float = 0.2
+    dtheta_limit_deg: float = 5.0
     area_bounds: AreaBoundsCfg = field(default_factory=lambda: AreaBoundsCfg(
         xmin=-50.0,
         xmax=50.0,

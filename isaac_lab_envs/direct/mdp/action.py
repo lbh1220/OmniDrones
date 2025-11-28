@@ -86,8 +86,9 @@ class AccelerationActionManager(ActionManager):
         """Resolve dv and dtheta limits from env.cfg with sensible defaults."""
         env_cfg = self.env.cfg
         max_speed = getattr(env_cfg, "max_speed", 1.0)
+        min_speed = getattr(env_cfg, "min_speed", 0.1)
         # dv_limit: symmetric around 0
-        dv_limit = getattr(env_cfg, "dv_limit", 0.2 * max_speed)
+        dv_limit = getattr(env_cfg, "dv_limit", 0.2 * (max_speed - min_speed))
         # dtheta_limit: prefer degrees if provided, else radians, fallback 30 deg
         if hasattr(env_cfg, "dtheta_limit_deg"):
             dtheta_limit = math.radians(getattr(env_cfg, "dtheta_limit_deg"))
@@ -95,7 +96,7 @@ class AccelerationActionManager(ActionManager):
             dtheta_limit = getattr(env_cfg, "dtheta_limit_rad")
         else:
             dtheta_limit = math.radians(5.0)
-        return float(dv_limit), float(dtheta_limit), float(max_speed)
+        return float(dv_limit), float(dtheta_limit), float(max_speed), float(min_speed)
 
     def process_actions(self, actions: torch.Tensor) -> None:
         """Map (dv_norm, dtheta_norm) to world-frame velocity command."""
@@ -121,7 +122,7 @@ class AccelerationActionManager(ActionManager):
                 raise ValueError(f"Expected actions shape [N,2] or [2], got {actions.shape}")
             actions_norm = torch.clamp(actions, -1.0, 1.0)
 
-        dv_limit, dtheta_limit, max_speed = self._get_action_limits()
+        dv_limit, dtheta_limit, max_speed, min_speed = self._get_action_limits()
         # Scale from [-1, 1] to actual ranges
         dv = actions_norm[:, 0] * dv_limit
         dtheta = actions_norm[:, 1] * dtheta_limit
@@ -132,7 +133,7 @@ class AccelerationActionManager(ActionManager):
         base_theta = self._get_base_heading(vel_xy, speed)  # [N]
 
         # Apply deltas
-        new_speed = torch.clamp(speed + dv, min=0.0, max=max_speed)
+        new_speed = torch.clamp(speed + dv, min=min_speed, max=max_speed)
         new_theta = base_theta + dtheta
 
         vx = new_speed * torch.cos(new_theta)
@@ -149,10 +150,15 @@ class AccelerationActionManager(ActionManager):
 
     def _get_base_heading(self, vel_xy: torch.Tensor, speed: torch.Tensor) -> torch.Tensor:
         """Compute current heading; if speed is tiny, fall back to robot yaw."""
-        eps = 1e-5
+        min_speed = getattr(self.env.cfg, "min_speed", 0.1)
+        eps = max(min_speed, 0.1)
         theta_vel = torch.atan2(vel_xy[:, 1], vel_xy[:, 0])  # [N]
         robot_quat = self.env.state.ego_drone.rotations      # [N,1,4]
         robot_yaw = quaternion_to_euler(robot_quat)[:, :, -1].squeeze(1)  # [N]
+        local_goal = self.env.state.navigation.local_goals # [N, 1, 3]
+        current_pos = self.env.state.ego_drone.positions # [N, 1, 3]
+        relative_goal = local_goal - current_pos
+        robot_yaw = torch.arctan2(relative_goal[..., 1], relative_goal[..., 0]).squeeze(1)  # [N]
         small = speed <= eps
         return torch.where(small, robot_yaw, theta_vel)
 
@@ -190,10 +196,19 @@ class AccelerationActionManager(ActionManager):
             print(f"ActionManager: drone_state is nan: {drone_state}")
             return
         target_height = env.cfg.flight_height * torch.ones(env.num_envs, 1, 1, device=env.device)
+        target_yaw = torch.arctan2(self.command_vel_xy[..., 1], self.command_vel_xy[..., 0]).unsqueeze(-1)
+        # 方案2 ，指向local goal
+        # 方案2不太行，yaw必须和速度配合，否则在终点前他们会开始转圈
+        # local_goal = env.state.navigation.local_goals
+        # current_pos = drone_state[..., :3]
+        # relative_goal = local_goal - current_pos
+        # target_yaw = torch.arctan2(relative_goal[..., 1], relative_goal[..., 0])
+        # target_yaw = None
         rotor_commands = env.controller.compute(
             root_state=drone_state,
             target_vel_xy=self.command_vel_xy,
             target_height=target_height,
+            target_yaw=target_yaw,
         )
         env.drone.apply_action(rotor_commands)
 
