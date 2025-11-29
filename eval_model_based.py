@@ -113,7 +113,7 @@ def run_evaluation(experiment_path: str,
     # env_cfg_instance.viewer = ViewerCfg(...)
     from isaac_lab_envs.direct.uam_env import UamEnv
     from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg
-    base_env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None) #
+    base_env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None, resolution=2160) #
     env = base_env
     if video_kwargs is not None:
         import gymnasium as gym

@@ -14,8 +14,17 @@ class MapManagerCfg:
 
 @configclass
 class UrbanTerrainCfg:
-    terrain_type: str = "plane" # plane, hfdiscrete or some mesh in the future
+    # 修改默认值为 "usd" 以便测试，或者保持 "plane"
+    terrain_type: str = "usd"  # Options: "plane", "hfdiscrete", "usd"
+    
+    # 新增：你的城市 USD 文件的绝对路径
+    usd_path: str = "/home/liang/Projects/isaac_sim_projects/Brushify/mini_center_city_layout.usd" 
+    
+    # 保持原有的 prim_path，通常是 "/World/ground"
+    # Isaac Lab 会把你的城市加载在这个路径下面
     prim_path: str = "/World/ground"
+    
+    # 下面这些参数在使用 usd 模式时可能暂时用不到，但保留着无妨
     size: tuple[float, float] = (50.0, 50.0)
     num_rows: int = 2
     num_cols: int = 2
@@ -70,6 +79,15 @@ def convert_urban_terrain_cfg_to_terrain_importer_cfg(input_cfg: UrbanTerrainCfg
             ),
             max_init_terrain_level=5,
             collision_group=-1,
+            debug_vis=False,
+        )
+    # === 新增：处理 USD 类型的地形 ===
+    elif input_cfg.terrain_type == "usd":
+        return TerrainImporterCfg(
+            prim_path=input_cfg.prim_path,
+            terrain_type="usd",  # 告诉 TerrainImporter 这是一个 USD 文件
+            usd_path=input_cfg.usd_path, # 传入路径
+            collision_group=-1, # 设为 -1 表示这是静态环境，与所有物体碰撞
             debug_vis=False,
         )
     else:

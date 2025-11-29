@@ -6,8 +6,8 @@ model: ${experiment.model}
 seed: 42
 total_steps: 100_000_000
 device: "cuda:0"
-headless: True
-num_envs: 64
+headless: False
+num_envs: 1
 
 record_video: True
 video_interval: 10000

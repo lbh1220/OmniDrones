@@ -102,7 +102,7 @@ class UamEnv(DirectRLEnv):
     
     cfg: UamEnvCfg
 
-    def __init__(self, cfg: UamEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: UamEnvCfg, render_mode: str | None = None, resolution: int = 960, **kwargs):
         cfg = take_scale(cfg)
         self.time_encoding = cfg.time_encoding
         self.randomization = cfg.randomization
@@ -115,7 +115,6 @@ class UamEnv(DirectRLEnv):
         range_x = cfg.area_bounds.xmax - cfg.area_bounds.xmin
         flight_height = cfg.flight_height
 
-        resolution = 2160
         cfg.viewer = ViewerCfg(
             resolution=(resolution, resolution),
             eye=(0, 0.0, range_x*1+flight_height),

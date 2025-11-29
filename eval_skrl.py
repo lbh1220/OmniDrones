@@ -98,7 +98,7 @@ def run_evaluation(experiment_path: str,
     # env_cfg_instance.viewer = ViewerCfg(...)
     from isaac_lab_envs.direct.uam_env import UamEnv
     from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg
-    base_env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None) #
+    base_env = UamEnv(cfg=env_cfg_instance, render_mode="rgb_array" if record_video else None, resolution=2160) #
     env = base_env
     if video_kwargs is not None:
         import gymnasium as gym
@@ -204,7 +204,7 @@ def run_evaluation(experiment_path: str,
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/large_traffic/traffic_attn_large_acc/traffic_attn_20251123_0033", help="Path to the experiment directory")
+    parser.add_argument("--path", type=str, default="outputs/heter_traffic/traffic_attn/best_traffic_attn", help="Path to the experiment directory")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
     parser.add_argument("--seed", type=int, default=425, help="Seed")
     parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode (no UI).")

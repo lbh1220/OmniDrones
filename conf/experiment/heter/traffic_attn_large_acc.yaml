@@ -16,6 +16,8 @@ env:
   max_speed: 1.5
   min_speed: 0.5
   v_pref: 1.5
+  dv_limit: 0.2
+  dtheta_limit_deg: 5.0
   use_global_path: True
   traffic_sim:
     num_drones: 10

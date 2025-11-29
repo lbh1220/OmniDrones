@@ -1,0 +1,19 @@
+defaults:
+  # 2. 加载 nav_base.yaml 的所有内容
+  # 3. 使用 '@_here_' 将其内容“合并”到当前级别
+  - /env/nav_base@_here_
+  - _self_
+name: real_city
+
+urban_terrain:
+  terrain_type: "usd"
+  usd_path: "/home/liang/Projects/isaac_sim_projects/Brushify/mini_center_city_layout.usd"
+# 启用 traffic_sim (之前是 null)
+  # ... (evtol, drone 的 safety_radius 等) ...
+
+# 指定此环境所需的 MDP 管理器
+reward_cfg:
+  modules: ["nav", "cross_track"]
+observation_cfg:
+  modules: ["robot_node", "lidar"]
+
