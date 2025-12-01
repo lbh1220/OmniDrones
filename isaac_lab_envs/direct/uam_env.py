@@ -217,7 +217,7 @@ class UamEnv(DirectRLEnv):
         self.drone, self.controller = MultirotorBase.make(self.cfg.drone_model, self.cfg.controller, self.device)
         
         # 2. 在模板环境中生成一个无人机
-        translations = [(0.0, 0.0, 2.0)]
+        translations = [(0.0, 0.0, -20.0)]
         drone_prims = self.drone.spawn(translations)
 
         self.traffic_sim = None
@@ -409,8 +409,8 @@ class UamEnv(DirectRLEnv):
         # 3. 高度异常条件（保持在合理高度范围内）
         robot_height = self.state.ego_drone.positions.squeeze(1)[:, 2]  # [num_envs]
         height_abnormal = (
-            (robot_height < (self.cfg.flight_height - 3*self.cfg.safety_radius)) |
-            (robot_height > (self.cfg.flight_height + 3*self.cfg.safety_radius))
+            (robot_height < (self.cfg.flight_height - 30*self.cfg.safety_radius)) |
+            (robot_height > (self.cfg.flight_height + 30*self.cfg.safety_radius))
         )
         
         # 4. NaN检测
@@ -423,6 +423,7 @@ class UamEnv(DirectRLEnv):
         terminated = reached_target_mask | collision_mask | height_abnormal | hasnan
         if terminated.any():
             print(f"UamEnv: terminated: {terminated}")
+            self.sim.pause()
         # 超时条件：由DirectRLEnv框架自动处理
         truncated = self.episode_length_buf >= self.max_episode_length 
         

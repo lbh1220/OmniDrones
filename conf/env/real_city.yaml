@@ -7,7 +7,7 @@ name: real_city
 
 urban_terrain:
   terrain_type: "usd"
-  usd_path: "/home/liang/Projects/isaac_sim_projects/Brushify_backup/mini_city_layout.usd"
+  usd_path: "/home/liang/Projects/isaac_sim_projects/Brushify/mini_city_layout.usd"
 # 启用 traffic_sim (之前是 null)
   # ... (evtol, drone 的 safety_radius 等) ...
 
@@ -19,3 +19,16 @@ observation_cfg:
 
 lidar_range: 300.0
 
+# 启用 traffic_sim (之前是 null)
+traffic_sim:
+  _target_: isaac_lab_envs.traffic.cfg.config.TrafficCfg
+  num_drones: 10
+  num_evtols: 0
+  flight_height: ${env.flight_height}
+  evtol:
+    _target_: isaac_lab_envs.traffic.cfg.config.TrafficEvtolCfg
+    safety_radius: 5.0
+  drone:
+    _target_: isaac_lab_envs.traffic.cfg.config.TrafficDroneCfg
+    safety_radius: 1.0
+  # ... (evtol, drone 的 safety_radius 等) ...

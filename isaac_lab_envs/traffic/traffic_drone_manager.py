@@ -87,7 +87,7 @@ class TrafficDroneManager:
         prim_paths = []
         init_2d = [1.5*self.config.area_bounds.xmin, 1.5*self.config.area_bounds.ymin]
         for i in range(self.num_drones):
-            init_height = -5 - 5*i
+            init_height = -20 - 5*i
             initial_positions.append((init_2d[0], init_2d[1], init_height))
             prim_paths.append(f"{self.traffic_prim_path}/traffic_drone_{i}")
         

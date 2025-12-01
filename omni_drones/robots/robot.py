@@ -148,11 +148,14 @@ class RobotBase(abc.ABC):
         return prims
 
     def _create_prim(self, prim_path, translation, orientation):
+        scale = torch.ones_like(translation)*5.0
+
         prim = prim_utils.create_prim(
             prim_path,
             usd_path=self.usd_path,
             translation=translation,
             orientation=orientation,
+            scale=scale,
         )
         return prim
 
