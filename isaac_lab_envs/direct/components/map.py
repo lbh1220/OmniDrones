@@ -84,12 +84,16 @@ def convert_urban_terrain_cfg_to_terrain_importer_cfg(input_cfg: UrbanTerrainCfg
     # === 新增：处理 USD 类型的地形 ===
     elif input_cfg.terrain_type == "usd":
         return TerrainImporterCfg(
-            prim_path=input_cfg.prim_path,
-            terrain_type="usd",  # 告诉 TerrainImporter 这是一个 USD 文件
-            usd_path=input_cfg.usd_path, # 传入路径
-            collision_group=-1, # 设为 -1 表示这是静态环境，与所有物体碰撞
-            debug_vis=False,
-        )
+                prim_path=input_cfg.prim_path,
+                terrain_type="plane", # <--- 回归最简模式
+                collision_group=-1,
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    static_friction=1.0,
+                    dynamic_friction=1.0,
+                    restitution=0.0,
+                ),
+                debug_vis=False,
+            )
     else:
         raise ValueError(f"Invalid terrain type: {input_cfg.terrain_type}")
 

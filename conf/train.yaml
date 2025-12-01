@@ -11,7 +11,7 @@ num_envs: 1
 
 record_video: True
 video_interval: 10000
-video_length: 500
+video_length: 100
 
 # --- Hydra 配置 ---
 hydra:

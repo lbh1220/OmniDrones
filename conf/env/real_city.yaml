@@ -7,7 +7,7 @@ name: real_city
 
 urban_terrain:
   terrain_type: "usd"
-  usd_path: "/home/liang/Projects/isaac_sim_projects/Brushify/mini_center_city_layout.usd"
+  usd_path: "/home/liang/Projects/isaac_sim_projects/Brushify_backup/mini_city_layout.usd"
 # 启用 traffic_sim (之前是 null)
   # ... (evtol, drone 的 safety_radius 等) ...
 
@@ -16,4 +16,6 @@ reward_cfg:
   modules: ["nav", "cross_track"]
 observation_cfg:
   modules: ["robot_node", "lidar"]
+
+lidar_range: 300.0
 

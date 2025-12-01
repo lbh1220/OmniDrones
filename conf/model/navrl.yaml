@@ -10,4 +10,4 @@ net_arch: [256, 256]
 # 3. (可选) 特征提取器的 __init__ 参数
 #    (如果您的 SharedAttentionContinuous __init__ 接受 features_extractor_kwargs)
 features_extractor_kwargs:
-  {"disable_lidar": False, "disable_dyn": False} # 如果 NavRLFeaturesNetwork 需要参数, 在这里填写
+  {"disable_lidar": False, "disable_dyn": True} # 如果 NavRLFeaturesNetwork 需要参数, 在这里填写

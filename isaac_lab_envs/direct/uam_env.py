@@ -190,6 +190,23 @@ class UamEnv(DirectRLEnv):
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
 
+        # 2. 【新增】加载城市环境作为背景/障碍物
+        # 建议放在 terrain 之后，robot 之前
+        if hasattr(self.cfg, 'urban_terrain') and self.cfg.urban_terrain.terrain_type == "usd":
+            # 检查这个路径是否存在
+            import os
+            if not os.path.exists(self.cfg.urban_terrain.usd_path):
+                raise FileNotFoundError(f"Urban Terrain USD file not found: {self.cfg.urban_terrain.usd_path}")
+            from omni.isaac.core.utils import prims as prim_utils
+            
+            print(f"[Info] Loading City Asset from: {self.cfg.urban_terrain.usd_path}")
+            prim_utils.create_prim(
+                prim_path="/World/City",  # 新的挂载点，不再是 terrain
+                usd_path=self.cfg.urban_terrain.usd_path,
+                scale=(1.0, 1.0, 1.0),    # 假设你已经在USD里修好了 scale
+                translation=(0.0, 0.0, 0.0) # 确保对齐
+            )
+
     def _setup_scene(self):
         """Setup the scene with robot, terrain, and sensors."""
 
@@ -404,6 +421,8 @@ class UamEnv(DirectRLEnv):
         
         # 终止条件：到达目标、碰撞、高度异常或NaN
         terminated = reached_target_mask | collision_mask | height_abnormal | hasnan
+        if terminated.any():
+            print(f"UamEnv: terminated: {terminated}")
         # 超时条件：由DirectRLEnv框架自动处理
         truncated = self.episode_length_buf >= self.max_episode_length 
         
@@ -435,7 +454,8 @@ class UamEnv(DirectRLEnv):
             self.state.navigation.waypoints[env_ids] = waypoints
             self.state.navigation.waypoint_lengths[env_ids] = waypoints_length
             self.state.navigation.current_waypoint_indices[env_ids] = 0
-        
+        # start[:,:,0] = 0.0
+        # start[:,:,1] = 0.0
         # 随机初始姿态（使用原始分布）
         rpy = self.init_rpy_dist.sample((*env_ids.shape, 1))
         # 如果使用加速度动作空间，则将初始yaw对准第二个waypoint

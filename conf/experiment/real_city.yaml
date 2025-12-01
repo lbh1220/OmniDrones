@@ -1,4 +1,4 @@
-name: traffic_attn_large_acc
+name: baseline
 defaults:
   - /env/real_city@env    
   - /model/navrl@model  
