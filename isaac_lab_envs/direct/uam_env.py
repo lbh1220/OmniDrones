@@ -421,9 +421,6 @@ class UamEnv(DirectRLEnv):
         
         # 终止条件：到达目标、碰撞、高度异常或NaN
         terminated = reached_target_mask | collision_mask | height_abnormal | hasnan
-        if terminated.any():
-            print(f"UamEnv: terminated: {terminated}")
-            self.sim.pause()
         # 超时条件：由DirectRLEnv框架自动处理
         truncated = self.episode_length_buf >= self.max_episode_length 
         

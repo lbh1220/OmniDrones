@@ -24,7 +24,6 @@ class VisualizationManager:
         else:
             self.debug_draw = None
         if debug_vis:
-            return
             # Nav-related markers (targets / drone pos / local goals / projection)
             self._setup_nav_visuals()
             # Traffic-related markers (traffic positions / drone positions)
