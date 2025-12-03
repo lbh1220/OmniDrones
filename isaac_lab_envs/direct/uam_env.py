@@ -21,8 +21,10 @@ from omni.isaac.lab.terrains import TerrainImporterCfg, TerrainGeneratorCfg, HfD
 from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.sensors import RayCaster, RayCasterCfg, patterns
 import omni.isaac.lab.utils.math as math_utils
-
+from omni.isaac.lab.sensors import TiledCamera, TiledCameraCfg
 from isaac_lab_envs.traffic.cfg.config import AreaBoundsCfg
+from omni.isaac.core.utils import prims as prim_utils
+from omni.isaac.lab.sensors.camera.utils import convert_orientation_convention
 
 # 导入原始OmniDrones的robot系统
 from omni_drones.robots.drone import MultirotorBase
@@ -133,6 +135,9 @@ class UamEnv(DirectRLEnv):
         # 在父类初始化完成后进行无人机特定的初始化
         self._post_init_setup()
 
+        # sim time accumulator for ROS rate control
+        self._sim_time_s = 0.0
+
         # 初始姿态分布
         self.init_rpy_dist = torch.distributions.Uniform(
             torch.tensor([0., 0., 0.], device=self.device) * torch.pi,
@@ -220,6 +225,7 @@ class UamEnv(DirectRLEnv):
         translations = [(0.0, 0.0, -20.0)]
         drone_prims = self.drone.spawn(translations)
 
+
         self.traffic_sim = None
         if self.cfg.traffic_sim is not None:
             self.traffic_sim = TrafficSimulator(self.cfg.traffic_sim, self.device)
@@ -229,6 +235,7 @@ class UamEnv(DirectRLEnv):
         
         self._setup_terrain()
         # 4. 设置传感器（在克隆之前）
+        self._setup_cameras()
         self._setup_lidar()
         
         # 5. 设置光照
@@ -246,13 +253,19 @@ class UamEnv(DirectRLEnv):
         # 设置无人机的shape以匹配环境数量
         self.drone.shape = (self.num_envs, 1)
         self.drone.initialize()
-
+        self.drone.set_visible(False)
         if self.traffic_sim is not None:
             self.traffic_sim.initialize()
         
         # 设置随机化
         if "drone" in self.randomization:
             self.drone.setup_randomization(self.randomization["drone"])
+
+        # [新增] 初始化所有相机
+        for cam_name, cam in self._cameras.items():
+            # 需要传入全局 prim_paths (通常 TiledCamera 内部会处理 regex，但有时需要显式指定)
+            # 在 Isaac Lab 4.1 中，直接调用 initialize 即可，它会解析 regex
+            cam._initialize_impl()
 
         self._lidar._initialize_impl()
         
@@ -305,6 +318,9 @@ class UamEnv(DirectRLEnv):
             min(89.0, self.cfg.lidar_vfov[1]) * math.pi / 180.0
         )
         vertical_ray_angles = torch.linspace(lidar_vfov_rad[0], lidar_vfov_rad[1], self.cfg.lidar_resolution[1])
+        # if self.cfg.urban_terrain.terrain_type == "usd":
+        #     mesh_paths = ["/World/City"]
+        # else:
         mesh_paths = ["/World/ground"]
         ray_caster_cfg = RayCasterCfg(
             prim_path=f"/World/envs/env_.*/{self.cfg.drone_model.capitalize()}_0/base_link",
@@ -318,7 +334,58 @@ class UamEnv(DirectRLEnv):
             max_distance=self.cfg.lidar_range,
         )
         self._lidar = RayCaster(ray_caster_cfg)
-    
+
+    def _setup_cameras(self):
+        """初始化所有相机传感器"""
+        self._cameras: Dict[str, TiledCamera] = {}
+        
+        # 遍历 Config 中定义的每一个相机
+        for cam_name, cam_cfg in self.cfg.cameras.items():
+            # 1. 处理 prim_path 中的正则表达式
+            # 如果你的 cfg 里写的是 "env_.*"，通常直接用即可。
+            # 但为了通用性，确保它指向 base_link
+            # 这里的逻辑是：TiledCamera 会自动根据 prim_path 的 regex 找到所有 env 的实例
+            
+            # 注意：如果你的 USD 模型里没有预先定义 Camera Prim，
+            # TiledCamera 依靠 offset 参数在运行时“虚拟”地从 base_link 视角渲染。
+            # 所以 prim_path 最好指向 base_link，或者你代码中手动创建的 Xform。
+            
+            # 修正 prim_path 以匹配当前的 drone_model
+            # 你的代码里用了 f"/World/envs/env_.*/{self.cfg.drone_model.capitalize()}_0/base_link"
+            # 我们可以复用这个逻辑
+            original_path = cam_cfg.prim_path  # e.g. /World/envs/env_.*/Hummingbird_0/base_link/front_cam
+            # 计算 env_0 下的实际 Camera prim 路径（用于先在模板环境中创建 Camera，再由 clone 复制到各 env）
+            model_name = self.cfg.drone_model.capitalize()
+            cam_leaf = original_path.split("/")[-1]
+            env0_parent = f"/World/envs/env_0/{model_name}_0/base_link"
+            env0_cam_path = f"{env0_parent}/{cam_leaf}"
+
+            # 若 env_0 下还不存在该 Camera，则按 offset 进行一次性创建（随后会随 env 克隆复制）
+            if not prim_utils.is_prim_path_valid(env0_cam_path):
+                # 计算 OpenGL 约定下的旋转（USD/Omni 使用）
+                rot = torch.tensor(cam_cfg.offset.rot, dtype=torch.float32, device=self.device).unsqueeze(0)
+                rot_opengl = convert_orientation_convention(
+                    rot, origin=cam_cfg.offset.convention, target="opengl"
+                ).squeeze(0).cpu().tolist()
+                # 使用 Pinhole 相机配置在 env_0/base_link 下创建 Camera prim
+                pinhole_cfg = sim_utils.PinholeCameraCfg()
+                pinhole_cfg.func(
+                    env0_cam_path,
+                    pinhole_cfg,
+                    translation=cam_cfg.offset.pos,
+                    orientation=rot_opengl,
+                )
+
+            # 复制一份配置以免修改原始 config；保持原始 regex prim_path，使初始化时匹配到所有 env 的相机
+            current_cam_cfg = cam_cfg.copy()
+            # 确保不再由传感器内部二次 spawn（我们已手动在 env_0 创建，后续由 clone 复制）
+            current_cam_cfg.spawn = None
+            # 实例化 TiledCamera（初始化延后到 _post_init_setup，再在 clone 后执行）
+            cam = TiledCamera(current_cam_cfg)
+            
+            # 保存到字典
+            self._cameras[cam_name] = cam
+
     def _setup_lights(self):
         """Setup lights exactly like original implementation."""
         # Distant light
@@ -365,7 +432,51 @@ class UamEnv(DirectRLEnv):
         self.state.update_reached_target_mask(self.cfg.arrival_threshold)
         if self.cfg.use_global_path:
             self.state.update_navigation_state_vectorized(self.cfg.global_path_planner_cfg.lookahead_distance, env_ids)
-        self._lidar.update(self.step_dt)
+
+        for cam in self._cameras.values():
+            cam.update(self.step_dt)
+
+        # 保存相机图像到本地用于调试（每隔若干步保存一次）
+        try:
+            if not hasattr(self, "_cam_debug_counter"):
+                self._cam_debug_counter = 0
+            self._cam_debug_counter += 1
+            save_every_n = 20  # 调整保存频率
+            if (self._cam_debug_counter % save_every_n) == 0 and len(self._cameras) > 0:
+                import os
+                import numpy as np
+                from PIL import Image
+                os.makedirs("runs/cam_debug", exist_ok=True)
+                # 仅保存第一个相机、env_0 的图像
+                first_name = next(iter(self._cameras.keys()))
+                cam0 = self._cameras[first_name]
+                outputs = cam0.data.output  # TensorDict: [N, H, W, C]
+                env_idx = 0
+                # RGB
+                if "rgb" in outputs.keys():
+                    rgb = outputs["rgb"][env_idx].detach().to("cpu").numpy()
+                    if rgb.dtype != np.uint8:
+                        maxv = float(rgb.max()) if rgb.size > 0 else 1.0
+                        if maxv <= 1.5:
+                            rgb = (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+                        else:
+                            rgb = np.clip(rgb, 0.0, 255.0).astype(np.uint8)
+                    Image.fromarray(rgb, mode="RGB").save(
+                        os.path.join("runs/cam_debug", f"{first_name}_env{env_idx}_rgb_{self._cam_debug_counter}.png")
+                    )
+                # Depth
+                if "depth" in outputs.keys():
+                    depth = outputs["depth"][env_idx].detach().to("cpu").numpy().astype(np.float32)
+                    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+                    depth = np.clip(depth, 0.0, 100.0)
+                    depth16 = (depth * 655.35).astype(np.uint16)  # 100m -> ~65535
+                    Image.fromarray(depth16, mode="I;16").save(
+                        os.path.join("runs/cam_debug", f"{first_name}_env{env_idx}_depth_{self._cam_debug_counter}.png")
+                    )
+        except Exception as e:
+            print(f"[UamEnv] Save camera debug image failed: {e}")
+
+        # self._lidar.update(self.step_dt)
         self.state.update_lidar_scan(self._lidar, self.cfg.lidar_range, self.cfg.lidar_resolution)
         collision_mask = self._detect_collisions()
         self.state.collision.collision_mask = collision_mask.clone()
@@ -494,7 +605,6 @@ class UamEnv(DirectRLEnv):
         
         super()._reset_idx(env_ids)
         self.metrics.on_reset(env_ids)
-    
     
     def _detect_collisions(self) -> torch.Tensor:
         """

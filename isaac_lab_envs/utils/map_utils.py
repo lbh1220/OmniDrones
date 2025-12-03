@@ -145,6 +145,8 @@ def visualize_paths_on_grid(
         return
 
     # convert grid map to numpy
+    if grid_map == None:
+        return
     if isinstance(grid_map, torch.Tensor):
         gm = grid_map.detach().to("cpu").numpy()
     else:

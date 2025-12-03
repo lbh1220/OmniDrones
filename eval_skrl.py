@@ -207,7 +207,7 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, default="outputs/heter_traffic/traffic_attn/best_traffic_attn", help="Path to the experiment directory")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
     parser.add_argument("--seed", type=int, default=425, help="Seed")
-    parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode (no UI).")
+    parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
     parser.add_argument("--livestream", type=int, default=-1, help="Livestream.")
     parser.add_argument("--num_envs", type=int, default=100, help="Number of environments.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
@@ -216,6 +216,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.vis_velocity:
         args.record_video = False
-    if args.livestream > 0:
-        args.headless = False
     run_evaluation(args.path, args.episodes, args.headless, args.livestream, args.num_envs, args.record_video, args.model_name, args.seed)

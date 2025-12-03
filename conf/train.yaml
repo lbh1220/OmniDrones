@@ -6,7 +6,8 @@ model: ${experiment.model}
 seed: 42
 total_steps: 100_000_000
 device: "cuda:0"
-headless: False
+headless: True
+livestream: 2
 num_envs: 1
 
 record_video: True

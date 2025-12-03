@@ -189,8 +189,7 @@ if __name__ == "__main__":
     parser.add_argument("--pdc_epsilon", type=float, default=None, help="PDC: epsilon")
     parser.add_argument("--pdc_epsilon_s", type=float, default=None, help="PDC: epsilon_s")
     args = parser.parse_args()
-    if args.livestream > 0:
-        args.headless = False
+
     if args.vis_velocity:
         args.record_video = False
     # Build policy_overrides only from provided args

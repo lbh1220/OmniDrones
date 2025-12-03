@@ -24,7 +24,7 @@
 import abc
 import os.path as osp
 from contextlib import contextmanager
-from typing import Dict, Sequence, Type
+from typing import Dict, Sequence, Type, Optional
 
 import omni.isaac.core.utils.prims as prim_utils
 import omni.isaac.core.utils.torch as torch_utils
@@ -36,6 +36,7 @@ from omni.isaac.core.simulation_context import SimulationContext
 from torchrl.data import TensorSpec
 
 import omni_drones.utils.kit as kit_utils
+from pxr import UsdGeom
 
 from omni_drones.robots.config import (
     ArticulationRootPropertiesCfg,
@@ -96,7 +97,7 @@ class RobotBase(abc.ABC):
         self,
         translations=[(0.0, 0.0, 0.5)],
         orientations=None,
-        prim_paths: Sequence[str] = None
+        prim_paths: Sequence[str] = None,
     ):
         if SimulationContext.instance()._physics_sim_view is not None:
             raise RuntimeError(
@@ -122,6 +123,7 @@ class RobotBase(abc.ABC):
             if prim_utils.is_prim_path_valid(prim_path):
                 raise RuntimeError(f"Duplicate prim at {prim_path}.")
             prim = self._create_prim(prim_path, translation, orientation)
+            # set visibility if requested (hide visuals, keep physics)
             # apply rigid body properties
             kit_utils.set_nested_rigid_body_properties(
                 prim_path,
@@ -158,6 +160,20 @@ class RobotBase(abc.ABC):
             scale=scale,
         )
         return prim
+
+    def _set_prim_visibility(self, prim_path: str, visible: bool) -> None:
+        """Set USD visibility on the robot root prim; physics stays enabled."""
+        try:
+            prim = prim_utils.get_prim_at_path(prim_path)
+            if not prim or not prim.IsValid():
+                return
+            imageable = UsdGeom.Imageable(prim)
+            if not imageable:
+                return
+            imageable.GetVisibilityAttr().Set("inherited" if visible else "invisible")
+        except Exception:
+            # be robust in headless or missing schema contexts
+            pass
 
     def initialize(
         self,
@@ -198,6 +214,13 @@ class RobotBase(abc.ABC):
 
         self.prim_paths = self._view.prim_paths
         self.initialized = True
+
+    def set_visible(self, visible: bool) -> None:
+        """Toggle visibility of all robot instances after initialization."""
+        if not getattr(self, "prim_paths", None):
+            return
+        for path in self.prim_paths:
+            self._set_prim_visibility(path, visible)
 
     @abc.abstractmethod
     def apply_action(self, actions: torch.Tensor) -> torch.Tensor:

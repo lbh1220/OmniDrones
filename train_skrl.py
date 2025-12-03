@@ -26,7 +26,16 @@ def main(cfg: DictConfig):
     
     # --- 1. 启动 Isaac Sim ---
     print("Launching Isaac Sim...")
-    app_launcher = AppLauncher(headless=cfg.headless, enable_cameras=cfg.record_video)
+    livestream_type = cfg.get("livestream", 0) 
+    
+    # 关键修改：
+    # 1. headless=True: 必须为 True，因为服务器没有显示器，不能创建本地窗口。
+    # 2. livestream=livestream_type: 开启推流扩展。
+    app_launcher = AppLauncher(
+        headless=cfg.headless,  # 远程服务器上必须永远是 True
+        livestream=livestream_type, 
+        enable_cameras=cfg.record_video
+    )
     simulation_app = app_launcher.app
     
     # --- 2. 解析和保存配置 ---
