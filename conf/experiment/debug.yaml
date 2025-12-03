@@ -15,7 +15,7 @@ env:
   use_global_path: True
   predict_steps: 5
   rew_potential: 0.5
-  flight_height: 1000.0
+  flight_height: 100.0
   # rew_approaching_reward_coeff: 0.25
   rew_evtol_future_penalty: -2.0
   rew_evtols_threshold_factor: 1.2

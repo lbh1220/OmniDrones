@@ -75,6 +75,8 @@ class MapNamespace:
     pc_bounds: tuple | None = None               # (xmin, xmax, ymin, ymax)
     pc_resolution: float | None = None           # 采样分辨率（米）
 
+    voxel_points: torch.Tensor | None = None   # [N, 3]
+
     occupancy_grid: torch.Tensor | None = None   # [H, W] # occupancy grid可以看作感知的结果，比如用于observation
     grid_size: float | None = None              # 网格大小（米）
     grid_bounds: tuple | None = None            # (xmin, xmax, ymin, ymax)

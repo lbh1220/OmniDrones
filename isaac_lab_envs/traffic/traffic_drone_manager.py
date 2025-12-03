@@ -205,8 +205,14 @@ class TrafficDroneManager:
                 speed = self.state.v_pref[i].clamp(min=self.state.min_speed[i], max=self.state.max_speed[i]).item() if self.state.v_pref.numel() else self.v_pref
                 waypoints[i, :n, 3] = float(speed)
             waypoint_lengths[i] = n
-        # from isaac_lab_envs.utils.map_utils import visualize_paths_on_grid
-        # visualize_paths_on_grid(self.state.extended_occupancy_grid, waypoints, waypoint_lengths, self.state.grid_bounds, self.state.grid_size, "traffic_planned_paths.png")
+        if not getattr(self, "_paths_viz_done", False):
+            from isaac_lab_envs.utils.map_utils import visualize_paths_on_grid
+            visualize_paths_on_grid(self.state.extended_occupancy_grid, 
+            waypoints, waypoint_lengths, 
+            self.state.grid_bounds, 
+            self.state.grid_size, 
+            "traffic_planned_paths.png")
+            self._paths_viz_done = True
 
 
     def set_targets_for_drones(self, drones_ids: torch.Tensor | None = None):

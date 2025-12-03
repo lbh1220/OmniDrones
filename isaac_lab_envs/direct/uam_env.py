@@ -284,7 +284,7 @@ class UamEnv(DirectRLEnv):
 
         self.map_manager = None
         self.global_path_planner = None
-        if self.cfg.map_cfg is not None and self.cfg.terrain.terrain_generator is not None:
+        if self.cfg.map_cfg is not None:
             self.map_manager = MapManager(self.cfg.map_cfg, self)
             self.map_manager.create_global_point_cloud()
             self.map_manager.create_occupancy_grid()

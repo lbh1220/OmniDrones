@@ -4,6 +4,8 @@ from isaac_lab_envs.utils.path_planner import GlobalPathPlanner, GlobalPathPlann
 from isaac_lab_envs.direct.mdp.state import EnvState
 import torch
 import math
+import os
+import pickle
 
 @configclass
 class MapManagerCfg:
@@ -103,8 +105,68 @@ class MapManager(ABC):
         self.cfg = cfg
         self.env = env
 
-
     def create_global_point_cloud(self):
+        """
+        初始化地图数据。
+        - 如果是 USD 模式：加载预计算的 voxel pkl 文件。
+        - 其他模式：运行实时 Raycast 生成 height map。
+        """
+        terrain_type = self.env.cfg.urban_terrain.terrain_type
+        
+        if terrain_type == "usd":
+            # === 分支 1: 加载预处理的 Voxel Map ===
+            print(f"INFO: [MapManager] Loading pre-computed voxel map for USD terrain...")
+            self._load_usd_voxel_map()
+        else:
+            # === 分支 2: 传统的 Raycast 生成 Height Map ===
+            self._create_raycast_height_map()
+
+    def _load_usd_voxel_map(self):
+        """
+        加载与 USD 文件同名的 _voxel.pkl 文件，并初始化 env.state.map
+        """
+        usd_path = self.env.cfg.urban_terrain.usd_path
+        base_name = os.path.splitext(usd_path)[0]
+        pkl_path = base_name + "_voxel.pkl"
+
+        if not os.path.exists(pkl_path):
+            raise FileNotFoundError(f"Voxel map not found at {pkl_path}. Please run the voxelizer tool first.")
+
+        print(f"INFO: [MapManager] Loading voxel data from {pkl_path}")
+        with open(pkl_path, 'rb') as f:
+            data = pickle.load(f)
+
+        # 1. 提取元数据
+        bounds_min = data["bounds_min"] # [min_x, min_y, min_z]
+        bounds_max = data["bounds_max"] # [max_x, max_y, max_z]
+        resolution = float(data["resolution"])
+        
+        # 2. 提取点云 (N, 3) 或 (N, 4)
+        np_points = data["point_cloud"]
+        
+        # 3. 转为 Tensor 并移至 GPU
+        # 我们主要关心 XYZ 坐标用于碰撞检测
+        # 注意：这里我们保存的是稀疏的 3D 点，而不是密集的 2D grid
+        voxel_points = torch.tensor(np_points[:, :3], dtype=torch.float32, device=self.env.device)
+        
+        # 4. 存入 env.state.map
+        # 为了兼容性，我们尽可能填充相关字段，但核心是 voxel_points
+        self.env.state.map.voxel_points = voxel_points
+        self.env.state.map.pc_resolution = resolution
+        self.env.state.map.pc_bounds = (bounds_min[0], bounds_max[0], bounds_min[1], bounds_max[1])
+        
+        # 记录一下 Z 范围，虽然后续逻辑主要靠 query
+        self.env.state.map.z_min = float(bounds_min[2])
+        self.env.state.map.z_max = float(bounds_max[2])
+
+        # *可选*: 如果你还需要兼容旧的 self.env.state.map.height_map (2.5D DSM)
+        # 可以写一个逻辑把 3D 点投影成 2D Max-Height Map，防止某些可视化代码报错
+        # 但既然你打算重写 get_occupancy_grid，这里可以先置空或者做个简单的 placeholder
+        self.env.state.map.height_map = None 
+        
+        print(f"INFO: Voxel map loaded. Points: {voxel_points.shape[0]}, Resolution: {resolution}m")
+
+    def _create_raycast_height_map(self):
         """
         在环境初始化时运行一次，基于场景静态mesh自上而下投射，生成并缓存全局点云（致密栅格）。
         - 使用 warp.raycast_mesh (同 LiDAR) 进行一次性批量射线查询。
@@ -250,81 +312,119 @@ class MapManager(ABC):
 
         return safe
     
-    # 新API：从全局点云派生任意范围与分辨率的占据网格
     def get_occupancy_grid_at_height(self, bounds: tuple[float, float, float, float], height_z: float, grid_size: float) -> torch.Tensor:
         """
-        基于全局点云，返回指定范围(bxmin, bxmax, bymin, bymax)、高度阈值和分辨率的2D占据网格。
-        - 若请求范围超出点云范围：超出部分视为未占据（False）。
-        - grid_size 必须 >= point_cloud_resolution，方可保证无信息丢失。
-        返回张量形状：[1, H, W]，布尔类型。
+        根据指定的 3D 范围和分辨率生成 2D 占据网格。
+        自动兼容 USD Voxel 模式 (3D Slicing) 和 传统 HeightMap 模式 (2.5D Thresholding)。
         """
-        assert self.env.state.map.height_map is not None, "Global point cloud not built"
         bxmin, bxmax, bymin, bymax = map(float, bounds)
-        pc_xmin, pc_xmax, pc_ymin, pc_ymax = self.env.state.map.pc_bounds
-        base_res = float(self.env.state.map.pc_resolution)
-        gs = float(grid_size)
-        if gs < base_res - 1e-6:
-            raise ValueError(f"grid_size({gs}) must be >= point_cloud_resolution({base_res})")
-        # 计算输出栅格维度
-        out_w = max(1, int(math.ceil((bxmax - bxmin) / gs)))
-        out_h = max(1, int(math.ceil((bymax - bymin) / gs)))
-        # 计算与全局高度图的重叠区域（索引空间）
-        H, W = self.env.state.map.pc_shape_hw
-        # 全局栅格坐标步长
-        step = base_res
-        # 将物理坐标映射到全局索引范围
-        def world_to_index_x(x):
-            return (x - pc_xmin) / step
-        def world_to_index_y(y):
-            return (y - pc_ymin) / step
-        ix0 = math.floor(world_to_index_x(max(bxmin, pc_xmin)))
-        ix1 = math.ceil(world_to_index_x(min(bxmax, pc_xmax)))
-        iy0 = math.floor(world_to_index_y(max(bymin, pc_ymin)))
-        iy1 = math.ceil(world_to_index_y(min(bymax, pc_ymax)))
-        # 裁切到全局索引有效范围
-        ix0_clamp = max(0, min(W, ix0))
-        ix1_clamp = max(0, min(W, ix1))
-        iy0_clamp = max(0, min(H, iy0))
-        iy1_clamp = max(0, min(H, iy1))
-        # 若无重叠，返回全 False
-        if ix0_clamp >= ix1_clamp or iy0_clamp >= iy1_clamp:
-            return torch.zeros(1, out_h, out_w, dtype=torch.bool, device=self.env.device)
-        # 从全局高度图截取重叠子图
-        sub_height = self.env.state.map.height_map[iy0_clamp:iy1_clamp, ix0_clamp:ix1_clamp]
-        # 对子图按高度阈值生成占据（inf 表示未命中，应视为未占据，这里比较会为 False）
-        occ_sub = sub_height >= float(height_z)
-        # 1. 创建最终输出的“画布”，尺寸为 (out_h, out_w)，初始值全为 False
-        final_out = torch.zeros(out_h, out_w, dtype=torch.bool, device=self.env.device)
-
-        # 2. 计算重叠区域 `occ_sub` 在 `final_out` 画布中应该占据的像素尺寸
-        #    这需要考虑从 base_res 到 gs 的分辨率变化
-        sub_h, sub_w = occ_sub.shape
-        interp_h = max(1, round(sub_h * base_res / gs))
-        interp_w = max(1, round(sub_w * base_res / gs))
-
-        # 3. 将布尔图转换为浮点图，并添加维度以符合 interpolate 的输入要求
-        occ_sub_float = occ_sub.float().unsqueeze(0).unsqueeze(0)
-
-        # 4. 使用 'area' 模式将子图重采样到我们刚刚计算出的、正确的中间尺寸
-        interpolated_sub = torch.nn.functional.interpolate(occ_sub_float, size=(interp_h, interp_w), mode='area')
-
-        # 5. 将插值结果转换回布尔类型
-        out = (interpolated_sub > 0).bool().squeeze(0).squeeze(0)
-
-        # 6. 计算 `out` 这块内容应该被粘贴到 `final_out` 画布的哪个位置
-        #    首先计算重叠区域的物理起始点 (sub_xmin, sub_ymin)
-        sub_xmin = pc_xmin + ix0_clamp * base_res
-        sub_ymin = pc_ymin + iy0_clamp * base_res
-        #    然后计算这个物理点在最终输出网格中的索引位置
-        paste_x_start = max(0, math.floor((sub_xmin - bxmin) / gs))
-        paste_y_start = max(0, math.floor((sub_ymin - bymin) / gs))
-
-        # 7. 【核心修复】定义切片的终点，由 `out` 的实际形状决定
-        paste_x_end = paste_x_start + out.shape[1]
-        paste_y_end = paste_y_start + out.shape[0]
-
-        # 8. 执行粘贴操作，现在源和目标的尺寸保证匹配
-        final_out[paste_y_start:paste_y_end, paste_x_start:paste_x_end] = out
-        # out put is [H,W]
-        return final_out
-
+        
+        # 计算输出网格尺寸
+        out_w = max(1, int(math.ceil((bxmax - bxmin) / float(grid_size))))
+        out_h = max(1, int(math.ceil((bymax - bymin) / float(grid_size))))
+        
+        # === 模式 A: 3D Voxel 模式 (USD) ===
+        if hasattr(self.env.state.map, "voxel_points") and self.env.state.map.voxel_points is not None:
+            points = self.env.state.map.voxel_points # Tensor (N, 3)
+            res = float(self.env.state.map.pc_resolution)
+            
+            # 1. 高度过滤 (Z Slicing)
+            # 我们的 voxel 代表该空间被占据。如果无人机在 height_z 飞行，
+            # 我们需要检查是否有 voxel 覆盖了这个高度。
+            # Voxel 中心为 z，范围是 [z - res/2, z + res/2]
+            # 只要 voxel 范围包含 height_z，或者两者距离小于 res 即可视为碰撞风险
+            z_threshold = res / 2.0 + 0.1 # 加一点 epsilon
+            mask_z = torch.abs(points[:, 2] - float(height_z)) <= z_threshold
+            
+            # 2. XY 范围过滤
+            # 为了加速，先筛选 Z，通常 Z 轴截面点数会少很多
+            subset = points[mask_z]
+            
+            if subset.shape[0] == 0:
+                return torch.zeros(out_h, out_w, dtype=torch.bool, device=self.env.device)
+            
+            mask_xy = (subset[:, 0] >= bxmin) & (subset[:, 0] <= bxmax) & \
+                      (subset[:, 1] >= bymin) & (subset[:, 1] <= bymax)
+            subset = subset[mask_xy]
+            
+            if subset.shape[0] == 0:
+                return torch.zeros(1, out_h, out_w, dtype=torch.bool, device=self.env.device)
+            
+            # 3. 投影到 2D Grid
+            # 计算索引
+            idx_x = torch.floor((subset[:, 0] - bxmin) / float(grid_size)).long()
+            idx_y = torch.floor((subset[:, 1] - bymin) / float(grid_size)).long()
+            
+            # 边界保护 (以防浮点误差导致 idx 越界)
+            idx_x = torch.clamp(idx_x, 0, out_w - 1)
+            idx_y = torch.clamp(idx_y, 0, out_h - 1)
+            
+            # 4. 填充网格
+            # 创建全 False 网格
+            final_out = torch.zeros(out_h, out_w, dtype=torch.bool, device=self.env.device)
+            # 将占据位置设为 True
+            final_out[idx_y, idx_x] = True
+            
+            return final_out
+            
+        # === 模式 B: 2.5D Height Map 模式 (Legacy) ===
+        else:
+            # 原有的逻辑：从全局 height_map 切片并插值
+            assert self.env.state.map.height_map is not None, "Global point cloud not built"
+            
+            pc_xmin, pc_xmax, pc_ymin, pc_ymax = self.env.state.map.pc_bounds
+            base_res = float(self.env.state.map.pc_resolution)
+            gs = float(grid_size)
+            
+            # 全局栅格坐标步长与索引映射
+            def world_to_index_x(x): return (x - pc_xmin) / base_res
+            def world_to_index_y(y): return (y - pc_ymin) / base_res
+            
+            ix0 = math.floor(world_to_index_x(max(bxmin, pc_xmin)))
+            ix1 = math.ceil(world_to_index_x(min(bxmax, pc_xmax)))
+            iy0 = math.floor(world_to_index_y(max(bymin, pc_ymin)))
+            iy1 = math.ceil(world_to_index_y(min(bymax, pc_ymax)))
+            
+            H, W = self.env.state.map.pc_shape_hw
+            ix0_clamp = max(0, min(W, ix0))
+            ix1_clamp = max(0, min(W, ix1))
+            iy0_clamp = max(0, min(H, iy0))
+            iy1_clamp = max(0, min(H, iy1))
+            
+            if ix0_clamp >= ix1_clamp or iy0_clamp >= iy1_clamp:
+                return torch.zeros(1, out_h, out_w, dtype=torch.bool, device=self.env.device)
+            
+            # 截取与阈值化 (2.5D 假设：高度 > height_z 即为障碍)
+            sub_height = self.env.state.map.height_map[iy0_clamp:iy1_clamp, ix0_clamp:ix1_clamp]
+            occ_sub = sub_height >= float(height_z)
+            
+            # 插值重采样逻辑 (保持你原有的 robust 实现)
+            final_out = torch.zeros(out_h, out_w, dtype=torch.bool, device=self.env.device)
+            sub_h, sub_w = occ_sub.shape
+            interp_h = max(1, round(sub_h * base_res / gs))
+            interp_w = max(1, round(sub_w * base_res / gs))
+            
+            occ_sub_float = occ_sub.float().unsqueeze(0).unsqueeze(0)
+            interpolated_sub = torch.nn.functional.interpolate(occ_sub_float, size=(interp_h, interp_w), mode='area')
+            out = (interpolated_sub > 0).bool().squeeze(0).squeeze(0)
+            
+            sub_xmin = pc_xmin + ix0_clamp * base_res
+            sub_ymin = pc_ymin + iy0_clamp * base_res
+            
+            paste_x_start = max(0, math.floor((sub_xmin - bxmin) / gs))
+            paste_y_start = max(0, math.floor((sub_ymin - bymin) / gs))
+            paste_x_end = paste_x_start + out.shape[1]
+            paste_y_end = paste_y_start + out.shape[0]
+            
+            # 边界保护
+            target_h, target_w = final_out.shape
+            # 裁剪源 out 如果它超出了目标边界
+            if paste_x_end > target_w:
+                out = out[:, :-(paste_x_end - target_w)]
+                paste_x_end = target_w
+            if paste_y_end > target_h:
+                out = out[:-(paste_y_end - target_h), :]
+                paste_y_end = target_h
+                
+            final_out[paste_y_start:paste_y_end, paste_x_start:paste_x_end] = out
+            return final_out

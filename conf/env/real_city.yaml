@@ -5,6 +5,12 @@ defaults:
   - _self_
 name: real_city
 
+map_cfg:
+  _target_: isaac_lab_envs.direct.components.map.MapManagerCfg
+  point_cloud_resolution: 1.0
+  point_cloud_top_z: 200.0
+  point_cloud_margin: 0.0
+
 urban_terrain:
   terrain_type: "usd"
   usd_path: "/home/liang/Projects/isaac_sim_projects/Brushify/mini_city_layout_original.usd"
@@ -17,7 +23,7 @@ reward_cfg:
 observation_cfg:
   modules: ["robot_node", "lidar"]
 
-lidar_range: 300.0
+lidar_range: 500.0
 
 # 启用 traffic_sim (之前是 null)
 traffic_sim:
