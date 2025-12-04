@@ -26,7 +26,8 @@ class PolicyConfig:
         self.max_neighbors = 10
         self.time_horizon = 11.0
         self.time_horizon_obst = 11.0
-        self.safety_space = 5.0
+        self.safety_space = 1.5
+        # for small scale , safety space is 1.5, or 2.0, for large scale, safety space is 5.0
         
         # PDC-specific parameters (Practical Distributed Control)
         # Gains and shape parameters

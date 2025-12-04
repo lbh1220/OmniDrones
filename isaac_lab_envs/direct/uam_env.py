@@ -3,7 +3,7 @@
 # Copyright (c) 2023 Isaac Lab Nav Environment Implementation
 
 from __future__ import annotations
-
+import os
 import math
 import torch
 import numpy as np
@@ -21,7 +21,7 @@ from omni.isaac.lab.terrains import TerrainImporterCfg, TerrainGeneratorCfg, HfD
 from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.sensors import RayCaster, RayCasterCfg, patterns
 import omni.isaac.lab.utils.math as math_utils
-from omni.isaac.lab.sensors import TiledCamera, TiledCameraCfg
+from omni.isaac.lab.sensors import Camera
 from isaac_lab_envs.traffic.cfg.config import AreaBoundsCfg
 from omni.isaac.core.utils import prims as prim_utils
 from omni.isaac.lab.sensors.camera.utils import convert_orientation_convention
@@ -222,7 +222,7 @@ class UamEnv(DirectRLEnv):
         self.drone, self.controller = MultirotorBase.make(self.cfg.drone_model, self.cfg.controller, self.device)
         
         # 2. 在模板环境中生成一个无人机
-        translations = [(0.0, 0.0, -20.0)]
+        translations = [(0.0, 0.0, 20.0)]
         drone_prims = self.drone.spawn(translations)
 
 
@@ -253,7 +253,7 @@ class UamEnv(DirectRLEnv):
         # 设置无人机的shape以匹配环境数量
         self.drone.shape = (self.num_envs, 1)
         self.drone.initialize()
-        self.drone.set_visible(False)
+        # self.drone.set_visible(False)
         if self.traffic_sim is not None:
             self.traffic_sim.initialize()
         
@@ -261,7 +261,7 @@ class UamEnv(DirectRLEnv):
         if "drone" in self.randomization:
             self.drone.setup_randomization(self.randomization["drone"])
 
-        # [新增] 初始化所有相机
+        # # [新增] 初始化所有相机
         for cam_name, cam in self._cameras.items():
             # 需要传入全局 prim_paths (通常 TiledCamera 内部会处理 regex，但有时需要显式指定)
             # 在 Isaac Lab 4.1 中，直接调用 initialize 即可，它会解析 regex
@@ -312,6 +312,8 @@ class UamEnv(DirectRLEnv):
         if self.traffic_sim is not None:
             self.state.init_traffic_namespace(self.cfg.predict_steps, self.cfg.pred_timestep)
             self.traffic_sim.reset()
+
+
     def _setup_lidar(self):
         lidar_vfov_rad = (
             max(-89.0, self.cfg.lidar_vfov[0]) * math.pi / 180.0,
@@ -336,55 +338,17 @@ class UamEnv(DirectRLEnv):
         self._lidar = RayCaster(ray_caster_cfg)
 
     def _setup_cameras(self):
-        """初始化所有相机传感器"""
-        self._cameras: Dict[str, TiledCamera] = {}
-        
-        # 遍历 Config 中定义的每一个相机
+        """参考官方测试用例的初始化逻辑，适配 DirectRLEnv"""
+        self._cameras: Dict[str, Camera] = {}
         for cam_name, cam_cfg in self.cfg.cameras.items():
-            # 1. 处理 prim_path 中的正则表达式
-            # 如果你的 cfg 里写的是 "env_.*"，通常直接用即可。
-            # 但为了通用性，确保它指向 base_link
-            # 这里的逻辑是：TiledCamera 会自动根据 prim_path 的 regex 找到所有 env 的实例
-            
-            # 注意：如果你的 USD 模型里没有预先定义 Camera Prim，
-            # TiledCamera 依靠 offset 参数在运行时“虚拟”地从 base_link 视角渲染。
-            # 所以 prim_path 最好指向 base_link，或者你代码中手动创建的 Xform。
-            
-            # 修正 prim_path 以匹配当前的 drone_model
-            # 你的代码里用了 f"/World/envs/env_.*/{self.cfg.drone_model.capitalize()}_0/base_link"
-            # 我们可以复用这个逻辑
-            original_path = cam_cfg.prim_path  # e.g. /World/envs/env_.*/Hummingbird_0/base_link/front_cam
-            # 计算 env_0 下的实际 Camera prim 路径（用于先在模板环境中创建 Camera，再由 clone 复制到各 env）
-            model_name = self.cfg.drone_model.capitalize()
-            cam_leaf = original_path.split("/")[-1]
-            env0_parent = f"/World/envs/env_0/{model_name}_0/base_link"
-            env0_cam_path = f"{env0_parent}/{cam_leaf}"
-
-            # 若 env_0 下还不存在该 Camera，则按 offset 进行一次性创建（随后会随 env 克隆复制）
-            if not prim_utils.is_prim_path_valid(env0_cam_path):
-                # 计算 OpenGL 约定下的旋转（USD/Omni 使用）
-                rot = torch.tensor(cam_cfg.offset.rot, dtype=torch.float32, device=self.device).unsqueeze(0)
-                rot_opengl = convert_orientation_convention(
-                    rot, origin=cam_cfg.offset.convention, target="opengl"
-                ).squeeze(0).cpu().tolist()
-                # 使用 Pinhole 相机配置在 env_0/base_link 下创建 Camera prim
-                pinhole_cfg = sim_utils.PinholeCameraCfg()
-                pinhole_cfg.func(
-                    env0_cam_path,
-                    pinhole_cfg,
-                    translation=cam_cfg.offset.pos,
-                    orientation=rot_opengl,
-                )
-
-            # 复制一份配置以免修改原始 config；保持原始 regex prim_path，使初始化时匹配到所有 env 的相机
-            current_cam_cfg = cam_cfg.copy()
-            # 确保不再由传感器内部二次 spawn（我们已手动在 env_0 创建，后续由 clone 复制）
-            current_cam_cfg.spawn = None
-            # 实例化 TiledCamera（初始化延后到 _post_init_setup，再在 clone 后执行）
-            cam = TiledCamera(current_cam_cfg)
-            
-            # 保存到字典
+            # 创建相机实例
+            prim_path = f"/World/envs/env_.*/{self.cfg.drone_model.capitalize()}_0/base_link/{cam_name}"
+            cam_cfg.prim_path = prim_path
+            cam = Camera(cam_cfg)
+            # 关键：注册到 scene.sensors，这样 Isaac Lab 的 Scene 管理器就知道它的存在
+            self.scene.sensors[cam_name] = cam
             self._cameras[cam_name] = cam
+
 
     def _setup_lights(self):
         """Setup lights exactly like original implementation."""
@@ -432,46 +396,65 @@ class UamEnv(DirectRLEnv):
         self.state.update_reached_target_mask(self.cfg.arrival_threshold)
         if self.cfg.use_global_path:
             self.state.update_navigation_state_vectorized(self.cfg.global_path_planner_cfg.lookahead_distance, env_ids)
-
+        self.sim.render()
         for cam in self._cameras.values():
             cam.update(self.step_dt)
 
         # 保存相机图像到本地用于调试（每隔若干步保存一次）
+        from isaac_lab_envs.utils.sensors import save_images_grid
         try:
             if not hasattr(self, "_cam_debug_counter"):
                 self._cam_debug_counter = 0
             self._cam_debug_counter += 1
-            save_every_n = 20  # 调整保存频率
-            if (self._cam_debug_counter % save_every_n) == 0 and len(self._cameras) > 0:
-                import os
-                import numpy as np
-                from PIL import Image
-                os.makedirs("runs/cam_debug", exist_ok=True)
-                # 仅保存第一个相机、env_0 的图像
-                first_name = next(iter(self._cameras.keys()))
-                cam0 = self._cameras[first_name]
-                outputs = cam0.data.output  # TensorDict: [N, H, W, C]
-                env_idx = 0
-                # RGB
-                if "rgb" in outputs.keys():
-                    rgb = outputs["rgb"][env_idx].detach().to("cpu").numpy()
-                    if rgb.dtype != np.uint8:
-                        maxv = float(rgb.max()) if rgb.size > 0 else 1.0
-                        if maxv <= 1.5:
-                            rgb = (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
-                        else:
-                            rgb = np.clip(rgb, 0.0, 255.0).astype(np.uint8)
-                    Image.fromarray(rgb, mode="RGB").save(
-                        os.path.join("runs/cam_debug", f"{first_name}_env{env_idx}_rgb_{self._cam_debug_counter}.png")
+            
+            save_every_n = 20
+            
+            # 检查是否需要保存 (并且只在至少有一个相机时)
+            if (self._cam_debug_counter % save_every_n) == 0 and len(self.cfg.cameras) > 0:
+                # 获取第一个相机的名字
+                first_cam_name = list(self.cfg.cameras.keys())[0]
+                cam_sensor = self.scene.sensors[first_cam_name]
+                
+                # 创建输出目录
+                output_dir = os.path.join("runs", "cam_debug")
+                os.makedirs(output_dir, exist_ok=True)
+
+                # [关键] 模仿 cameras.py 的数据获取方式
+                # data.output 是一个 TensorDict
+                
+                # 保存 RGB
+                if "rgb" in cam_sensor.data.output.keys():
+                    # 获取所有环境的图像 [num_envs, H, W, C]
+                    # 为了演示，我们取前 4 个环境的图，或者全部
+                    rgb_images = cam_sensor.data.output["rgb"]
+                    # 如果环境太多，只切片取前几个，避免 grid 太大
+                    vis_num = min(self.num_envs, 4) 
+                    rgb_images_to_save = rgb_images[:vis_num] 
+
+                    save_images_grid(
+                        rgb_images_to_save,
+                        subtitles=[f"Env {i}" for i in range(vis_num)],
+                        title=f"RGB Step {self._cam_debug_counter}",
+                        filename=os.path.join(output_dir, "rgb", f"{first_cam_name}_{self._cam_debug_counter:04d}.jpg")
                     )
-                # Depth
-                if "depth" in outputs.keys():
-                    depth = outputs["depth"][env_idx].detach().to("cpu").numpy().astype(np.float32)
-                    depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-                    depth = np.clip(depth, 0.0, 100.0)
-                    depth16 = (depth * 655.35).astype(np.uint16)  # 100m -> ~65535
-                    Image.fromarray(depth16, mode="I;16").save(
-                        os.path.join("runs/cam_debug", f"{first_name}_env{env_idx}_depth_{self._cam_debug_counter}.png")
+
+                # 保存 Depth
+                if "depth" in cam_sensor.data.output.keys():
+                    # TiledCamera 的 depth 通常是 [N, H, W, 1]
+                    depth_images = cam_sensor.data.output["depth"]
+                    vis_num = min(self.num_envs, 4)
+                    
+                    # 注意：depth 可能需要 squeeze 掉最后一个维度才能被 matplotlib 正确显示 (H, W)
+                    # 但 save_images_grid 内部如果是用 imshow，通常接受 (H, W) 或 (H, W, 3/4)
+                    # 我们传入 [N, H, W]
+                    depth_images_to_save = depth_images[:vis_num, ..., 0] 
+
+                    save_images_grid(
+                        depth_images_to_save,
+                        cmap="turbo", # 使用 turbo colormap 增强深度图可视性
+                        subtitles=[f"Env {i}" for i in range(vis_num)],
+                        title=f"Depth Step {self._cam_debug_counter}",
+                        filename=os.path.join(output_dir, "depth", f"{first_cam_name}_{self._cam_debug_counter:04d}.jpg")
                     )
         except Exception as e:
             print(f"[UamEnv] Save camera debug image failed: {e}")

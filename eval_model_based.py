@@ -165,12 +165,13 @@ def run_evaluation(experiment_path: str,
 if __name__ == "__main__":
     # 使用 argparse 来接收实验路径
     parser = argparse.ArgumentParser(description="Evaluate a trained SKRL agent.")
-    parser.add_argument("--path", type=str, default="outputs/large_traffic/traffic_attn_large_acc/traffic_attn_20251123_0033", help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
+    parser.add_argument("--path", type=str, default="outputs/real_city/debug/navrl_20251203_2208", 
+                        help="Path to the experiment directory (e.g., 'outputs/debug/2025-11-01_20-38')")
     parser.add_argument("--episodes", type=int, default=500, help="Number of episodes to run.")
     parser.add_argument("--seed", type=int, default=425, help="Seed")
-    parser.add_argument("--headless", action="store_true", default=False, help="Run in headless mode (no UI).")
+    parser.add_argument("--headless", action="store_true", default=True, help="Run in headless mode (no UI).")
     parser.add_argument("--num_envs", type=int, default=1, help="Number of environments.")
-    parser.add_argument("--livestream", type=int, default=-1, help="Livestream.")
+    parser.add_argument("--livestream", type=int, default=2, help="Livestream.")
     parser.add_argument("--record_video", action="store_true", default=True, help="Record video.")
     parser.add_argument("--vis_velocity", action="store_true", default=False, help="Visualize velocity.")
     parser.add_argument("--model_name", type=str, default="orca", help="Policy to use (orca or pdc).")  

@@ -7,7 +7,7 @@ from omni.isaac.lab.scene import InteractiveSceneCfg
 from omni.isaac.lab.sim import SimulationCfg
 from omni.isaac.lab.terrains import TerrainImporterCfg, TerrainGeneratorCfg, HfDiscreteObstaclesTerrainCfg
 from omni.isaac.lab.utils import configclass
-from omni.isaac.lab.sensors import TiledCameraCfg, TiledCamera
+from omni.isaac.lab.sensors import TiledCameraCfg, CameraCfg
 
 from isaac_lab_envs.direct.mdp.action import ActionManagerCfg
 from isaac_lab_envs.direct.mdp.rewards import RewardManagerCfg, RewardManager
@@ -116,36 +116,25 @@ class UamEnvCfg(DirectRLEnvCfg):
     lidar_resolution: tuple[int, int] = (36, 15)  # horizontal x vertical
     lidar_attach_yaw_only: bool = True
     # camera conf
-    cameras: Dict[str, TiledCameraCfg] = field(default_factory=lambda: {
+    cameras: Dict[str, CameraCfg] = field(default_factory=lambda: {
             # 1. 前视相机 (Front Camera)
-            "front_cam": TiledCameraCfg(
+            "front_cam": CameraCfg(
                 # 这里的 prim_path 需要使用 regex 匹配所有环境的无人机
                 # 注意：{ENV_REGEX} 是占位符，需要在 Env 类中处理，或者直接写死正则
                 prim_path="/World/envs/env_.*/Hummingbird_0/base_link/front_cam",
-                offset=TiledCameraCfg.OffsetCfg(
-                    pos=(0.1, 0.0, 0.0),  # 安装在机头
-                    rot=(1.0, 0.0, 0.0, 0.0), # Quaternion (w, x, y, z) - 假设是前向
+                offset=CameraCfg.OffsetCfg(
+                    pos=(0.810, 0.0, 0.250),  # 安装在机头
+                    rot=(0.5, -0.5, 0.5, -0.5), # Quaternion (w, x, y, z) - 假设是前向
                     convention="ros", # 或者 "opengl"，决定坐标系方向
                 ),
-                data_types=["rgb", "depth"], # 输出 RGB 和 深度图
-                width=84,
-                height=84,
-                spawn=None, # 我们假设这里是虚拟挂载，不生成实际 USD Prim，或者依靠 Robot 定义
+                data_types=["rgb"], # 输出 RGB 和 深度图
+                width=256,
+                height=256,
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
+                ),
             ),
             
-            # # 2. 下视相机 (Down Camera)
-            # "down_cam": TiledCameraCfg(
-            #     prim_path="/World/envs/env_.*/Hummingbird_0/base_link/down_cam",
-            #     offset=TiledCameraCfg.OffsetCfg(
-            #         pos=(0.0, 0.0, -0.05),
-            #         rot=(0.707, 0.0, 0.707, 0.0), # 旋转90度向下
-            #         convention="ros",
-            #     ),
-            #     data_types=["rgb"], # 只需要 RGB
-            #     width=64,
-            #     height=64,
-            #     spawn=None, # 我们假设这里是虚拟挂载，不生成实际 USD Prim，或者依靠 Robot 定义
-            # ),
         })
     
     # 随机化配置

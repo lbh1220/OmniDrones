@@ -34,7 +34,7 @@ def main(cfg: DictConfig):
     app_launcher = AppLauncher(
         headless=cfg.headless,  # 远程服务器上必须永远是 True
         livestream=livestream_type, 
-        enable_cameras=cfg.record_video
+        enable_cameras=cfg.record_video,
     )
     simulation_app = app_launcher.app
     
@@ -68,7 +68,7 @@ def main(cfg: DictConfig):
             "video_length": cfg.video_length,
             "disable_logger": True,
         }
-        env_cfg_instance.debug_vis = True
+        # env_cfg_instance.debug_vis = True
 
     env_cfg_instance.seed = cfg.seed
     # d. 实例化环境

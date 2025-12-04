@@ -1,34 +1,23 @@
-name: baseline
+name: navrl
 defaults:
-  - /env/real_city@env    
-  - /model/navrl@model  
-  - /algo/ppo_skrl@algo    
+  - /env/dynamic_city@env    # <--- 加载 conf/env/dynamic_city.yaml 到 "env" 键
+  - /model/navrl@model       # <--- 加载 conf/model/navrl.yaml 到 "model" 键
+  - /algo/ppo_skrl@algo      # <--- 加载 conf/algo/ppo_skrl.yaml 到 "algo" 键
 
 # --- 覆盖 ---
 env:
   observation_cfg:
-    modules: ["robot_node", "lidar"] #
+    modules: ["robot_node", "lidar", "dynamic_obstacle"] #
   reward_cfg:
-    modules: ["nav", "cross_track"] #
+    modules: ["navrl"] #
   # ... (其他 env 覆盖)
-  arrival_threshold: 2.0
+  arrival_threshold: -1.0
   use_global_path: True
-  predict_steps: 5
-  rew_potential: 0.5
-  flight_height: 100.0
-  # rew_approaching_reward_coeff: 0.25
-  rew_evtol_future_penalty: -2.0
-  rew_evtols_threshold_factor: 1.2
-  rew_evtols_decay_factor: 1.0
-  rew_drone_future_penalty: -2.0
-  rew_cross_track_coeff: 0.2
-  rew_smoothness_coeff: -0.0
-  action_manager:
-    action_space_type: "beta"
-    action_mode: "direction_acceleration"
-    rl_action_frame: "world"
+  dynamic_obstacle_num: 5
+
+
 algo:
   rollouts: 128
   mini_batches: 32
   learning_rate: 4e-5
-  entropy_loss_scale: 0.001
+
