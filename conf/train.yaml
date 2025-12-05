@@ -8,7 +8,7 @@ total_steps: 100_000_000
 device: "cuda:0"
 headless: True
 livestream: 2
-num_envs: 1
+num_envs: 4
 
 record_video: True
 video_interval: 10000

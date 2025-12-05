@@ -92,6 +92,7 @@ def run_evaluation(experiment_path: str,
     env_cfg_instance.action_manager.action_space_type = "gaussian"
     env_cfg_instance.action_manager.action_mode = "velocity_components"
     env_cfg_instance.action_manager.rl_action_frame = "world"
+    env_cfg_instance.action_manager.yaw_mode = "follow_goal"
     video_kwargs = None
     video_kwargs = None
     if record_video:
@@ -109,7 +110,7 @@ def run_evaluation(experiment_path: str,
                 "disable_logger": True, 
             }
             # num_envs = 1 的情况
-        env_cfg_instance.debug_vis = True    # (您可以在此处添加或修改 cfg 以进行评估，例如更改相机)
+        # env_cfg_instance.debug_vis = True    # (您可以在此处添加或修改 cfg 以进行评估，例如更改相机)
     # env_cfg_instance.viewer = ViewerCfg(...)
     from isaac_lab_envs.direct.uam_env import UamEnv
     from isaac_lab_envs.direct.uam_env_cfg import UamEnvCfg

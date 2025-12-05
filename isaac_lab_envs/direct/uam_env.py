@@ -222,7 +222,7 @@ class UamEnv(DirectRLEnv):
         self.drone, self.controller = MultirotorBase.make(self.cfg.drone_model, self.cfg.controller, self.device)
         
         # 2. 在模板环境中生成一个无人机
-        translations = [(0.0, 0.0, 20.0)]
+        translations = [(0.0, 0.0, -20.0)]
         drone_prims = self.drone.spawn(translations)
 
 
@@ -459,7 +459,7 @@ class UamEnv(DirectRLEnv):
         except Exception as e:
             print(f"[UamEnv] Save camera debug image failed: {e}")
 
-        # self._lidar.update(self.step_dt)
+        self._lidar.update(self.step_dt)
         self.state.update_lidar_scan(self._lidar, self.cfg.lidar_range, self.cfg.lidar_resolution)
         collision_mask = self._detect_collisions()
         self.state.collision.collision_mask = collision_mask.clone()

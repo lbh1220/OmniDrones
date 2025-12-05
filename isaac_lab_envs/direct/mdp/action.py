@@ -22,6 +22,7 @@ class ActionManagerCfg:
     action_space_num_per_dim: int = 7
     action_mode: str = "velocity_components"  # or "speed_direction" or "direction_acceleration"
     rl_action_frame: str = "body"  # or "world" # rl 输出的动作坐标系， action这边应该将其转换为world frame
+    yaw_mode: str = "no_control" # or "follow_goal", "no_control"
 
 def body_to_world(body_xy: torch.Tensor, cy: torch.Tensor, sy: torch.Tensor) -> torch.Tensor:
     x = body_xy[..., 0]
@@ -329,10 +330,24 @@ class VelocityXYActionManager(ActionManager):
             print(f"ActionManager: drone_state is nan: {drone_state}")
             return
         target_height = env.cfg.flight_height * torch.ones(env.num_envs, 1, 1, device=env.device)
+        if self.cfg.yaw_mode == "follow_velocity":
+            target_yaw = torch.arctan2(self.command_vel_xy[..., 1], self.command_vel_xy[..., 0]).unsqueeze(-1)
+        elif self.cfg.yaw_mode == "follow_goal":
+            goal = env.state.navigation.target_positions
+            if env.state.navigation.local_goals is not None:
+                goal = env.state.navigation.local_goals
+            current_pos = drone_state[..., :3]
+            relative_goal = goal - current_pos
+            target_yaw = torch.arctan2(relative_goal[..., 1], relative_goal[..., 0]).unsqueeze(-1)
+        elif self.cfg.yaw_mode == "no_control":
+            target_yaw = None
+        else:
+            target_yaw = None
         rotor_commands = env.controller.compute(
             root_state=drone_state,
             target_vel_xy=self.command_vel_xy,
             target_height=target_height,
+            target_yaw=target_yaw,
         )
         env.drone.apply_action(rotor_commands)
 

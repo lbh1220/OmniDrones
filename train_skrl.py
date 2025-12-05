@@ -68,7 +68,7 @@ def main(cfg: DictConfig):
             "video_length": cfg.video_length,
             "disable_logger": True,
         }
-        # env_cfg_instance.debug_vis = True
+        env_cfg_instance.debug_vis = True
 
     env_cfg_instance.seed = cfg.seed
     # d. 实例化环境
